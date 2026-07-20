@@ -265,4 +265,28 @@ tab7c = CascadeTable(dl7c; grid = g7, orders = ord7, modes = [0, 2], cache = tab
 rm(tabfile; force = true)
 println("   PASS")
 
+# ---------------------------------------------------------------- test 7b
+println("== 7b. Channel filtering: ChannelFilter selection, combinators, reuse ==")
+# dl7 = ρ→ππ (2-body, pid 1) and ω→ππϖ (3-body, pid 3)
+@assert  haskey(filter(nbody(2), dl7).byparent, 1) && !haskey(filter(nbody(2), dl7).byparent, 3)
+@assert !haskey(filter(nbody(3), dl7).byparent, 1) &&  haskey(filter(nbody(3), dl7).byparent, 3)
+# combinators compose booleanly
+@assert haskey(filter(nbody(2) | nbody(3), dl7).byparent, 1)     # union keeps both parents
+@assert isempty(filter(nbody(2) & nbody(3), dl7).byparent)       # no channel is both
+@assert haskey(filter(!nbody(3), dl7).byparent, 1) && !haskey(filter(!nbody(3), dl7).byparent, 3)
+# name / id / mass selectors
+@assert  haskey(filter(fromparent("om"), dl7).byparent, 3) && !haskey(filter(fromparent("om"), dl7).byparent, 1)
+@assert length(filter(fromid(1), dl7).byparent) == 1 && haskey(filter(fromid(1), dl7).byparent, 1)
+@assert isempty(filter(parentmass(0.0, 0.5), dl7).byparent)      # both parents heavier
+# an all-true filter reproduces the full cascade bit-for-bit, REUSING tab7 in
+# memory (build once, filter freely — no rebuild)
+allpass = filter(channelfilter((p, ch, ds) -> true), dl7)
+resall = runcascade(tab7, allpass; primary = prim7)
+@assert resall.F[2][1] == res7.F[2][1] && resall.F[2][2] == res7.F[2][2]
+# restricting to 2-body drops the ω feed-down: mode-0 pion yield falls but stays
+# ≥ primary (feed-down is non-negative at mode 0, and 2-body ⊆ full)
+res2 = runcascade(tab7, filter(nbody(2), dl7); primary = prim7)
+@assert all(res2.F[2][1] .≤ res7.F[2][1]) && all(res2.F[2][1] .≥ prim7(parts7[2], 0, gv))
+println("   PASS")
+
 println("\nAll tests passed.")

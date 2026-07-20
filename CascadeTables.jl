@@ -30,7 +30,9 @@ include("ParticleList.jl");  using .ParticleList
 using Serialization, SHA, Dates
 
 export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
-       savetables, loadtables, ParticleInfo, DecayChannel
+       savetables, loadtables, ParticleInfo, DecayChannel,
+       ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
+       fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent
 
 const FORMAT = 2                       # bump on any layout change (2: 4-body key + nσ)
 
@@ -49,6 +51,70 @@ function DecayList(path::AbstractString)
     parts, byparent = read_decaylist(path)
     DecayList(parts, byparent, String(path), bytes2hex(sha256(read(path))))
 end
+
+# ---------------------------------------------------------------------------
+# Channel filtering: restrict which decays a cascade uses (the "topology" knob)
+# ---------------------------------------------------------------------------
+# A ChannelFilter wraps a predicate over one channel, evaluated with full
+# context — parent info, the channel, and the daughter infos — so it can select
+# on multiplicity, masses, names, ids, quantum numbers, or branching ratio.
+# Combine with &, |, ! (defined on the type — no piracy). Apply to a DecayList
+# with `filter`, giving a restricted list that flows unchanged through
+# `CascadeTable` (build) and `runcascade` (apply). See the README.
+
+struct ChannelFilter
+    keep::Function     # (p::ParticleInfo, ch::DecayChannel, ds::Vector{ParticleInfo}) -> Bool
+end
+(f::ChannelFilter)(p, ch, ds) = f.keep(p, ch, ds)::Bool
+
+Base.:&(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) && b(p, ch, ds))
+Base.:|(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) || b(p, ch, ds))
+Base.:!(a::ChannelFilter)                   = ChannelFilter((p, ch, ds) -> !a(p, ch, ds))
+
+"""
+    filter(f::ChannelFilter, dl::DecayList) -> DecayList
+
+Restrict `dl` to the channels satisfying `f`, keeping every species (so all
+daughters still resolve and appear as cascade leaves) but pruning `byparent`.
+The result flows unchanged through `CascadeTable` and `runcascade`; since the
+masses are unchanged, its decay-matrix keys are a subset of the full list's, so
+filtering an *apply* reuses a full cached table with no rebuild.
+"""
+function Base.filter(f::ChannelFilter, dl::DecayList)
+    bp = Dict{Int,Vector{DecayChannel}}()
+    for (pid, chans) in dl.byparent
+        p = dl.parts[pid]
+        kept = [ch for ch in chans
+                if all(d -> haskey(dl.parts, d), ch.daughters) &&
+                   f(p, ch, ParticleInfo[dl.parts[d] for d in ch.daughters])]
+        isempty(kept) || (bp[pid] = kept)
+    end
+    return DecayList(dl.parts, bp, dl.path, dl.sha)
+end
+
+# --- ready-made filters (each returns a ChannelFilter) ---------------------
+"Keep channels whose daughter count is one of `ns` — e.g. `nbody(2)`, `nbody(2, 3)`."
+nbody(ns::Integer...)                = ChannelFilter((p, ch, ds) -> length(ch.daughters) in ns)
+"Keep channels whose parent mass lies in `[lo, hi]`."
+parentmass(lo, hi)                   = ChannelFilter((p, ch, ds) -> lo ≤ p.mass ≤ hi)
+"Keep channels all of whose daughter masses lie in `[lo, hi]`."
+daughtermass(lo, hi)                 = ChannelFilter((p, ch, ds) -> all(d -> lo ≤ d.mass ≤ hi, ds))
+"Keep channels with branching ratio ≥ `x`."
+brabove(x)                           = ChannelFilter((p, ch, ds) -> ch.br ≥ x)
+"Keep channels whose parent name is one of `names`."
+fromparent(names::AbstractString...) = ChannelFilter((p, ch, ds) -> p.name in names)
+"Keep channels with at least one daughter named in `names`."
+todaughter(names::AbstractString...) = ChannelFilter((p, ch, ds) -> any(d -> d.name in names, ds))
+"Keep channels whose parent id is one of `ids`."
+fromid(ids::Integer...)              = ChannelFilter((p, ch, ds) -> p.id in ids)
+"Keep channels with at least one daughter id in `ids`."
+toid(ids::Integer...)                = ChannelFilter((p, ch, ds) -> any(d -> d.id in ids, ds))
+"Keep channels whose parent is a baryon (nonzero baryon number)."
+baryonicparent()                     = ChannelFilter((p, ch, ds) -> p.baryon != 0)
+"Keep channels whose parent is a meson (zero baryon number)."
+mesonicparent()                      = ChannelFilter((p, ch, ds) -> p.baryon == 0)
+"Wrap a raw predicate `(p, ch, ds) -> Bool` as a `ChannelFilter`."
+channelfilter(f)                     = ChannelFilter(f)
 
 # ---------------------------------------------------------------------------
 # Channel key: the masses that determine a decay matrix, invariants enforced

@@ -36,21 +36,17 @@ Only `Printf` and the standard library are required. The `Wtables.jls` cache is
 regenerable and git-ignored; the first `cascade.jl` run creates it (~37 s) and
 subsequent runs load it.
 
-## Planned: channel filtering
-
-> **Status: design, not yet implemented.** The API below is a roadmap for
-> restricting *which* decays participate in a cascade. It does not exist in the
-> code yet — do not call it until this note says otherwise.
+## Channel filtering
 
 A cascade run has three orthogonal knobs, which live in three different places:
 
 | knob | question | where |
 |------|----------|-------|
-| **source** | which species emit primaries? | the `primary` callback (return `0` to exclude) — *already supported* |
-| **topology** | which decays are allowed? | `filter(pred, dl)` — *planned* |
+| **source** | which species emit primaries? | the `primary` callback (return `0` to exclude) |
+| **topology** | which decays are allowed? | `filter(pred, dl)` |
 | **sink** | which daughters do I read out? | index `res.F[id]` afterward — trivial |
 
-Filtering will act on the `DecayList` ("before" the cascade), not inside
+Filtering acts on the `DecayList` ("before" the cascade), not inside
 `runcascade`, so one filtered list governs **both** the table build and the
 apply with no change to `runcascade`/`CascadeTable`. Filters are values of a
 composable `ChannelFilter` type (combine with `&`, `|`, `!`):
@@ -64,7 +60,7 @@ res = runcascade(t, filter(parentmass(0, 1) | fromparent("omega"), dl); primary)
 tlean = CascadeTable(filter(nbody(2), dl); cache = "W2.jls")  # or build only 2-body matrices
 ```
 
-Planned ready-made filters (all return a `ChannelFilter`):
+Ready-made filters (all return a `ChannelFilter`):
 
 ```
 nbody(ns...)        parentmass(lo,hi)     daughtermass(lo,hi)   brabove(x)
