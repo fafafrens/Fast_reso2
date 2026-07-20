@@ -47,3 +47,36 @@ for (name, id) in (("pi+", 211), ("K+", 321), ("p", 2212), ("Lambda", 3122))
     end
     @printf(" %8s | %s | %s | %s\n", name, row...)
 end
+
+# ---------------------------------------------------------------------------
+# Plot: feed-down enhancement F_tot/F_prim and v₂ vs pT for the stable species
+# ---------------------------------------------------------------------------
+ENV["GKSwstype"] = "100"           # headless GR
+using Plots
+
+species = (("π⁺", 211, "#2a78d6"), ("K⁺", 321, "#008300"),
+           ("p", 2212, "#d55181"), ("Λ", 3122, "#e08214"))   # entity-stable colors
+mask = findall(q -> 0.15 ≤ q ≤ 2.5, tab.grid)
+pTs = tab.grid[mask]
+
+common = (lw = 2, gridalpha = 0.15, foreground_color_legend = nothing,
+          background_color = :white, framestyle = :box, tickfontsize = 9,
+          guidefontsize = 10, legendfontsize = 9, titlefontsize = 10)
+
+p1 = plot(; xlabel = "pT  [GeV]", ylabel = "F_tot / F_prim",
+          title = "feed-down enhancement", legend = :topright, common...)
+p2 = plot(; xlabel = "pT  [GeV]", ylabel = "v₂",
+          title = "elliptic flow after feed-down", legend = :bottomright, common...)
+for (name, id, col) in species
+    haskey(res.F, id) || continue
+    plot!(p1, pTs, res.F[id][1][mask] ./ res.Fprim[id][1][mask];
+          label = name, color = col, common...)
+    plot!(p2, pTs, res.F[id][2][mask] ./ res.F[id][1][mask];
+          label = name, color = col, common...)
+end
+plot!(p2, pTs, fill(v2p, length(pTs)); label = "primary v₂",
+      color = :gray, ls = :dash, common...)
+
+fig = plot(p1, p2; layout = (1, 2), size = (920, 380), margin = 5Plots.mm)
+savefig(fig, "cascade.png")
+println("\nplot saved to cascade.png")
