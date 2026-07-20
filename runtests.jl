@@ -1,0 +1,247 @@
+# Validation of DecaySpectra.jl
+#
+# 1. Number conservation: N_b = B · N_a follows from the normalization of the
+#    decay map (Eq. 4 / Eq. 49), for any parent spectrum.
+# 2. Fourier modes: the cos(nϕ)-modulated-input trick (Eq. 41) must reconstruct
+#    the direct ϕ-dependent spectrum (Eq. 32) of a modulated source.
+# 3. Three-body number conservation, Eq. (59).
+# 4. Quadrature convergence: default Gauss–Legendre orders vs doubled.
+
+include("DecaySpectra.jl")
+using .DecaySpectra
+using QuadGK   # test harness only: outer adaptive integrals
+using Printf
+
+const T = 0.150   # temperature (GeV) of the static thermal test source
+
+# static Boltzmann source: F(qT, η, ϕ) = exp(−E/T),  E = mT cosh(η)
+thermal(m) = (qT, η, ϕ) -> exp(-hypot(m, qT) * cosh(η) / T)
+
+# N = ∫ d³q/E F = ∫ qT dqT dη dϕ F   (Eq. 13)
+number(F; rtol = 1e-6) =
+    2π * quadgk(qT -> quadgk(η -> qT * F(qT, η, 0.0), -Inf, Inf; rtol)[1],
+                0, Inf; rtol)[1]
+
+# ---------------------------------------------------------------- test 1
+println("== 1. Two-body number conservation:  ρ → ππ, static thermal source ==")
+ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396; B = 1.0)
+Fa = thermal(ρ.ma)
+Na = number(Fa)
+Nb = 2π * quadgk(pT -> quadgk(ηp -> pT * ρ(Fa, pT, ηp, 0.0),
+                              -Inf, Inf; rtol = 1e-4)[1],
+                 0, Inf; rtol = 1e-4)[1]
+@printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Na, Nb, Nb / (ρ.B * Na))
+@assert isapprox(Nb, ρ.B * Na; rtol = 1e-3)
+println("   PASS")
+
+# ---------------------------------------------------------------- test 2
+println("== 2. Fourier modes vs direct spectrum:  v2-modulated source ==")
+v2 = 0.1
+Fa_mod(qT, η, ϕ) = Fa(qT, η, ϕ) * (1 + 2v2 * cos(2ϕ))
+Fa_n0(qT, η, ϕ) = Fa(qT, η, 0.0)                 # n = 0 mode as cos(0·ϕ) input
+Fa_n2(qT, η, ϕ) = v2 * Fa(qT, η, 0.0) * cos(2ϕ)  # n = ±2 mode input
+for (pT, ηp) in ((0.3, 0.0), (0.8, 0.5), (1.5, -1.0))
+    b0 = ρ(Fa_n0, pT, ηp, 0.0)
+    b2 = ρ(Fa_n2, pT, ηp, 0.0)
+    for ϕp in (0.0, π / 3, π / 2)
+        direct = ρ(Fa_mod, pT, ηp, ϕp)
+        recon = b0 + 2b2 * cos(2ϕp)
+        @assert isapprox(direct, recon; rtol = 1e-6)
+    end
+    @printf("   pT=%.2f ηp=%+.1f:  F_b0=%.4e  v2_b=F_b2/F_b0=%.4f\n", pT, ηp, b0, b2 / b0)
+end
+println("   PASS")
+
+# ---------------------------------------------------------------- test 3
+println("== 3. Three-body number conservation:  ω → πππ ==")
+ω = ThreeBodyDecay(0.7827, 0.1396, 0.1396, 0.1350; B = 1.0)
+Faω = thermal(0.7827)
+Naω = number(Faω)
+Nbω = 2π * quadgk(pT -> quadgk(ηp -> pT * ω(Faω, pT, ηp, 0.0),
+                               -Inf, Inf; rtol = 1e-3)[1],
+                  0, Inf; rtol = 1e-3)[1]
+@printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Naω, Nbω, Nbω / Naω)
+@assert isapprox(Nbω, ω.B * Naω; rtol = 5e-3)
+println("   PASS")
+
+# ---------------------------------------------------------------- test 4
+println("== 4. Gauss–Legendre convergence: default orders vs doubled ==")
+ρfine = TwoBodyDecay(0.7752, 0.1396, 0.1396; nq = 256, nθ = 64)
+ωfine = ThreeBodyDecay(0.7827, 0.1396, 0.1396, 0.1350; nµ = 64, nq = 256, nθ = 64)
+for (pT, ηp) in ((0.2, 0.0), (0.3, 0.0), (1.2, 0.8))
+    r2 = abs(ρ(Fa, pT, ηp, 0.4) / ρfine(Fa, pT, ηp, 0.4) - 1)
+    r3 = abs(ω(Faω, pT, ηp, 0.4) / ωfine(Faω, pT, ηp, 0.4) - 1)
+    @printf("   pT=%.2f ηp=%+.1f:  2-body rel.diff=%.1e   3-body rel.diff=%.1e\n",
+            pT, ηp, r2, r3)
+    @assert r2 < 5e-7 && r3 < 5e-7
+end
+println("   PASS")
+
+# ---------------------------------------------------------------- test 5
+println("== 5. LagrangeWeights: exactness, explicit vs generic, O(h^P) order ==")
+using .DecaySpectra.LagrangeWeights   # the copy embedded in DecaySpectra
+linterp(x, F, x1, h, P) = begin
+    j0, w = lagrangeweights(x, x1, h, length(F), P)
+    sum(w[m] * F[j0 + m - 1] for m in eachindex(w))
+end
+for P in 2:7                      # partition of unity + node exactness
+    local F = rand(21)
+    for x in (0.537, 0.013, 1.987)
+        @assert abs(sum(lagrangeweights(x, 0.0, 0.1, 21, P)[2]) - 1) < 1e-12
+    end
+    for i in 3:19
+        @assert abs(linterp((i - 1) * 0.1, F, 0.0, 0.1, P) - F[i]) < 1e-11
+    end
+end
+gw(ξ, P) = ntuple(m -> prod((ξ - k) / (m - 1 - k) for k in 0:P-1 if k != m - 1), P)
+for P in 2:4, ξ in 0.0:0.13:(P - 1)   # explicit formulas == generic product
+    @assert all(abs.(collect(LagrangeWeights.lweights(ξ, Val(P))) .- collect(gw(ξ, P))) .< 1e-12)
+end
+xs5 = [2 * (k / 20)^2 for k in 0:20]  # non-uniform (stretched) grid version
+for P in 2:6
+    for x in (0.017, 0.31, 1.93)      # partition of unity
+        @assert abs(sum(lagrangeweights(x, xs5, P)[2]) - 1) < 1e-12
+    end
+    local poly = x -> sum(x^d * (0.3 + 0.1d) for d in 0:P-1)
+    local F = poly.(xs5)              # exact for degree < P on any spacing
+    for x in 0.011:0.0173:1.99
+        j0, w = lagrangeweights(x, xs5, P)
+        @assert abs(sum(w[m] * F[j0 + m - 1] for m in 1:P) - poly(x)) < 1e-10
+    end
+end
+for P in (2, 3, 4, 6), x in (0.537, 0.013, 1.987)   # vector path == uniform path
+    j0a, wa = lagrangeweights(x, 0.0, 0.1, 21, P)
+    j0b, wb = lagrangeweights(x, collect(0.0:0.1:2.0), P)
+    @assert j0a == j0b && all(abs.(collect(wa) .- collect(wb)) .< 1e-12)
+end
+f5(x) = exp(-x) * cos(3x)
+for P in (2, 4, 6)                # convergence order ~ 2^P per halving of h
+    local errs = map((0.1, 0.05)) do h
+        local N = round(Int, 2.0 / h) + 1
+        local F = [f5((i - 1) * h) for i in 1:N]
+        maximum(abs(linterp(x, F, 0.0, h, P) - f5(x)) for x in 0.001:0.00373:1.995)
+    end
+    ratio = errs[1] / errs[2]
+    @printf("   P=%d:  error(h=0.1)=%.2e  ratio per halving=%.1f  (theory %d)\n",
+            P, errs[1], ratio, 2^P)
+    @assert ratio > 0.7 * 2^P
+end
+# derivative weights: sum-to-zero, polynomial-derivative exactness, non-uniform
+dinterp(x, F, x1, h, P) = begin
+    j0, w = lagrangederiv(x, x1, h, length(F), P)
+    sum(w[m] * F[j0 + m - 1] for m in eachindex(w))
+end
+for P in 2:6
+    @assert abs(sum(lagrangederiv(0.537, 0.0, 0.1, 21, P)[2])) < 1e-11   # d(const)=0
+    local poly = x -> sum(x^d * (0.3 + 0.1d) for d in 0:P-1)
+    local dpoly = x -> sum(d * x^(d - 1) * (0.3 + 0.1d) for d in 1:P-1)
+    local Fu = poly.(0.0:0.05:2.0)
+    @assert maximum(abs(dinterp(x, Fu, 0.0, 0.05, P) - dpoly(x)) for x in 0.05:0.03:1.9) < 1e-8
+    local Fn = poly.(xs5)                     # non-uniform (stretched) grid
+    @assert maximum(begin j0, w = lagrangederiv(x, xs5, P)
+                          abs(sum(w[m] * Fn[j0 + m - 1] for m in 1:P) - dpoly(x)) end
+                    for x in 0.05:0.03:1.9) < 1e-7
+end
+# second derivative: zero-sum, exactness (needs P ≥ 3), lagrangeall consistency
+d2interp(x, F, x1, h, P) = begin
+    j0, w = lagrangederiv2(x, x1, h, length(F), P)
+    sum(w[m] * F[j0 + m - 1] for m in eachindex(w))
+end
+@assert all(lagrangederiv2(0.5, 0.0, 0.1, 21, Val(2))[2] .== 0.0)      # line: no curvature
+for P in 3:6
+    @assert abs(sum(lagrangederiv2(0.537, 0.0, 0.1, 21, P)[2])) < 1e-9
+    local poly = x -> sum(x^d * (0.3 + 0.1d) for d in 0:P-1)
+    local d2poly = x -> sum(d * (d - 1) * x^(d - 2) * (0.3 + 0.1d) for d in 2:P-1)
+    local Fu = poly.(0.0:0.05:2.0)
+    @assert maximum(abs(d2interp(x, Fu, 0.0, 0.05, P) - d2poly(x)) for x in 0.06:0.03:1.9) < 1e-6
+    # lagrangeall returns value + 1st + 2nd matching the standalone calls
+    local j0, w, dw, d2w = lagrangeall(0.537, 0.0, 0.1, 21, Val(P))
+    @assert all(collect(w) .≈ collect(lagrangeweights(0.537, 0.0, 0.1, 21, Val(P))[2])) &&
+            all(collect(dw) .≈ collect(lagrangederiv(0.537, 0.0, 0.1, 21, Val(P))[2])) &&
+            all(collect(d2w) .≈ collect(lagrangederiv2(0.537, 0.0, 0.1, 21, Val(P))[2]))
+end
+println("   1st + 2nd derivative weights + lagrangeall: sum-to-zero, exactness OK")
+println("   PASS")
+
+# ---------------------------------------------------------------- test 6
+println("== 6. DecayMatrix vs functor (boost-invariant source) ==")
+pT6 = 0.1:0.1:1.5
+qg6 = range(0.0, 4.2, length = 121)
+FBIρ(qT) = exp(-hypot(0.7752, qT) / T)
+FBIω(qT) = exp(-hypot(0.7827, qT) / T)
+M0 = DecayMatrix(ρ, 0, pT6, qg6)
+M2 = DecayMatrix(ρ, 2, pT6, qg6)
+Mω = DecayMatrix(ω, 0, pT6, qg6)
+d0 = maximum(abs.(M0(FBIρ) ./ [ρ((q, η, ϕ) -> FBIρ(q), pT, 0.0, 0.0) for pT in pT6] .- 1))
+d2 = maximum(abs.(M2(q -> FBIρ(q)) ./
+                  [ρ((q, η, ϕ) -> FBIρ(q) * cos(2ϕ), pT, 0.0, 0.0) for pT in pT6] .- 1))
+dω = maximum(abs.(Mω(FBIω) ./ [ω((q, η, ϕ) -> FBIω(q), pT, 0.0, 0.0) for pT in pT6] .- 1))
+@printf("   max rel dev:  ρ n=0 %.1e   ρ n=2 %.1e   ω n=0 %.1e\n", d0, d2, dω)
+@assert d0 < 5e-4 && d2 < 5e-4 && dω < 5e-4
+# range grid and vector grid must assemble the identical matrix
+Mv = DecayMatrix(ρ, 0, pT6, collect(qg6))
+@assert maximum(abs.(M0.W .- Mv.W)) < 1e-10 * maximum(abs.(M0.W))
+println("   PASS")
+
+# ---------------------------------------------------------------- test 7
+println("== 7. CascadeTables: keys, cascade vs direct, round trip, updates ==")
+isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
+using .CascadeTables
+
+# key invariants: partner order canonicalized, observed slot preserved
+@assert ChannelKey(1.0, 0.2, [0.5, 0.3]) == ChannelKey(1.0, 0.2, [0.3, 0.5])
+@assert ChannelKey(1.0, 0.2, [0.5]).md == 0.0
+@assert ChannelKey(1.0, 0.2, [0.5]) != ChannelKey(1.0, 0.5, [0.2])
+
+# synthetic decay list: ρ → ππ (BR 0.6) and ω → ππϖ (BR 1.0)
+mρ, mπ, mω, mϖ = 0.7752, 0.1396, 0.7827, 0.135
+parts7 = Dict(1 => ParticleInfo(1, "rho", mρ, 0.15, 1.0, 0, 0),
+              2 => ParticleInfo(2, "pi", mπ, 0.0, 1.0, 0, 1),
+              3 => ParticleInfo(3, "om", mω, 0.0, 1.0, 0, 0),
+              4 => ParticleInfo(4, "pi0", mϖ, 0.0, 1.0, 0, 0))
+byp7 = Dict(1 => [DecayChannel(1, 0.6, [2, 2])],
+            3 => [DecayChannel(3, 1.0, [2, 2, 4])])
+dl7 = DecayList(parts7, byp7, "synthetic", "deadbeef")
+
+g7 = range(0.0, 3.0, length = 61)
+ord7 = (nq = 32, nθ = 8, nµ = 8)
+tabfile = tempname()
+tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
+@assert length(tab7.W) == 3            # ρ→π|π, ω→π|(πϖ), ω→ϖ|(ππ)
+
+prim7(p, n, grid) = (n == 0 ? 1.0 : 0.05) * [exp(-hypot(p.mass, q) / T) for q in grid]
+res7 = runcascade(tab7, dl7; primary = prim7)
+
+# direct reference with Main.DecaySpectra (independent module instance)
+gv = collect(g7)
+Fρ = prim7(parts7[1], 0, gv); Fω = prim7(parts7[3], 0, gv)
+for (m, n) in ((1, 0), (2, 2))
+    local Wρ = DecayMatrix(TwoBodyDecay(mρ, mπ, mπ; nq = 32, nθ = 8), n, gv, gv).W
+    local Wω = DecayMatrix(ThreeBodyDecay(mω, mπ, mπ, mϖ; nµ = 8, nq = 32, nθ = 8), n, gv, gv).W
+    # mode-n parent inputs are prim7(·, n, ·) = (n==0 ? 1 : 0.05)·Boltzmann;
+    # ρ→ππ feeds both slots (×2 on BR 0.6), ω→ππϖ feeds the two π slots (×2)
+    local s = n == 0 ? 1.0 : 0.05
+    local expect = prim7(parts7[2], n, gv) .+ 1.2 .* (Wρ * (s .* Fρ)) .+ 2.0 .* (Wω * (s .* Fω))
+    local dev = maximum(abs.(res7.F[2][m] .- expect) ./ (abs.(expect) .+ 1e-300))
+    @printf("   mode n=%d: cascade vs direct max rel dev = %.1e\n", n, dev)
+    @assert dev < 1e-5                 # Float32 matrix storage rounding
+end
+
+# round trip: loading must reproduce exactly
+tab7b = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
+res7b = runcascade(tab7b, dl7; primary = prim7)
+@assert res7b.F[2][1] == res7.F[2][1] && res7b.F[2][2] == res7.F[2][2]
+
+# lenient update: a new channel builds only its missing key; prune removes it
+# (copies — dl7 references the original dicts and must stay unchanged)
+parts7c = copy(parts7); byp7c = copy(byp7)
+parts7c[5] = ParticleInfo(5, "X", 1.6, 0.1, 1.0, 0, 0)
+byp7c[5] = [DecayChannel(5, 0.5, [1, 2])]    # X → ρπ
+dl7c = DecayList(parts7c, byp7c, "synthetic", "cafebabe")
+tab7c = CascadeTable(dl7c; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
+@assert length(tab7c.W) == 5           # + X→ρ|π and X→π|ρ
+@assert prune!(tab7c, dl7) == 2        # back to the original three
+rm(tabfile; force = true)
+println("   PASS")
+
+println("\nAll tests passed.")

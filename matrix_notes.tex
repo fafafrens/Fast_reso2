@@ -1,0 +1,1257 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{hyperref}
+
+\newcommand{\Fa}{\mathcal{F}_a}
+\newcommand{\Fb}{\mathcal{F}_b}
+\newcommand{\Fan}{\mathcal{F}_{a,n}}
+\newcommand{\Fbn}{\mathcal{F}_{b,n}}
+
+\title{Numerical evaluation and matrix representation\\
+of the decay feed-down kernel}
+\author{Notes accompanying \texttt{DecaySpectra.jl}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+These notes document (i) the numerical integration scheme used to evaluate
+the two- and three-body decay maps of the main notes (equation numbers
+below refer to \emph{Maximum\_Entropy\_notes.pdf}) --- the integration
+domain, its singularity structure, and the substitutions that make
+fixed-order Gauss--Legendre quadrature applicable --- and (ii) how the maps
+are precomputed as matrices acting on a parent spectrum sampled on a fixed
+grid, including the block-Toeplitz (convolution) structure of the rapidity
+dependence.
+
+\section{The decay map is linear}
+
+After the analytic azimuthal integration, the daughter spectrum of the
+two-body decay $a\to b+c$ is [Eq.~(32)]
+\begin{equation}
+\Fb(p_T,\eta_p,\phi_p)
+ = \frac{B\,m_a}{4\pi\,p^a_{b|c}}
+ \int_0^\infty \! q_T\,\mathrm{d}q_T \int_{-\infty}^{\infty}\!\mathrm{d}\eta_q\,
+ \frac{\Theta\!\left(Q^2-D^2\right)}{\sqrt{Q^2-D^2}}
+ \Big[\Fa(q_T,\eta_q,\phi_p+\alpha)+\Fa(q_T,\eta_q,\phi_p-\alpha)\Big],
+ \label{eq:map}
+\end{equation}
+with $M=m_{aT}m_{bT}$, $Q=q_Tp_T$, $C=m_aE^a_{b|c}$,
+$D=M\cosh(\eta_q-\eta_p)-C$, $Z=D/Q$, $\alpha=\arccos Z$.  The three-body
+decay [Eq.~(59)] is the same kernel averaged over the effective mass $\mu$
+of the $c+d$ pair with weight $p^a_b(\mu)\,p^{\tilde c}_c(\mu)/\mathcal
+N_{a\to bcd}$ [Eqs.~(45)--(48)].  In Fourier modes,
+$\mathcal F=\sum_n \mathcal F_n e^{in\phi}$ [Eq.~(62)], the two azimuthal
+roots produce the Chebyshev factor $2T_n(Z)$ [Eqs.~(40), (41), (61)].
+
+The essential observation is that \eqref{eq:map} is \emph{linear} in
+$\Fa$.  Once the parent spectrum is represented by its values on a fixed
+grid, the map is a matrix, built once per decay and per mode; applying it
+to any source is a matrix--vector product.
+
+\section{Numerical evaluation of the kernel}
+\label{sec:quadrature}
+
+Both decays reduce to the double integral
+\begin{equation}
+K(E_b)=\int q_T\,\mathrm{d}q_T\int\mathrm{d}\eta_q\,
+\frac{\Theta\!\left(Q^2-D^2\right)}{\sqrt{Q^2-D^2}}\,
+\big[\text{bracket}\big],
+\qquad p_b=\sqrt{E_b^2-m_b^2},\quad C=m_aE_b,
+\label{eq:K}
+\end{equation}
+where the bracket is the source sum of \eqref{eq:map} (or $2T_n(Z)\Fan$
+in mode form).  The integrand is supported on a compact region with
+inverse-square-root boundary singularities; the strategy is to determine
+the support in closed form and remove every non-smooth feature by a
+substitution, so that plain tensor-product Gauss--Legendre quadrature
+converges rapidly.
+
+\subsection{The $\Delta\eta$ window}
+\label{sec:window}
+
+\paragraph{What the window is.}
+Before the algebra, the physical content.  The analytic azimuthal
+integration of the main notes rests on the on-shell $\delta$-function
+$\delta(q\cdot p+m_aE_b)$ [Eq.~(4)], which at fixed rapidities fixes the
+relative azimuth through $\cos\Delta\phi=Z$ [Eq.~(19)], with
+\begin{equation}
+Z=\frac{M\cosh\Delta\eta-C}{Q}=\frac{D}{Q}.
+\end{equation}
+A real opening angle $\Delta\phi$ exists \emph{iff} $|Z|\le1$ [Eq.~(21)]
+--- and $\Theta(Q^2-D^2)=\Theta(1-Z^2)$ is exactly the indicator of that
+condition.  So the ``$\Delta\eta$ window'' answers a kinematic question:
+\emph{for a daughter observed at $(p_T,\eta_p)$, which parent momenta
+$(q_T,\eta_q)$ can produce it?}  The parent must sit at a rapidity
+separation $\Delta\eta$ for which some azimuthal orientation places the
+daughter at $p_T$; too small or too large a $\cosh\Delta\eta$ makes
+$|Z|>1$ and no real $\Delta\phi$ exists.  The endpoints $Z=\pm1$ are the
+grazing configurations $\Delta\phi=0,\pi$ (daughter emitted parallel or
+antiparallel to the parent's transverse momentum), and the
+$1/\sqrt{Q^2-D^2}=1/(Q\sqrt{1-Z^2})$ factor is the Jacobian
+$|\mathrm{d}\cos\Delta\phi/\mathrm{d}\Delta\phi|^{-1}$ that diverges
+integrably there, as at any turning point.
+
+\paragraph{The bounds.}
+Throughout, $M=m_{aT}m_{bT}>0$, $Q=q_Tp_T\ge0$ (with $Q>0$ for interior
+nodes, $q_T,p_T>0$), and $C=m_aE_b>0$; all three depend on $q_T$ and/or
+$p_T$ but not on $\Delta\eta$.  At fixed $q_T$ the integrand is supported
+where the argument of the $\Theta$ function is positive:
+\begin{equation}
+Q^{2}-D^{2}\ge0
+\;\iff\;
+|D|\le Q
+\;\iff\;
+-Q\;\le\;M\cosh\Delta\eta-C\;\le\;Q .
+\end{equation}
+Adding $C$ and dividing by $M>0$ (both operations preserve the
+inequalities) gives the two-sided condition
+\begin{equation}
+\frac{C-Q}{M}\;\le\;\cosh\Delta\eta\;\le\;\frac{C+Q}{M} .
+\label{eq:coshwindow}
+\end{equation}
+This must be intersected with the range of the hyperbolic cosine,
+$\cosh\Delta\eta\ge1$.  Two of the three bounds compare trivially:
+$(C-Q)/M\le(C+Q)/M$ always (they differ by $2Q/M\ge0$).  Therefore
+\begin{equation}
+\cosh\Delta\eta\;\in\;
+\Big[\max\!\Big(1,\tfrac{C-Q}{M}\Big),\;\tfrac{C+Q}{M}\Big],
+\label{eq:coshset}
+\end{equation}
+and this interval is nonempty \emph{iff} its upper end clears the lower:
+since $\max(1,(C-Q)/M)\le(C+Q)/M$ reduces --- whichever branch the max
+takes --- to the single condition
+\begin{equation}
+\frac{C+Q}{M}\;\ge\;1
+\;\iff\;
+M\;\le\;C+Q ,
+\label{eq:nonempty}
+\end{equation}
+because the branch $(C-Q)/M\le(C+Q)/M$ holds unconditionally.
+Condition \eqref{eq:nonempty} is the origin of the $q_T$ band of
+Sec.~\ref{sec:band}.
+
+To translate \eqref{eq:coshset} into a set in $\Delta\eta$: on
+$\Delta\eta\ge0$ the map $\Delta\eta\mapsto\cosh\Delta\eta$ is strictly
+increasing and continuous, so the preimage of the interval
+\eqref{eq:coshset} is the interval $[\eta_{\rm lo},\eta_{\rm hi}]$ with
+\begin{equation}
+\eta_{\rm hi}=\operatorname{arccosh}\frac{C+Q}{M},
+\qquad
+\eta_{\rm lo}=
+\begin{cases}
+\operatorname{arccosh}\dfrac{C-Q}{M}, & C-Q>M,\\[4pt]
+0, & C-Q\le M ,
+\end{cases}
+\label{eq:window}
+\end{equation}
+(the second case includes $C-Q\le0$, where the lower constraint in
+\eqref{eq:coshwindow} is vacuous since $\cosh\ge1>\!(C-Q)/M$).  Since
+$\cosh$ is even, the full solution set is symmetric,
+\begin{equation}
+\big\{\Delta\eta:\;|\Delta\eta|\in[\eta_{\rm lo},\eta_{\rm hi}]\big\}
+=\big[-\eta_{\rm hi},-\eta_{\rm lo}\big]\cup
+ \big[\eta_{\rm lo},\eta_{\rm hi}\big]:
+\end{equation}
+two disjoint intervals when $\eta_{\rm lo}>0$ (the parent \emph{must} be
+at different rapidity than the daughter), merging into the single
+interval $[-\eta_{\rm hi},\eta_{\rm hi}]$ when $\eta_{\rm lo}=0$.  The
+change between the two topologies as $q_T$ varies is the origin of the
+logarithmic singularity of Sec.~\ref{sec:logsing}.
+
+Geometrically the two regimes read as follows.  When $\eta_{\rm lo}>0$
+(i.e.\ $C-Q>M$, meaning $C$ is large: the parent is slow or the daughter
+hard) the parent cannot sit at the same rapidity as the daughter --- a
+co-moving parent would have to emit the daughter with $|Z|>1$ --- so the
+allowed set is two rapidity bands straddling $\eta_p$, symmetric about it.
+As $q_T$ increases, $Q$ grows, $C-Q$ eventually drops below $M$, the inner
+gap closes ($\eta_{\rm lo}\to0$), and the bands merge: now a parent
+\emph{at} the daughter's rapidity can feed it (with $\Delta\phi$ given by
+the interior value $Z(0)=(M-C)/Q\in(-1,1)$).  The merging point is exactly
+$q_T^{*}$ of Sec.~\ref{sec:logsing}.  The upper edge $\eta_{\rm hi}$ always
+exists (some maximal rapidity separation beyond which the boost carries the
+daughter past $p_T$ for every azimuth) and is always a genuine
+$1/\sqrt{\phantom{x}}$ singularity; the lower edge is singular only in the
+two-band regime.
+Both rapidity signs $\Delta\eta\gtrless0$ contribute; they are evaluated
+separately because the source need not be symmetric in rapidity.  At the
+window edges $Z=\pm1$ and $Q^2-D^2$ vanishes \emph{linearly} in
+$\Delta\eta$: writing $Q^{2}-D^{2}=(Q-D)(Q+D)$ (the factored form is also
+what is computed --- it avoids the cancellation of subtracting two large
+squares), one factor vanishes at each edge while
+$\mathrm{d}D/\mathrm{d}\Delta\eta=M\sinh\Delta\eta\neq0$ there, so the
+zero is simple and the integrand diverges as an integrable
+$1/\sqrt{\phantom{x}}$.  When $\eta_{\rm lo}=0$ (merged window) the lower
+edge is \emph{not} singular --- $Z(0)=(M-C)/Q$ lies inside $(-1,1)$ ---
+and the cosine map's clustering there is merely harmless.  Two numerical
+guards accompany the window: $q_T$ nodes with $(C+Q)/M\le1$ are skipped
+(roundoff can push a node marginally outside the support), and inside the
+loop $S_2=(Q-D)(Q+D)\le0$ nodes are dropped for the same reason.
+
+\subsection{The $q_T$ band}
+\label{sec:band}
+
+By \eqref{eq:nonempty}, the window is nonempty exactly when
+\begin{equation}
+m_{aT}\,m_{bT}\;\le\;C+q_Tp_T .
+\label{eq:support}
+\end{equation}
+Both sides of \eqref{eq:support} are strictly positive ($C=m_aE_b>0$ and
+$m_{aT}m_{bT}>0$), so squaring preserves the inequality in both
+directions and is an equivalence.  Squaring and expanding with
+$m_{aT}^2=m_a^2+q_T^2$, $m_{bT}^2=m_b^2+p_T^2$:
+\begin{align}
+\big(m_a^2+q_T^2\big)\big(m_b^2+p_T^2\big)
+&\;\le\; C^2+2Cp_T\,q_T+q_T^2p_T^2 ,\nonumber\\
+m_a^2m_b^2+m_a^2p_T^2+m_b^2q_T^2+q_T^2p_T^2
+&\;\le\; C^2+2Cp_T\,q_T+q_T^2p_T^2 .
+\end{align}
+The $q_T^2p_T^2$ terms cancel; using $m_a^2m_b^2+m_a^2p_T^2 =
+m_a^2m_{bT}^2$ and collecting powers of $q_T$,
+\begin{equation}
+m_b^2\,q_T^2-2Cp_T\,q_T+m_a^2m_{bT}^2-C^2\;\le\;0 ,
+\label{eq:quadratic}
+\end{equation}
+a upward parabola in $q_T$: the inequality holds between its roots.  The
+quarter-discriminant is
+\begin{align}
+\tfrac14\Delta
+&= (Cp_T)^2-m_b^2\big(m_a^2m_{bT}^2-C^2\big)
+ = C^2\big(p_T^2+m_b^2\big)-m_a^2m_b^2\,m_{bT}^2 \nonumber\\
+&= m_{bT}^2\big(C^2-m_a^2m_b^2\big)
+ = m_{bT}^2\,m_a^2\big(E_b^2-m_b^2\big)
+ = m_{bT}^2\,m_a^2\,p_b^2\;\ge\;0 ,
+\end{align}
+where the second line used $p_T^2+m_b^2=m_{bT}^2$, then $C=m_aE_b$, then
+$p_b^2=E_b^2-m_b^2$.  The discriminant is a perfect square --- the roots
+are always real, as they must be (the band exists for every open decay).
+The quadratic formula then gives
+\begin{equation}
+q_T^{\pm}
+=\frac{Cp_T\pm m_a p_b\,m_{bT}}{m_b^{2}}
+=\frac{m_a\big(E_b\,p_T\pm p_b\,m_{bT}\big)}{m_b^{2}},
+\qquad
+q_T\in\big[\max(0,q_T^-),\,q_T^+\big].
+\label{eq:band}
+\end{equation}
+The sign of the lower root follows from
+$\big(E_bp_T\big)^2-\big(p_bm_{bT}\big)^2
+= E_b^2p_T^2-p_b^2\big(m_b^2+p_T^2\big)
+= p_T^2\big(E_b^2-p_b^2\big)-p_b^2m_b^2
+= m_b^2\big(p_T^2-p_b^2\big)$,
+so $q_T^->0\iff p_T>p_b$.
+The lower root is positive iff $p_T>p_b$: a daughter harder than the
+rest-frame momentum can only come from a moving parent, while for
+$p_T<p_b$ even a parent at rest contributes and the band starts at
+$q_T=0$.
+
+The band width, $q_T^{+}-q_T^{-}=2m_a p_b m_{bT}/m_b^{2}$, carries the
+$m_b^{-2}$ of the roots: light daughters have enormous bands
+(for $\rho\to\pi\pi$ at $p_T=0.6$\,GeV the band is
+$[0.5,\,18]$\,GeV), which is why the feed-down matrices of
+Sec.~\ref{sec:matrix} are effectively dense.  In practice the reach in
+$q_T$ is limited not by the band but by the source: for a thermal-like
+parent spectrum $\sim e^{-(m_{aT}-m_a)/T_{\rm eff}}$ the integrand is
+negligible beyond
+\begin{equation}
+q_T^{\max}\;=\;\sqrt{\big(m_a+T_{\rm eff}\ln(1/\varepsilon)\big)^{2}-m_a^{2}},
+\label{eq:qtmax}
+\end{equation}
+($\varepsilon$ the tolerated relative tail, e.g.\ $10^{-8}$), which also
+sets the required extent of any fixed parent grid.  Note that
+$T_{\rm eff}$ is the slope of the \emph{actual} source --- radial flow
+blueshifts it well above the freeze-out temperature.
+
+\subsection{The logarithmic singularity at $q_T^{*}$}
+\label{sec:logsing}
+
+Inside the band the window changes topology where $\eta_{\rm lo}$ reaches
+zero, i.e.\ where $C-Q-M$ changes sign (case boundary of
+\eqref{eq:window}).  Solving $m_{aT}m_{bT}=C-q_Tp_T$ by the same
+squaring as in Sec.~\ref{sec:band} --- legitimate on the branch
+$C-q_Tp_T\ge0$, which holds there since $m_{aT}m_{bT}>0$ --- flips only
+the sign of the linear term in \eqref{eq:quadratic}, so the roots are
+$-q_T^{\mp}$, and the positive one is
+\begin{equation}
+q_T^{*}=\frac{m_a\big(p_b\,m_{bT}-E_b\,p_T\big)}{m_b^{2}}=-\,q_T^- ,
+\end{equation}
+which lies inside the band $(0,q_T^{+})$ precisely when $q_T^-<0$, i.e.\
+$p_T<p_b$.
+
+For the local behavior define $g\equiv Q+M-C$, so $g<0$ is the
+two-interval regime ($\eta_{\rm lo}>0$) and $g>0$ the merged one, with
+$g(q_T^{*})=0$; $g$ is strictly increasing in $q_T$
+($\mathrm{d}g/\mathrm{d}q_T = p_T + q_T\,m_{bT}/m_{aT}>0$), so near the
+transition $g\simeq g'(q_T^{*})\,(q_T-q_T^{*})$.  Expand the integrand
+factors around $\Delta\eta=0$ using
+$\cosh\Delta\eta=1+\tfrac12\Delta\eta^{2}+\mathcal O(\Delta\eta^{4})$:
+\begin{equation}
+Q+D=Q+M\cosh\Delta\eta-C
+ \;=\; g+\tfrac12 M\Delta\eta^{2}+\mathcal O(\Delta\eta^{4}),
+\qquad
+Q-D\;=\;2Q-g-\tfrac12M\Delta\eta^{2}\;\simeq\;2Q ,
+\end{equation}
+the second factor staying regular (it vanishes at the \emph{other} edge
+$\eta_{\rm hi}$, far from $\Delta\eta=0$).  Hence, up to a cutoff
+$\Lambda$ separating the local region from the rest of the window,
+\begin{equation}
+\int\frac{\mathrm{d}\Delta\eta}{\sqrt{(Q-D)(Q+D)}}
+\;\simeq\;
+\frac{1}{\sqrt{2Q}}\int\frac{\mathrm{d}\Delta\eta}
+{\sqrt{g+\tfrac12M\Delta\eta^{2}}} ,
+\end{equation}
+and the local integral has elementary antiderivatives on both sides of
+the transition:
+\begin{align}
+g>0:&\quad
+\int_{0}^{\Lambda}\frac{\mathrm{d}\Delta\eta}
+{\sqrt{g+\tfrac12M\Delta\eta^{2}}}
+=\sqrt{\tfrac{2}{M}}\,
+\operatorname{arcsinh}\!\Big(\Lambda\sqrt{\tfrac{M}{2g}}\Big)
+=\sqrt{\tfrac{2}{M}}\Big[\ln\!\big(2\Lambda\sqrt{\tfrac{M}{2}}\big)
+-\tfrac12\ln g\Big]+\mathcal O(g),\\
+g<0:&\quad
+\int_{\eta_{\rm lo}}^{\Lambda}\frac{\mathrm{d}\Delta\eta}
+{\sqrt{\tfrac12M\big(\Delta\eta^{2}-\eta_{\rm lo}^{2}\big)}}
+=\sqrt{\tfrac{2}{M}}\,
+\operatorname{arccosh}\!\Big(\frac{\Lambda}{\eta_{\rm lo}}\Big)
+=\sqrt{\tfrac{2}{M}}\Big[\ln\!\big(2\Lambda\sqrt{\tfrac{M}{2}}\big)
+-\tfrac12\ln|g|\Big]+\mathcal O(g),
+\end{align}
+where the second line used $g+\tfrac12M\Delta\eta^{2}
+=\tfrac12M(\Delta\eta^{2}-\eta_{\rm lo}^{2})$ with
+$\eta_{\rm lo}=\sqrt{-2g/M}$ and
+$\operatorname{arccosh}x=\ln(2x)+\mathcal O(x^{-2})$.  Both sides carry
+the \emph{same} coefficient $-\tfrac12\sqrt{2/M}\,\ln|g|$: the inner
+integral has a symmetric, integrable logarithmic singularity
+\begin{equation}
+I(q_T)\;=\;-\frac{1}{\sqrt{2QM}}\,\ln\big|q_T-q_T^{*}\big|
+\;+\;\text{(regular)} ,
+\end{equation}
+after inserting the linearization of $g$.  A Gauss rule straddling a
+logarithm converges only algebraically, so the $q_T$ interval is split at
+$q_T^{*}$ whenever $q_T^-<0<q_T^{*}<q_T^+$; the residual
+$\theta\ln\theta$ endpoint behavior after the cosine map is discussed in
+Sec.~\ref{sec:cosmap}.
+
+\subsection{The cosine substitution and the tensor-product rule}
+\label{sec:cosmap}
+
+Every one-dimensional interval $[x_{\rm lo},x_{\rm hi}]$, of midpoint
+$m=\tfrac12(x_{\rm lo}+x_{\rm hi})$ and half-width
+$h=\tfrac12(x_{\rm hi}-x_{\rm lo})$, is traversed via
+\begin{equation}
+x(\theta)=m-h\cos\theta,
+\qquad \theta\in(0,\pi),
+\qquad
+\mathrm{d}x=h\,\sin\theta\,\mathrm{d}\theta ,
+\label{eq:cosmap}
+\end{equation}
+which maps $\theta=0\mapsto x_{\rm lo}$ and $\theta=\pi\mapsto
+x_{\rm hi}$ monotonically.  The endpoint expansion is exact in
+half-angle form:
+\begin{equation}
+x-x_{\rm lo}=h\,(1-\cos\theta)=2h\sin^{2}\tfrac{\theta}{2},
+\qquad
+x_{\rm hi}-x=h\,(1+\cos\theta)=2h\cos^{2}\tfrac{\theta}{2}.
+\label{eq:halfangle}
+\end{equation}
+Consider an integrand with the inverse-square-root endpoint behavior
+established in Sec.~\ref{sec:window},
+$f(x)=g(x)/\sqrt{(x-x_{\rm lo})(x_{\rm hi}-x)}$ with $g$ smooth.  Using
+\eqref{eq:halfangle} and $\sin\theta=2\sin\tfrac\theta2\cos\tfrac\theta2$,
+\begin{equation}
+f\big(x(\theta)\big)\,\frac{\mathrm{d}x}{\mathrm{d}\theta}
+=\frac{g\big(x(\theta)\big)\; h\cdot2\sin\tfrac\theta2\cos\tfrac\theta2}
+{\sqrt{2h\sin^{2}\tfrac\theta2\;\cdot\;2h\cos^{2}\tfrac\theta2}}
+=g\big(x(\theta)\big):
+\label{eq:cancel}
+\end{equation}
+the singular factors cancel \emph{identically}, not just to leading
+order --- the $\theta$-integrand is as smooth as $g$, and Gauss--Legendre
+in $\theta$ converges spectrally.  (If only one endpoint is singular the
+cancellation happens there and the other endpoint merely gains harmless
+node clustering; endpoint zeros $\propto\sqrt{x-x_{\rm lo}}$, as in the
+$\mu$ integral, become smooth $\propto\sin^{2}\tfrac\theta2$ by the same
+algebra.)
+
+The $\theta$ integral itself is discretized by an $n$-point
+Gauss--Legendre rule with nodes $x_i\in(-1,1)$ and weights $w_i$, mapped
+affinely to $(0,\pi)$: $\theta_i=\tfrac\pi2(x_i+1)$,
+$\int_0^\pi G\,\mathrm{d}\theta\approx\tfrac\pi2\sum_iw_iG(\theta_i)$.
+Combining with \eqref{eq:cosmap},
+\begin{equation}
+\int_{x_{\rm lo}}^{x_{\rm hi}}f(x)\,\mathrm{d}x
+\;\approx\;
+h\sum_{i=1}^{n} v_i\, f\big(m-h\,c_i\big),
+\qquad
+c_i=\cos\theta_i,\quad
+v_i=\tfrac{\pi}{2}\,w_i\sin\theta_i ,
+\label{eq:fusedweights}
+\end{equation}
+so the map costs no trigonometry at evaluation time: the fused pairs
+$(c_i,v_i)$ are computed once per order and shared (memoized) across all
+decay objects.  Applying \eqref{eq:fusedweights} in both directions gives
+the tensor-product kernel sum
+\begin{equation}
+K(E_b)\;\approx\;
+\sum_{\text{seg}}\;h_q\sum_{i=1}^{n_q} v^{q}_{i}\;q_T^{(i)}\;
+h_\eta\!\left(q_T^{(i)}\right)\sum_{j=1}^{n_\theta} \frac{v^{\theta}_{j}}
+{\sqrt{Q^{2}-D_{ij}^{2}}}\,\big[\text{bracket}\big]_{ij},
+\label{eq:tensor}
+\end{equation}
+where the inner $1/\sqrt{\phantom{x}}$ is evaluated in the factored form
+$(Q-D)(Q+D)$ and the singular endpoint behavior is tamed by
+\eqref{eq:cancel} through the mapped $\Delta\eta$ nodes.  The only
+residual non-smoothness is the logarithm of Sec.~\ref{sec:logsing} at the
+segment endpoint $q_T^{*}$: with $x-q_T^{*}\propto\theta^{2}$ from
+\eqref{eq:halfangle}, the integrand behaves as
+$\sin\theta\cdot\ln\theta^{2}\sim2\,\theta\ln\theta$ near $\theta=0$ ---
+continuous but not analytic --- for which the Gauss error decreases
+algebraically, $\sim n_q^{-4}$ (measured: the error at low $p_T$ drops
+$\approx16\times$ per doubling of $n_q$).
+
+\subsection{Three-body: the $\mu$ average}
+
+For $a\to b+c+d$ the kernel is averaged over the effective mass
+$\mu\in[m_c+m_d,\,m_a-m_b]$ with weight
+$p^{\tilde c}_c(\mu)$ and normalization
+$\mathcal N=\int\mathrm{d}\mu\,p^a_b(\mu)\,p^{\tilde c}_c(\mu)$
+[Eqs.~(45)--(48)].  The integrand vanishes as a square root at both
+endpoints: $p^{\tilde c}_c\sim\sqrt{\mu-(m_c+m_d)}$ at threshold, and
+$K\propto$ band width $\propto p^a_b(\mu)\sim\sqrt{m_a-m_b-\mu}$ at the
+upper limit.  The same substitution \eqref{eq:cosmap} turns
+$\sqrt{\phantom{x}}$-type zeros into smooth $\theta^{2}$ behavior, and the
+$\mu$ integral is done with an $n_\mu$-point cosine-mapped Gauss rule; the
+nodes $\mu_i$, energies $E_b(\mu_i)$ and normalized weights are
+precomputed at construction.
+
+\subsection{Measured convergence and default orders}
+
+For a Boltzmann source ($T=0.15$\,GeV) relative errors against
+high-order references behave as follows (worst case is low $p_T$, where
+the $q_T^{*}$ logarithm is inside the band):
+\begin{center}
+\begin{tabular}{lcc}
+\hline
+orders & error at $p_T=0.2$ & error at $p_T=0.8$ \\
+\hline
+$\rho\to\pi\pi$:\; $(n_q,n_\theta)=(128,32)$ & $7\cdot10^{-8}$ & $5\cdot10^{-12}$\\
+\phantom{$\rho\to\pi\pi$:}\; $(64,16)$ & $2\cdot10^{-6}$ & $5\cdot10^{-12}$\\
+\phantom{$\rho\to\pi\pi$:}\; $(32,8)$ & $3\cdot10^{-6}$ & $2\cdot10^{-8}$\\
+\hline
+$\omega\to3\pi$:\; $(n_\mu,n_q,n_\theta)=(32,128,32)$ & $2\cdot10^{-8}$ & $3\cdot10^{-13}$\\
+\phantom{$\omega\to3\pi$:}\; $(16,64,16)$ & $5\cdot10^{-7}$ & $3\cdot10^{-10}$\\
+\phantom{$\omega\to3\pi$:}\; $(8,32,8)$ & $1\cdot10^{-4}$ & $5\cdot10^{-5}$\\
+\hline
+\end{tabular}
+\end{center}
+The $\Delta\eta$ direction is spectrally convergent and over-resolved
+already at $n_\theta=16$; $n_q$ is limited by the logarithm
+($\sim n_q^{-4}$, only relevant for $p_T<p_b$); $n_\mu\ge16$ is safe while
+$n_\mu=4$ fails at the percent level.  The defaults
+$(n_q,n_\theta,n_\mu)=(128,32,32)$ are conservative; cost scales linearly
+in each order.  Number conservation, $N_b=B\,N_a$, holds at the
+$10^{-5}$ level for both decays at default orders.
+
+\section{Extensions: four-body decays and finite widths}
+\label{sec:extensions}
+
+The two- and three-body kernels above cover the bulk of a hadronic decay
+list, but two physical ingredients are missing from the sharp-mass,
+$\le3$-body treatment: decays with four or more daughters, and the finite
+widths of the resonances themselves.  Both are handled by the \emph{same}
+device already used for the three-body case --- an average of the
+two-body kernel over an effective-mass distribution --- and the key
+practical question for each is whether the extra integration multiplies
+the number of (expensive) kernel evaluations or only enriches the (cheap)
+weight.
+
+\subsection{Recursive effective-mass structure}
+\label{sec:recursive}
+
+Return to the three-body average and read it structurally.  For
+$a\to b+(cd)$ the observed daughter $b$ recoils against the pair treated
+as a single effective particle $\widetilde{cd}$ of mass $\mu$; the
+\emph{angular} distribution of $b$ --- hence the entire $(q_T,\Delta\eta)$
+kernel --- depends on the pair only through $\mu$, via
+$E_b(\mu)=(m_a^2+m_b^2-\mu^2)/2m_a$.  The internal breakup of the pair
+enters solely through \emph{how much probability sits at each} $\mu$,
+i.e.\ the invariant-mass density of the pair,
+\begin{equation}
+\rho_2(\mu;m_c,m_d)\;\propto\;q(\mu;m_c,m_d),
+\qquad
+q(M;m_1,m_2)\equiv\frac{\lambda^{1/2}(M^2,m_1^2,m_2^2)}{2M},
+\end{equation}
+which is precisely the weight $p^{\tilde c}_c(\mu)$ of Eq.~(47).  Writing
+the map this way,
+\begin{equation}
+\Fb=\frac{B\,m_a}{4\pi\,\mathcal N}
+\int_{\mu_-}^{\mu_+}\!\mathrm{d}\mu\;
+\underbrace{p^a_b(\mu)\,\rho_2(\mu)}_{\text{weight}}\;
+K\big(E_b(\mu)\big),
+\qquad
+\mathcal N=\int\mathrm{d}\mu\,p^a_b(\mu)\,\rho_2(\mu),
+\label{eq:threebody-recursive}
+\end{equation}
+makes the generalization immediate.  For an $n$-body decay
+$a\to b+(c_1\cdots c_{n-1})$, cluster the $n-1$ unobserved particles into
+$\widetilde{c}$ of mass $\mu\in[\sum_i m_{c_i},\,m_a-m_b]$; the kernel is
+unchanged, $K(E_b(\mu))$, and only the weight generalizes to the
+invariant-mass density $\rho_{n-1}(\mu)$ of the cluster.
+
+\paragraph{Where the density comes from.}
+The density and its recursion are the standard factorization of $n$-body
+Lorentz-invariant phase space.  Peeling the observed particle $b$ against
+the cluster of invariant mass $\mu$,
+\begin{equation}
+\mathrm{d}\Phi_n\big(m_a^2;\,p_b,\{p_{c_i}\}\big)
+=\frac{\mathrm{d}\mu^2}{2\pi}\;
+\mathrm{d}\Phi_2\big(m_a^2;\,m_b^2,\mu^2\big)\;
+\mathrm{d}\Phi_{n-1}\big(\mu^2;\,\{p_{c_i}\}\big),
+\label{eq:phasespace-fact}
+\end{equation}
+and integrating the two-body factor over the isotropic emission angle,
+$\int\mathrm{d}\Phi_2(m_a^2;m_b^2,\mu^2)\propto q(m_a;m_b,\mu)=p^a_b(\mu)$,
+identifies the $\mu$-measure as $p^a_b(\mu)\,\mathrm{d}\mu$ times the
+cluster's own phase-space volume.  Defining that volume as the density,
+$\rho_{n-1}(\mu)\,\mathrm{d}\mu\equiv\int\mathrm{d}\Phi_{n-1}(\mu^2;\{p_{c_i}\})$
+at fixed cluster mass, and applying \eqref{eq:phasespace-fact} once more to
+$\mathrm{d}\Phi_{n-1}$ --- peeling $c_1$ against the sub-cluster of mass
+$\sigma$ --- gives the Byckling--Kajantie recursion, one particle at a time,
+\begin{equation}
+\rho_{k}\big(\mu;m_{c_1},\dots,m_{c_k}\big)
+=\int_{\sigma_-}^{\sigma_+}\!\mathrm{d}\sigma\;
+q(\mu;m_{c_1},\sigma)\;\rho_{k-1}\big(\sigma;m_{c_2},\dots,m_{c_k}\big),
+\qquad
+\rho_1(\sigma;m)=\delta(\sigma-m),
+\label{eq:phasespace-recursion}
+\end{equation}
+with $\sigma\in[\sum_{i\ge2}m_{c_i},\,\mu-m_{c_1}]$.  The overall constants
+($2\pi$ from \eqref{eq:phasespace-fact}, the $4\pi$ from each angular
+integration) are $\mu$-independent and cancel in the normalized ratio
+$\Fb$, so they are dropped.  The recursion terminates at $\rho_1=\delta$ (a
+single particle has definite mass); one step gives $\rho_2=q$ (the
+three-body weight of Eq.~47), and for four-body
+\begin{equation}
+\rho_3(\mu;m_c,m_d,m_e)
+=\int_{m_d+m_e}^{\mu-m_c}\!\mathrm{d}\sigma\;
+q(\mu;m_c,\sigma)\;q(\sigma;m_d,m_e).
+\label{eq:rho3}
+\end{equation}
+
+\paragraph{The four-body map explicitly.}
+Assembling the pieces, the observed-$b$ spectrum of $a\to b\,c\,d\,e$ is the
+two-dimensional mass average
+\begin{equation}
+\Fb=\frac{B\,m_a}{4\pi\,\mathcal N}
+\int_{m_c+m_d+m_e}^{m_a-m_b}\!\!\mathrm{d}\mu\;p^a_b(\mu)
+\underbrace{\left[\int_{m_d+m_e}^{\mu-m_c}\!\!\mathrm{d}\sigma\;
+q(\mu;m_c,\sigma)\,q(\sigma;m_d,m_e)\right]}_{\rho_3(\mu)}
+K\big(E_b(\mu)\big),
+\quad
+\mathcal N=\int\!\mathrm{d}\mu\,p^a_b(\mu)\rho_3(\mu).
+\label{eq:fourbody}
+\end{equation}
+The bracket is the Lorentz-invariant phase-space volume of the
+three-particle cluster $c\,d\,e$ at total mass $\mu$ --- geometrically, the
+area of its Dalitz plot.  The inner $\sigma$ integral runs over the $(de)$
+sub-mass; by the symmetry of phase space any pairing gives the same
+$\rho_3$, so the choice of which particle to peel first is free.  Both mass
+integrals carry the $\sqrt{\phantom{x}}$-type endpoint zeros of the Källén
+function (each $q$ vanishes at its threshold), regularized by the cosine
+map of Sec.~\ref{sec:cosmap}.
+
+\paragraph{Cost.}
+The crucial point is that $\rho_{n-1}(\mu)$ is \emph{independent of the
+kernel}: it is a static, $(n-2)$-fold nested phase-space integral in the
+mass variables alone, computed once on the $n_\mu$ nodes at construction.
+The number of expensive kernel evaluations therefore stays $n_\mu$ ---
+the \emph{same} as three-body --- for any number of unobserved daughters;
+only the weight becomes a nested (but kernel-free, hence cheap) integral.
+A four-body decay matrix costs essentially what a three-body one costs.
+The inner mass integrals inherit the same $\sqrt{\phantom{x}}$ endpoint
+zeros as the $\mu$ integral (the Källén function vanishes at each
+threshold and pseudo-threshold), and are handled by the same
+cosine-mapped Gauss rule of Sec.~\ref{sec:cosmap}.  For general $n$ the
+weight is an $(n-2)$-fold nested mass integral; with $n_\sigma$ points per
+level it costs $n_\mu\,n_\sigma^{\,n-2}$ evaluations of the elementary
+function $q$ --- arithmetic only, no kernel --- against the fixed $n_\mu$
+kernel evaluations.  So the build cost is dominated by the kernel until $n$
+is large, and a four- or five-body matrix is, in practice, a three-body
+matrix with a slightly richer weight.
+
+\paragraph{On observing a cluster particle.}
+In the cascade every daughter is observed in turn (Sec.~\ref{sec:matrix}).
+When the observed particle is one of the ``cluster'' members, one simply
+relabels: the observed particle plays the role of $b$ and the remaining
+$n-1$ form the cluster.  The construction above is symmetric under that
+relabelling, so nothing new is required --- the observed slot is chosen,
+the rest are clustered, and $\rho_{n-1}$ is built from their masses.
+
+\subsection{Finite widths}
+\label{sec:width}
+
+The kernels above take every mass sharp.  A resonance of width $\Gamma_i$
+instead carries a spectral function $\varrho_i(m)$ --- a (relativistic,
+mass-dependent-width, kinematically truncated and renormalized)
+Breit--Wigner,
+\begin{equation}
+\varrho_i(m)\;\propto\;
+\frac{m^2\,\Gamma_i(m)}
+{\big(m^2-m_i^2\big)^2+m_i^2\,\Gamma_i(m)^2},
+\qquad
+\int_{m_{\min}}^{m_{\max}}\!\varrho_i(m)\,\mathrm{d}m=1,
+\end{equation}
+reducing to $\delta(m-m_i)$ as $\Gamma_i\to0$.  For a resonance decaying to
+two particles in relative orbital angular momentum $\ell$ the width itself
+is mass dependent,
+\begin{equation}
+\Gamma_i(m)=\Gamma_i\,\frac{m_i}{m}
+\left(\frac{q(m;m_1,m_2)}{q(m_i;m_1,m_2)}\right)^{2\ell+1}
+\frac{B_\ell\big(q(m)\big)}{B_\ell\big(q(m_i)\big)},
+\label{eq:massdep-width}
+\end{equation}
+with $B_\ell$ the Blatt--Weisskopf barrier factor.  It vanishes at the
+threshold $m=m_1+m_2$ (where the daughter momentum $q\to0$), cutting the
+low tail of $\varrho_i$ and enforcing that the resonance cannot decay below
+threshold; the normalization runs over the open range and is recomputed per
+channel.  Finite width enters the decay map in three distinct places, which
+differ sharply in cost:
+\begin{enumerate}
+\item \textbf{Unobserved cluster constituents.}
+A width on any $c_i$ folds \emph{into the mass density}: in the recursion
+\eqref{eq:phasespace-recursion} the sharp $q(\mu;m_{c_1},\sigma)$ is
+averaged, $q\to\int\mathrm{d}m_{c_1}\varrho(m_{c_1})\,q(\mu;m_{c_1},\sigma)$.
+This is kernel-free --- it modifies $\rho_{n-1}(\mu)$ only --- and hence
+\emph{cheap}, exactly like adding a daughter.  Physically this is already
+how an intermediate resonance is represented (e.g.\ $a\to b\,\rho$,
+$\rho\to\pi\pi$ \emph{is} the three-body $\mu$ integral with $\varrho_\rho$
+sharpening the weight near $\mu=m_\rho$).
+\item \textbf{Observed daughter $b$.}
+Here $E_b$, $p_b$ and the whole $q_T$ band depend on $m_b$, so a width on
+$b$ requires an \emph{outer average of the kernel},
+$K\to\int\mathrm{d}m_b\,\varrho_b(m_b)\,K$, one full kernel evaluation per
+$m_b$ node --- \emph{expensive}.  In practice the observed daughter is
+usually stable or narrow (the measured $\pi,K,p,\Lambda$), so this reduces
+to the sharp $\delta$ and costs nothing; it matters only for broad
+observed resonances mid-cascade.
+\item \textbf{Parent $a$.}
+The parent mass sets $C=m_aE_b$, $m_{aT}$, and the band edges $q_T^\pm$;
+a width on $a$ likewise demands an outer average
+$\int\mathrm{d}m_a\,\varrho_a(m_a)\,(\cdots)$ with a full kernel per node
+--- \emph{expensive}, but often the most important physically, since the
+broadest states ($\sigma$, $\rho$, $\Delta$, higher resonances) are
+parents.
+\end{enumerate}
+Thus the same organizing principle recurs: widths of particles that enter
+\emph{only through the effective mass} are absorbed into the precomputed
+weight at negligible cost, whereas widths of the two particles whose
+masses enter the \emph{kinematics of the observed leg} (parent and
+observed daughter) multiply the number of kernel evaluations.
+
+\subsubsection{Resonances and widths are one object}
+
+The cluster-width folding (case~1) and the effective-mass integral are not
+two mechanisms but one.  Near a resonance $R$ in the $c\,c'$ channel the
+invariant-mass density $\rho_2(\mu)=q(\mu;m_c,m_{c'})$ is multiplied by the
+resonance propagator, i.e.\ it \emph{becomes} a Breit--Wigner peak in
+$\mu$: the two statements ``$a\to b\,R$ with $R\to c\,c'$ of finite width''
+and ``$a\to b\,c\,c'$ with the pair weighted by $\varrho_R(\mu)$'' are
+literally the same $\mu$ integral \eqref{eq:threebody-recursive}.  A narrow
+$R$ sends $\varrho_R\to\delta(\mu-m_R)$ and factorizes the cascade into the
+sharp two-body steps $a\to bR$ then $R\to cc'$; a broad $R$ smears them
+together.  This is precisely why intermediate-resonance width is the cheap
+case --- it lives entirely in the weight that the effective-mass integral
+already evaluates --- and it is the physically dominant one, since the
+broad $\rho,\sigma,K^*,\Delta$ appear overwhelmingly as intermediate states.
+
+\subsubsection{The parent-width average as a matrix sum}
+
+For the matrix representation (Sec.~\ref{sec:matrix}) the parent-width case
+is especially clean.  The sharp-mass map is linear and $m_a$ enters only
+kinematically, so the width average is a weighted sum of sharp-mass
+matrices,
+\begin{equation}
+W^{\rm eff}_n=\int\mathrm{d}m_a\,\varrho_a(m_a)\,W_n(m_a)
+\;\approx\;\sum_{i} w_i\,W_n\big(m_a^{(i)}\big),
+\label{eq:width-matrixsum}
+\end{equation}
+built at $n_{m_a}$ mass-quadrature nodes spanning the truncated support of
+$\varrho_a$.  The result is a matrix of the \emph{same shape}: the cascade,
+apply, persistence and streaming machinery are all untouched, and the width
+is absorbed entirely at build time, once, then persisted.  The cost is
+$n_{m_a}$ sharp builds for that channel.  Interpolating $W_n$ in $m_a$
+rather than rebuilding is tempting but fails for the same reason a
+collocation in $\mu$ fails: the $q_T$ band $[q_T^-,q_T^+]$ of Eq.~\eqref{eq:band}
+\emph{moves} with $m_a$, so the matrices have shifting support and do not
+interpolate smoothly --- the honest mass-quadrature is required.
+
+\paragraph{Reopening closed channels.}
+A channel with $\sum_{\rm daughters} m > m_a$ at the nominal parent mass is
+kinematically \emph{closed} and is skipped by the sharp-mass cascade
+(Sec.~\ref{sec:matrix}).  A finite parent width reopens it: on the upper
+tail $m_a'>\sum m$ of $\varrho_a$ the channel is allowed, and its
+contribution is
+$\int_{\sum m}^{m_{\max}}\mathrm{d}m_a'\,\varrho_a(m_a')\,(\cdots)$,
+weighted by the (small) probability in that tail.  This is the physical
+content of the ``closed-at-nominal-mass'' count reported by the cascade:
+those channels carry zero weight in the sharp limit and nonzero weight
+once the parent spectral function is restored.
+
+\paragraph{Production and decay consistency.}
+One subtlety is worth stating.  In a thermal source the parent is produced
+\emph{with} its spectral function already folded into the density, so the
+source $\Fa$ carries $\varrho_a$ in its normalization.  The decay then
+requires the parent's mass distribution \emph{conditional} on its
+momentum.  The standard approximation takes the production and decay
+spectral functions identical --- the same $\varrho_a$ in both places ---
+which is exact in the narrow-width limit and a controlled approximation
+otherwise.  A fully consistent treatment integrates the parent
+four-momentum and its mass jointly; the factorized form used here, $\Fa$
+times the $\varrho_a$-averaged decay \eqref{eq:width-matrixsum}, is the
+usual on-shell-spectral compromise, adequate while $\Gamma_a/m_a$ is not
+too large.
+
+\paragraph{Status.}
+Neither extension is implemented in the present code --- the cascade uses
+sharp masses and $\le3$-body channels, skipping four-body and
+nominally-closed channels (counted and reported).  Both are, however,
+pure applications of the machinery already built: four-body needs only the
+weight \eqref{eq:rho3} in place of $p^{\tilde c}_c$, and finite width needs
+an outer spectral average for parent/observed legs \eqref{eq:width-matrixsum}
+(or an enriched weight for the rest).  Finite width is not a small
+correction for this list: of the $1518$ species, $713$ carry a width and
+$464$ are broad ($\Gamma>150$\,MeV), and many broad states are parents ---
+so the expensive parent-average applies to hundreds of channels, and
+persistence (Sec.~\ref{sec:matrix}) becomes essential rather than optional.
+The cost accounting sets the implementation priority: cluster/intermediate
+widths first (cheap, and --- being the broad $\rho,\sigma,K^*,\Delta$ ---
+the dominant feed-down effect), parent width second (expensive but
+important for the broad primaries), observed-daughter width last (rare).
+
+\section{Boost-invariant sources: one matrix per mode}
+\label{sec:matrix}
+
+Let the parent mode $\Fan$ be independent of $\eta_q$ and sampled on a
+grid $q_T^{(1)},\dots,q_T^{(N_q)}$, and let interpolation reconstruct it
+anywhere via local Lagrange cardinal weights $L_j$ of order $P$
+(stencil of $P$ points, error $\mathcal O(h^P)$),
+\begin{equation}
+\Fan(q_T)\;\approx\;\sum_{j} L_j(q_T)\,\Fan\!\big(q_T^{(j)}\big),
+\qquad
+L_j\big(q_T^{(i)}\big)=\delta_{ij}.
+\label{eq:interp}
+\end{equation}
+First the mode bookkeeping.  Insert the mode input
+$\Fa(q_T,\eta_q,\phi_q)=\Fan(q_T)\cos(n\phi_q)$ into the source bracket
+of \eqref{eq:map}, evaluated at $\phi_p=0$; together with the two
+rapidity signs (equal contributions, since neither the kernel nor this
+source distinguishes $\pm\Delta\eta$) the four source evaluations are
+\begin{equation}
+\sum_{s=\pm}\sum_{r=\pm}
+\Fan(q_T)\cos\!\big(n(0+r\alpha)\big)
+=\Fan(q_T)\,\big[2\cos(n\alpha)+2\cos(-n\alpha)\big]
+=4\cos(n\alpha)\,\Fan(q_T)
+=4\,T_n(Z)\,\Fan(q_T),
+\label{eq:fourTn}
+\end{equation}
+using the evenness of the cosine and $\cos(n\arccos Z)=T_n(Z)$
+[Eq.~(40)].  Now discretize \eqref{eq:map} by the tensor rule
+\eqref{eq:tensor} and insert the interpolation \eqref{eq:interp} at every
+$q_T$ node:
+\begin{align}
+\Fbn\big(p_T^{(k)}\big)
+&\approx \frac{B\,m_a}{4\pi p_b}
+\sum_{\text{seg}}h_q\sum_{i} v^{q}_i\,q_T^{(i)}\,h_\eta^{(i)}
+\sum_{j'} \frac{v^{\theta}_{j'}}{\sqrt{Q^2-D^2_{ij'}}}\;
+4T_n(Z_{ij'})\;
+\underbrace{\sum_{j} L_j\big(q_T^{(i)}\big)\,
+\Fan\big(q_T^{(j)}\big)}_{\text{interpolated source}} \nonumber\\
+&= \sum_{j=1}^{N_q}
+\underbrace{\Bigg[\frac{B\,m_a}{4\pi p_b}
+\sum_{\text{seg}}h_q\sum_{i} v^{q}_i\,q_T^{(i)}\,h_\eta^{(i)}
+\sum_{j'} \frac{v^{\theta}_{j'}\,4T_n(Z_{ij'})}{\sqrt{Q^2-D^2_{ij'}}}\;
+L_j\big(q_T^{(i)}\big)\Bigg]}_{\displaystyle =\,W_n[k,j]}\;
+\Fan\big(q_T^{(j)}\big),
+\label{eq:Wdef}
+\end{align}
+where the second line only exchanged the finite sums --- legitimate
+because every factor except $\Fan$ is independent of the source.  The
+matrix element $W_n[k,j]$ is thus the exact quadrature of the kernel
+against the $j$-th cardinal function.  Assembly therefore runs the
+\emph{same} quadrature loops as a functor evaluation; wherever the source
+would be evaluated, the bracketed multiplier is instead scattered onto
+the $P$ columns of the interpolation stencil of $q_T^{(i)}$ (``scatter
+assembly'').  One row costs one kernel evaluation with no source calls;
+the whole matrix costs $N_{p_T}$ of them.  Equivalently --- and this was
+used as a cross-check --- column $j$ of $W_n$ equals the functor applied
+to the $j$-th cardinal basis function, by the same linearity; the scatter
+form merely avoids the $N_q$-fold redundancy of computing columns one at
+a time.
+
+Two properties of the quadrature matter for the matrix:
+\begin{itemize}
+\item The $\Theta$-support in $q_T$ is the band
+$q_T^{\pm}=m_a\big(E^a_{b|c}\,p_T\pm p^a_{b|c}\,m_{bT}\big)/m_b^2$;
+each row is supported (up to the stencil halo) inside its band.
+For light daughters the band is wide ($\propto m_b^{-2}$), so in practice
+the matrices are effectively dense (measured fill $65$--$76\%$ for
+$\rho\to\pi\pi$, $\omega\to\pi\pi\pi$), and they are numerically full
+rank; neither sparse nor low-rank storage pays.  At
+$N_{p_T}\times N_q\sim 39\times121$ a matrix is $\sim37$\,KB and applies
+in microseconds.
+\item The integrand has an integrable $\ln|q_T-q_T^{*}|$ singularity at
+$q_T^{*}=-q_T^-$, where the $\Delta\eta$ domain splits; the interval is
+divided there.  All $1/\sqrt{\phantom{x}}$ endpoint singularities (in
+$\Delta\eta$, at $Z=\pm1$) and $\sqrt{\phantom{x}}$-type endpoint zeros (in
+$\mu$) are absorbed by the substitution $x=\mathrm{mid}-\mathrm{half}\cos\theta$,
+whose $\sin\theta$ Jacobian regularizes them; fixed-order Gauss--Legendre
+then converges spectrally except for the residual
+$\theta\ln\theta$ behavior at $q_T^{*}$ ($\sim n_q^{-4}$).
+\end{itemize}
+The only error introduced relative to the functor is interpolation,
+$\mathcal O(h^P)$; with a cubic stencil ($P=4$) on $h=0.035$\,GeV a
+thermal source reproduces the functor to a few$\,\times10^{-5}$, and the
+truncation ``$\Fa\equiv0$ outside the grid'' requires the source to be
+negligible beyond the last grid point.
+
+\subsection{The $Z$-space form of the assembly integral}
+\label{sec:zspace}
+
+For the matrix assembly the inner rapidity integral can be freed of all
+transcendental functions.  The observation is that an $\eta$-independent
+source never requires the rapidity $\Delta\eta$ itself --- only
+$Z=D/Q$ enters, through the Chebyshev factor $T_n(Z)$.
+
+\subsubsection{Derivation}
+
+Start from the inner integral of the mode-$n$ assembly at fixed $q_T$,
+with both rapidity signs folded in (factor $2$, legitimate because the
+kernel is even in $\Delta\eta$ and the source does not depend on it) and
+both azimuthal roots summed (the $2T_n$ of Eq.~41):
+\begin{equation}
+I_n \;=\; 2\int_{\eta_{\rm lo}}^{\eta_{\rm hi}}
+\frac{\mathrm{d}\Delta\eta}{\sqrt{Q^{2}-D^{2}}}\; 2\,T_n(Z),
+\qquad D=M\cosh\Delta\eta-C,\quad Z=\frac{D}{Q}.
+\end{equation}
+Substitute $c=\cosh\Delta\eta$, $\mathrm{d}\Delta\eta=
+\mathrm{d}c/\sqrt{c^{2}-1}$, which maps the window \eqref{eq:window} to
+$c\in[\,\max(1,(C-Q)/M),\,(C+Q)/M\,]$; then pass to
+\begin{equation}
+Z=\frac{Mc-C}{Q},
+\qquad
+c(Z)=\frac{C+QZ}{M},
+\qquad
+\mathrm{d}c=\frac{Q}{M}\,\mathrm{d}Z,
+\qquad
+\sqrt{Q^{2}-D^{2}}=Q\sqrt{1-Z^{2}} .
+\end{equation}
+The window endpoints become $Z=1$ (kinematic edge, $c=(C+Q)/M$) and
+$Z=Z_{\rm lo}$ with
+\begin{equation}
+Z_{\rm lo}=\max\!\left(-1,\;\frac{M-C}{Q}\right),
+\end{equation}
+the value $(M-C)/Q$ corresponding to $c=1$, i.e.\ $\Delta\eta=0$.
+Collecting the Jacobians,
+\begin{equation}
+I_n=\frac{4}{M}\int_{Z_{\rm lo}}^{1}
+\frac{T_n(Z)\,\mathrm{d}Z}
+{\sqrt{\left(1-Z^{2}\right)\left(c(Z)^{2}-1\right)}} .
+\label{eq:zspace}
+\end{equation}
+This is an exact change of variables, not an approximation: the $\Delta\eta$
+form of Sec.~\ref{sec:quadrature} and \eqref{eq:zspace} are the same
+number.  What has changed is the computational content of one quadrature
+node: $c(Z)$ is a multiply--add, $T_n(Z)$ follows from the recurrence
+$T_{k+1}=2ZT_k-T_{k-1}$ [Eq.~(40)], and the only remaining special
+function is one square root.  No $\operatorname{arccosh}$ (window bounds),
+$\cosh$ (per node) or $\arccos$ (azimuthal angle) appears.
+
+\subsubsection{Quadrature: two regimes}
+
+\paragraph{Full window, $Z_{\rm lo}=-1$ \ (i.e.\ $C-Q\ge M$).}
+The factor $1/\sqrt{1-Z^{2}}$ is exactly the Chebyshev--Gauss weight, so
+with the standard nodes the weight is integrated \emph{exactly}:
+\begin{equation}
+I_n\;\approx\;\frac{4}{M}\,\frac{\pi}{n_\theta}
+\sum_{k=1}^{n_\theta}\frac{T_n(Z_k)}{\sqrt{c(Z_k)^{2}-1}},
+\qquad
+Z_k=\cos\theta_k,\quad \theta_k=\frac{(2k-1)\pi}{2n_\theta}.
+\label{eq:chebgauss}
+\end{equation}
+The nodes are precomputed once per order; note also
+$T_n(Z_k)=\cos(n\theta_k)$, so for fixed $n$ even the Chebyshev factors
+are constants of the rule.
+
+\paragraph{Partial window, $-1<Z_{\rm lo}<1$ \ (i.e.\ $C-Q<M$).}
+Both endpoint factors vanish like square roots inside the domain:
+$1-Z^{2}$ at $Z=1$, and $c^{2}-1$ at $Z=Z_{\rm lo}$, since
+$c-1=Q(Z-Z_{\rm lo})/M$.  The cosine substitution \eqref{eq:cosmap} on
+$[Z_{\rm lo},1]$ absorbs both $1/\sqrt{\phantom{x}}$ singularities, and
+the mapped integrand is handled by the same $n_\theta$-point
+Gauss--Legendre rule used elsewhere.
+
+\subsubsection{Convergence and the transition zone}
+
+The integrand of \eqref{eq:chebgauss}, $f(Z)=T_n(Z)/\sqrt{c^{2}-1}$, has
+a branch point at $Z=Z_{\rm lo}$, \emph{outside} the interval when
+$Z_{\rm lo}<-1$.  For a function analytic on $[-1,1]$ with nearest
+singularity at a real point $Z_0<-1$, Gauss--Chebyshev error decays
+geometrically at the rate of the Bernstein ellipse through $Z_0$,
+\begin{equation}
+\varepsilon \;\sim\; \rho^{-2n_\theta},
+\qquad
+\rho=|Z_0|+\sqrt{Z_0^{2}-1} .
+\label{eq:bernstein}
+\end{equation}
+Evaluating \eqref{eq:bernstein} with $Z_0=Z_{\rm lo}$ and the working
+order $n_\theta=8$:
+\begin{center}
+\begin{tabular}{lcccc}
+\hline
+$Z_{\rm lo}$ & $-3$ & $-1.5$ & $-1.2$ & $-1.05$\\
+$\rho$ & $5.83$ & $2.62$ & $1.86$ & $1.37$\\
+$\rho^{-2n_\theta}$ & $6\cdot10^{-13}$ & $2\cdot10^{-7}$ &
+$4.7\cdot10^{-5}$ & $6.5\cdot10^{-3}$\\
+\hline
+\end{tabular}
+\end{center}
+The rule is excellent while the branch point stays away from the
+interval and degrades sharply as $Z_{\rm lo}\to-1^{+}$: the
+``transition zone''.  This failure mode was first seen empirically: the
+$n=2$ matrix validation degraded to $2.3\times10^{-3}$ while $n=0$
+remained at $10^{-4}$.  The asymmetry is instructive --- for $n=0$ the
+under-resolution errors are of a single sign in $Z$ and largely average
+out under the subsequent $q_T$ integration, whereas the sign-changing
+$T_2$ weight prevents the cancellation and exposes them.  Per
+\eqref{eq:bernstein}, quadrupling the order multiplies the exponent by
+four ($\rho^{-8n_\theta}$), e.g.\ at $Z_{\rm lo}=-1.05$:
+$1.37^{-64}\approx2\cdot10^{-9}$.  The implementation therefore switches
+to $4n_\theta$ Chebyshev nodes whenever $Z_{\rm lo}>-\tfrac32$, i.e.\
+exactly where \eqref{eq:bernstein} predicts the base rule falls above
+the $10^{-7}$ level.  The choice of threshold is a cost/accuracy
+compromise: a first attempt with the densification band extended to
+$Z_{\rm lo}>-3$ was accurate but slowed the cascade below the gain of
+the $Z$-space form itself.
+
+\subsubsection{Measured effect}
+
+On the full 1518-species cascade (8 threads, production orders
+$n_q{=}32$, $n_\theta{=}8$, $n_\mu{=}8$, $168$-point grid):
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+assembly scheme & single $2$-body build & cascade & $n{=}2$ validation\\
+\hline
+$\Delta\eta$-space (arccosh + cosh + arccos) & $0.51$\,ms & $20.2$\,s & $2.6\cdot10^{-5}$\\
+$\Delta\eta$-space, $\arccos\to T_n$ recurrence & $0.41$\,ms & $20.2$\,s & $2.6\cdot10^{-5}$\\
+$Z$-space, naive & $0.27$\,ms & $16.8$\,s & $2.3\cdot10^{-3}$ (fails)\\
+$Z$-space, densified transition & $0.33$\,ms & $18.3$\,s & $1.3\cdot10^{-4}$\\
+\hline
+\end{tabular}
+\end{center}
+
+This form applies only to the assembly (and any $\eta$-independent
+evaluation): the functor path evaluates an arbitrary source at
+$\eta_p\pm\Delta\eta$ and $\phi_p\pm\alpha$, so there the rapidity and the
+azimuthal angle are genuine arguments and the $\Delta\eta$-space form of
+Sec.~\ref{sec:quadrature} remains the appropriate one.
+
+\section{Rapidity-dependent sources: the $\Delta\eta$-Toeplitz structure}
+
+\subsection{The kernel as a rapidity convolution}
+\label{sec:conv}
+
+The boost-invariant result of Sec.~\ref{sec:matrix} folded the $\pm\Delta\eta$
+contributions together because the source carried no rapidity dependence.
+For a general source that fold is not available; instead the rapidity
+structure of the kernel must be exposed.  Return to the mode-$n$ decay map
+\emph{before} any $\eta$-folding.  The analytic azimuthal integration
+[Eq.~(41)] gives, for a rapidity-dependent source,
+\begin{equation}
+\Fbn(p_T,\eta_p)
+=\frac{B\,m_a}{4\pi p_b}
+\int_0^\infty\!\mathrm{d}q_T\,q_T
+\int_{-\infty}^{\infty}\!\mathrm{d}\Delta\eta\;
+\frac{\Theta\!\big(Q^2-D^2\big)}{\sqrt{Q^2-D^2}}\;
+2T_n(Z)\;
+\Fan\big(q_T,\eta_p+\Delta\eta\big),
+\label{eq:etadep-map}
+\end{equation}
+where the parent rapidity has been written $\eta_q=\eta_p+\Delta\eta$ and
+$\mathrm{d}\eta_q=\mathrm{d}\Delta\eta$ at fixed $\eta_p$; every kinematic
+quantity $D=M\cosh\Delta\eta-C$, $Z=D/Q$ depends on rapidity only through
+$\Delta\eta$.  The daughter rapidity $\eta_p$ therefore appears in
+\eqref{eq:etadep-map} \emph{only} as the shift of the source's argument
+--- the statement that the decay map commutes with longitudinal boosts,
+$\eta_p\to\eta_p+\text{const}$ carrying $\eta_q$ along with it.
+
+Collect everything that multiplies the source into a \emph{profile}
+\begin{equation}
+K_n(p_T,q_T,\Delta\eta)
+\;\equiv\;
+\frac{B\,m_a}{4\pi p_b}\,q_T\,
+\frac{\Theta\!\big(Q^2-D^2\big)}{\sqrt{Q^2-D^2}}\,
+2T_n(Z(q_T,\Delta\eta)),
+\label{eq:profile}
+\end{equation}
+so that \eqref{eq:etadep-map} reads
+\begin{equation}
+\Fbn(p_T,\eta_p)=\int_0^\infty\!\mathrm{d}q_T
+\int_{-\infty}^{\infty}\!\mathrm{d}\Delta\eta\;
+K_n(p_T,q_T,\Delta\eta)\;\Fan(q_T,\eta_p+\Delta\eta):
+\label{eq:conv}
+\end{equation}
+at each $(p_T,q_T)$ this is a \emph{convolution} of the source in rapidity
+with the fixed profile $K_n(p_T,q_T,\cdot)$.  Three properties of the
+profile follow directly from the kernel analysis of Sec.~\ref{sec:window}
+and carry the entire structure of what follows:
+\begin{enumerate}
+\item \textbf{Even:} $K_n(\,\cdot,-\Delta\eta)=K_n(\,\cdot,\Delta\eta)$,
+since $D$, $Z$, and $\Theta(Q^2-D^2)$ all depend on $\Delta\eta$ through
+$\cosh\Delta\eta$ alone.  The profile is a symmetric rapidity
+point-spread function; it does \emph{not} know the sign of the boost.
+\item \textbf{Compact support:} $K_n$ vanishes outside
+$|\Delta\eta|\in[\eta_{\rm lo},\eta_{\rm hi}]$ (the window of
+Sec.~\ref{sec:window}), a set of total rapidity extent
+$\le2\,\eta_{\rm hi}=2\operatorname{arccosh}[(C+Q)/M]$, in practice
+$1$--$2$ units.
+\item \textbf{$\eta_p$-independent:} $K_n$ depends on $p_T$ and $q_T$ but
+not on where in rapidity the daughter sits.  This is boost invariance, and
+it is what makes \eqref{eq:conv} a genuine convolution rather than a
+general integral operator.
+\end{enumerate}
+Physically $K_n(p_T,q_T,\cdot)$ is the rapidity smearing induced by the
+decay: a parent line at a single rapidity feeding daughter momentum
+$p_T$ is spread by the profile into a band of daughter rapidities of
+width set by $\eta_{\rm hi}$.  A boost-invariant source ($\Fan$
+independent of $\eta_q$) is the eigenfunction with the source pulling out
+of the convolution, $\Fbn=\big(\int K_n\,\mathrm{d}\Delta\eta\big)\Fan$,
+recovering Sec.~\ref{sec:matrix} --- there the $\int K_n\,\mathrm{d}\Delta\eta$
+\emph{is} the boost-invariant matrix element.
+
+\subsection{Discretization: the block-Toeplitz matrix}
+\label{sec:blocktoeplitz}
+
+Sample both spectra on a common \emph{uniform} rapidity grid
+$\eta_a=\eta_0+a\,h_\eta$ (uniformity is essential --- it is what turns the
+convolution into a Toeplitz operator).  Index the daughter spectrum by
+$(k,a)\leftrightarrow(p_T^{(k)},\eta_a)$ and the parent by
+$(j,b)\leftrightarrow(q_T^{(j)},\eta_b)$.  Discretize \eqref{eq:conv} in
+two stages.  First the $q_T$ integral and profile, by the same
+quadrature-plus-interpolation as Sec.~\ref{sec:matrix}, which produces the
+$q_T$ scatter onto column index $j$.  Second the source's rapidity
+argument: at a quadrature node with offset $\Delta\eta$, the value
+$\Fan(q_T^{(j)},\eta_a+\Delta\eta)$ is reconstructed from the $\eta$ grid
+by the uniform Lagrange stencil,
+\begin{equation}
+\Fan\big(q_T^{(j)},\eta_a+\Delta\eta\big)
+\;\approx\;
+\sum_{b} L^\eta\!\big(\eta_a+\Delta\eta;\,\eta_b\big)\,
+\Fan\big(q_T^{(j)},\eta_b\big).
+\end{equation}
+The crucial observation is that on a uniform grid the cardinal weight
+depends only on the \emph{offset} of the evaluation point from the node in
+grid units,
+\begin{equation}
+L^\eta\big(\eta_a+\Delta\eta;\,\eta_b\big)
+=\ell\!\Big(\frac{(\eta_a+\Delta\eta)-\eta_b}{h_\eta}\Big)
+=\ell\Big(\frac{\Delta\eta}{h_\eta}-(b-a)\Big),
+\label{eq:offsetweight}
+\end{equation}
+a function of $b-a$ and $\Delta\eta$ but \emph{not} of $a$ and $b$
+separately --- translation invariance of the uniform grid, inherited from
+translation invariance of the profile.  Assembling the coefficient of
+$\Fan(q_T^{(j)},\eta_b)$ in $\Fbn(p_T^{(k)},\eta_a)$ therefore yields a
+quantity that depends on the rapidity indices only through $d\equiv b-a$:
+\begin{equation}
+W\big[(k,a),(j,b)\big]=w\big[k,\,j,\,d\big],
+\qquad d=b-a,
+\label{eq:toeplitz-index}
+\end{equation}
+with
+\begin{equation}
+w[k,j,d]=
+\int\!\mathrm{d}\Delta\eta\;\widetilde K_n^{(k,j)}(\Delta\eta)\,
+\ell\!\Big(\tfrac{\Delta\eta}{h_\eta}-d\Big),
+\label{eq:wtensor}
+\end{equation}
+$\widetilde K_n^{(k,j)}$ being the profile after the $q_T$
+scatter (the quadrature sum over the $q_T$ nodes whose stencil hits column
+$j$).  Viewing $W$ as an $N_\eta\times N_\eta$ array of
+$N_{p_T}\times N_q$ blocks $B_d=w[\cdot,\cdot,d]$, \eqref{eq:toeplitz-index}
+says $W$ is constant along block diagonals,
+\begin{equation}
+W=
+\begin{pmatrix}
+B_0 & B_1 & B_2 & \cdots\\
+B_{-1} & B_0 & B_1 & \\
+B_{-2} & B_{-1} & B_0 & \\
+\vdots & & & \ddots
+\end{pmatrix},
+\end{equation}
+a \emph{block-Toeplitz} matrix.  Storing $W$ densely repeats each block up
+to $N_\eta$ times; storing the tensor $w[k,j,d]$ once is exact and lossless
+--- it is the discrete profile, the point-spread function of
+Sec.~\ref{sec:conv} sampled at integer rapidity offsets.
+
+Two further exact properties shrink the tensor, both inherited from the
+profile:
+\begin{enumerate}
+\item \textbf{Banded:} compact support of $K_n$ (item 2 above) plus the
+finite reach of the $\eta$ stencil limits the nonzero offsets to
+$|d|\le L$ with $L=\lceil\eta_{\rm hi}^{\max}/h_\eta\rceil+\tfrac{P}{2}$
+(window half-width plus stencil halo), $\eta_{\rm hi}^{\max}=
+\max_{q_T}\operatorname{arccosh}[(C+Q)/M]$, in practice $1$--$2$ units; so
+$B_d=0$ for $|d|>L$ and only $2L+1$ offsets exist.
+\item \textbf{Even in $d$:} evenness of the profile (item 1) gives
+$w[k,j,-d]=w[k,j,d]$, so only $d\ge0$ need be stored.  (The \emph{source}
+need not be symmetric in rapidity; the \emph{profile} is.)
+\end{enumerate}
+For $N_{p_T}=39$, $N_q=121$, $N_\eta=61$, $h_\eta=0.05$,
+$L\approx40$: dense $W$ is
+$(39\cdot61)\times(121\cdot61)\approx1.4\times10^{8}$ entries
+($\sim$140\,MB), the tensor is $39\times121\times41\approx1.9\times10^{5}$
+entries ($\sim$1.5\,MB) --- a factor $\sim10^{2}$, at zero accuracy cost,
+because it encodes exact symmetries (translation invariance and parity of
+the profile) rather than a numerical truncation.
+
+Two further exact properties shrink the tensor:
+\begin{enumerate}
+\item \textbf{Banded:} the $\Theta$-support limits
+$|\Delta\eta|\le\operatorname{arccosh}\!\big[(C+Q)/M\big]$, in practice
+$1$--$2$ units of rapidity, so $B_d=0$ for $|d|>L$ with
+$L=\lceil\Delta\eta_{\max}/h_\eta\rceil$; only $2L+1$ offsets exist.
+\item \textbf{Even in $d$:} the kernel weight depends on $\Delta\eta$
+only through $\cosh\Delta\eta$, so $w[k,j,d]=w[k,j,-d]$ and only $d\ge0$
+need be stored.  (The \emph{source} need not be symmetric; the
+\emph{profile} is.)
+\end{enumerate}
+For $N_{p_T}=39$, $N_q=121$, $N_\eta=61$, $h_\eta=0.05$,
+$L\approx40$: dense $W$ is
+$(39\cdot61)\times(121\cdot61)\approx1.4\times10^{8}$ entries
+($\sim$140\,MB), the tensor is $39\times121\times41\approx1.9\times10^{5}$
+entries ($\sim$1.5\,MB) --- a factor $\sim10^{2}$, at zero accuracy cost,
+because it encodes an exact symmetry rather than a numerical truncation.
+
+\subsection{Assembly}
+\label{sec:toeplitz-assembly}
+
+The assembly generalizes the scatter of Sec.~\ref{sec:matrix} by one
+stencil dimension.  Fix a Fourier mode $n$ and run the same
+$(q_T,\Delta\eta)$ quadrature loops as the kernel (in $\Delta\eta$ space
+--- see the remark below); a node at $(q_T,\Delta\eta)$ with total
+quadrature factor
+\begin{equation}
+\text{fac}
+= \text{pref}\cdot v^{q}_i h_q\, q_T\, h_\eta\,
+\frac{v^{\theta}_j}{\sqrt{Q^{2}-D^{2}}}\; 2T_n(Z)
+\end{equation}
+(the $2$ is the two azimuthal roots only --- the $\pm\Delta\eta$ fold is
+\emph{not} performed here, each sign now lands on different $\eta$
+columns) deposits into the tensor via the product of the $q_T$ stencil
+and the $\eta$-offset stencil:
+\begin{equation}
+w[k,\,j_0+m-1,\,d_0+m'-1] \mathrel{+}= \text{fac}\;
+L^{q}_{m}(q_T)\; L^{\eta}_{m'}\!\big(\Delta\eta/h_\eta\big),
+\qquad m,m'=1,\dots,P,
+\end{equation}
+where $d_0$ is the stencil start of the offset $\Delta\eta/h_\eta$ on the
+integer offset axis.  Since the kernel factor is even in $\Delta\eta$,
+only $\Delta\eta\ge0$ need be traversed and the result stored for
+$d\ge0$; the negative offsets are recovered at application time.  No loop
+over $\eta_p$ exists anywhere: one sweep per $(k,j)$ column of nodes
+builds the profile valid for \emph{every} daughter rapidity, so the
+assembly cost equals that of the boost-invariant matrix times the
+$P$-fold extra stencil work --- \emph{not} times $N_\eta$.  This is the
+payoff of the Toeplitz structure on the assembly side.
+
+Two remarks.  First, the $Z$-space form of Sec.~\ref{sec:zspace} does
+\emph{not} apply here: the $\eta$-offset stencil needs the rapidity
+$\Delta\eta$ itself, so the assembly stays in $\Delta\eta$ space (or
+would have to pay an $\operatorname{arccosh}$ per node to recover
+$\Delta\eta$ from $c$ --- exactly the function the $Z$ form eliminates).
+Second, the offset variable is interpolated on the \emph{uniform} $\eta$
+grid, so the uniform-grid Lagrange weights apply verbatim; the
+interpolation error in the $\eta$ direction is the same
+$\mathcal O(h_\eta^{P})$ as in $q_T$.
+
+\subsection{Application}
+
+Using the evenness $w[k,j,-d]=w[k,j,d]$, the apply is a folded discrete
+convolution over the stored $d\ge0$ half:
+\begin{equation}
+\Fb\big(p_T^{(k)},\eta_a\big)
+=\sum_{j}\Big[\,w[k,j,0]\,\Fa\big(q_T^{(j)},\eta_a\big)
++\sum_{d=1}^{L} w[k,j,d]\,
+\big(\Fa\big(q_T^{(j)},\eta_{a+d}\big)+\Fa\big(q_T^{(j)},\eta_{a-d}\big)\big)
+\Big].
+\label{eq:toeplitz-apply}
+\end{equation}
+Organizing the computation per offset makes each term a dense
+$(N_{p_T}\times N_q)$ matrix acting on an $\eta$-shifted copy of the
+source --- $L+1$ small GEMMs over the $(q_T\!\times\!\eta)$ source array:
+\begin{equation}
+F_b \;=\; \sum_{d=0}^{L} B_d\,\big[S^{+d}F_a + (1-\delta_{d0})\,S^{-d}F_a\big],
+\qquad B_d = w[\,\cdot,\cdot,d\,],
+\end{equation}
+with $S^{\pm d}$ the shift along $\eta$.  Cost:
+$\mathcal O(N_{p_T}N_qN_\eta L)$ multiply--adds
+($\approx 2\times10^{7}\sim$ milliseconds at
+$N_{p_T}{=}39$, $N_q{=}121$, $N_\eta{=}61$, $L{\approx}40$), organized as
+BLAS-3 rather than the BLAS-2 of a dense block matrix.  For large
+$N_\eta$ the Toeplitz structure admits FFT application along $\eta$,
+$\mathcal O(N_{p_T}N_qN_\eta\log N_\eta)$ --- worthwhile only once
+$L\gg\log N_\eta$, i.e.\ for very fine rapidity grids; at the sizes above
+the direct fold wins.
+
+For azimuthally asymmetric, rapidity-dependent sources the procedure is
+per mode as before: one tensor $w_n$ per Fourier mode, assembled with
+$2T_n(Z)$, applied to the mode functions $\Fan(q_T,\eta_q)$.
+
+\subsection{Edges and grid layout}
+
+Translation invariance fails only at the ends of the rapidity grid:
+daughter points within $\Delta\eta_{\max}$ of the boundary require parent
+values beyond it.  Since physical sources vanish rapidly at large $|\eta|$
+(e.g.\ $e^{-m_T\cosh\eta/T}$), the consistent convention is zero-padding
+--- the same ``source vanishes off the grid'' convention used in $q_T$ ---
+with the $\eta$ grid extended by $\Delta\eta_{\max}=
+\max_{q_T}\operatorname{arccosh}[(C+Q)/M]$ (evaluated at the band edge;
+typically $1$--$2$ units) beyond the rapidity window where results are
+needed.  Concretely: to output $|\eta_p|\le\eta^{\rm obs}$, the parent
+grid must span $|\eta_q|\lesssim\eta^{\rm obs}+\Delta\eta_{\max}$, and
+the truncation error inherits the source's decay at the padding edge ---
+for thermal-like sources this is
+$e^{-m_{aT}(\cosh(\eta^{\rm obs}+\Delta\eta_{\max})-1)/T}$, negligible
+already for modest padding.
+
+The memory layout follows the apply: storing $w$ as
+$(k,j)$-major slices per offset $d$ (i.e.\ $L{+}1$ dense
+$N_{p_T}\times N_q$ matrices $B_d$) makes each term of
+\eqref{eq:toeplitz-apply} a contiguous GEMM; \texttt{Float32} storage is
+appropriate for the same reason as in Sec.~\ref{sec:matrix} (rounding
+$6\times10^{-8}$, far below the quadrature setting), halving the
+$\sim1$--$3$\,MB per decay and mode.
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+case & object & size / cost \\
+\hline
+$\eta$-independent, per mode $n$ & dense $W_n\in\mathbb R^{N_{p_T}\times N_q}$ &
+$\sim$40\,KB, apply $\sim\mu$s \\
+$\eta$-dependent, per mode $n$ & tensor $w[k,j,d]$, $|d|\le L$, $d\ge0$ &
+$\sim$1\,MB, apply $\sim$ms \\
+\hline
+\end{tabular}
+\end{center}
+Decay chains compose by matrix multiplication (and, in the Toeplitz case,
+by convolution of profiles), so the total feed-down of a hadron list is
+itself a precomputed linear map.
+
+\end{document}

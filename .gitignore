@@ -1,0 +1,20 @@
+# Serialized cache tables (regenerable by cascade.jl, multi-GB)
+*.jls
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+
+# Julia
+Manifest.toml
+/.julia/
+
+# OS / editor
+.DS_Store
