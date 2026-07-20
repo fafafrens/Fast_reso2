@@ -62,10 +62,10 @@ end
 # with `filter`, giving a restricted list that flows unchanged through
 # `CascadeTable` (build) and `runcascade` (apply). See the README.
 
-struct ChannelFilter
-    keep::Function     # (p::ParticleInfo, ch::DecayChannel, ds::Vector{ParticleInfo}) -> Bool
+struct ChannelFilter{Fun}
+    keep::Fun     # (p::ParticleInfo, ch::DecayChannel, ds::Vector{ParticleInfo}) -> Bool
 end
-(f::ChannelFilter)(p, ch, ds) = f.keep(p, ch, ds)::Bool
+(f::ChannelFilter)(p, ch, ds)  = f.keep(p, ch, ds)::Bool
 
 Base.:&(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) && b(p, ch, ds))
 Base.:|(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) || b(p, ch, ds))
