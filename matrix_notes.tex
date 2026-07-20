@@ -889,12 +889,57 @@ $T_n(Z_k)=\cos(n\theta_k)$, so for fixed $n$ even the Chebyshev factors
 are constants of the rule.
 
 \paragraph{Partial window, $-1<Z_{\rm lo}<1$ \ (i.e.\ $C-Q<M$).}
-Both endpoint factors vanish like square roots inside the domain:
-$1-Z^{2}$ at $Z=1$, and $c^{2}-1$ at $Z=Z_{\rm lo}$, since
-$c-1=Q(Z-Z_{\rm lo})/M$.  The cosine substitution \eqref{eq:cosmap} on
-$[Z_{\rm lo},1]$ absorbs both $1/\sqrt{\phantom{x}}$ singularities, and
-the mapped integrand is handled by the same $n_\theta$-point
-Gauss--Legendre rule used elsewhere.
+Both endpoint factors vanish like square roots \emph{inside} the domain:
+$1-Z^{2}$ at $Z=1$, and $c^{2}-1$ at $Z=Z_{\rm lo}$.  The decisive point is
+that $c-1=\tfrac{Q}{M}(Z-Z_{\rm lo})$ is \emph{exactly linear} in $Z$
+(immediate from $c(Z)=(C+QZ)/M$ and $C+QZ_{\rm lo}=M$), so the full
+radicand splits into an endpoint-singular part and a manifestly regular
+remainder,
+\begin{equation}
+\big(1-Z^{2}\big)\big(c^{2}-1\big)
+=\underbrace{(1-Z)(Z-Z_{\rm lo})}_{\text{endpoint zeros}}\;
+ \underbrace{\tfrac{Q}{M}\,(1+Z)\,(c+1)}_{\displaystyle \equiv\,R(Z)^{2}} ,
+\label{eq:zfactor}
+\end{equation}
+with $R(Z)^{2}$ \emph{strictly positive on the closed interval}
+($Q,M>0$; $1+Z>0$ because $Z\ge Z_{\rm lo}>-1$; $c+1\ge2$).  The integrand
+is therefore exactly the form of Sec.~\ref{sec:cosmap},
+$f(Z)=g(Z)/\sqrt{(Z-Z_{\rm lo})(1-Z)}$ with the \emph{smooth} numerator
+\begin{equation}
+g(Z)=\frac{T_n(Z)}{R(Z)}
+     =\frac{T_n(Z)}{\sqrt{\tfrac{Q}{M}(1+Z)(c+1)}} .
+\label{eq:zsmooth}
+\end{equation}
+The cosine substitution \eqref{eq:cosmap} on $[Z_{\rm lo},1]$ then cancels
+the singular factor \emph{identically} by \eqref{eq:cancel}: the
+$\sin\theta$ of the Jacobian and the $1/\sqrt{(Z-Z_{\rm lo})(1-Z)}$ are the
+two halves of one cancellation, and the $\theta$-integrand is just
+$g(Z(\theta))$.  Discretizing with the plain $n_\theta$-point
+Gauss--Legendre rule on $[0,\pi]$,
+\begin{equation}
+I_n\;\approx\;\frac{4}{M}\,\frac{\pi}{2}
+\sum_{i=1}^{n_\theta} w_i\,\frac{T_n(Z_i)}{R(Z_i)},
+\qquad
+Z_i=m-h\cos\theta_i,\quad c_i=\frac{C+QZ_i}{M},
+\label{eq:zpartial}
+\end{equation}
+$m,h$ the midpoint and half-width of $[Z_{\rm lo},1]$ and $w_i$ the plain
+Gauss weights.  This is the exact analogue of the full-window formula
+\eqref{eq:chebgauss}: \emph{both regimes remove the inverse-square-root
+weight analytically}, so the summand is bounded, no positivity guard is
+needed, and the near-edge nodes carry their correct finite contribution.
+
+The algebraically equivalent alternative --- forming
+$v_i\,T_n(Z_i)/\sqrt{(1-Z_i^{2})(c_i^{2}-1)}$ with the fused weight
+$v_i=\tfrac\pi2 w_i\sin\theta_i$ of \eqref{eq:fusedweights} carrying the
+$\sin\theta$ against a radicand that itself vanishes at the edge --- is the
+same number in exact arithmetic (indeed $h\,v_i/\sqrt{(1-Z^2)(c^2-1)}
+=\tfrac\pi2 w_i/R(Z)$), but in floating point it is a $0/0$: the radicand
+rounds to $\lesssim0$ for roughly $1\%$ of nodes (worst case
+$\mathcal{O}(10^{-31})$ negative), where the square root would fault or
+return $\infty$.  It must then be guarded ($u>0$ or skip), which silently
+forfeits those nodes.  The factored form \eqref{eq:zpartial} needs neither
+the guard nor the sacrifice --- $R(Z)$ is regular by construction.
 
 \subsubsection{Convergence and the transition zone}
 
