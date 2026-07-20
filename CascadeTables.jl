@@ -180,6 +180,19 @@ function neededkeys(dl::DecayList)
     return need, stats
 end
 
+# The decay map for one key. `k.nbody` is a runtime value, so this must branch
+# (the result is a small Union that the DecayMatrix call then splits on) — a
+# branch is cheaper than Val-dispatch, and this is cold build-time code.
+function decayfor(k::ChannelKey; nq, nθ, nµ, nσ)
+    if k.nbody == 2
+        TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ)
+    elseif k.nbody == 3
+        ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ)
+    else
+        FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
+    end
+end
+
 # Parallel build of the listed keys (independent work; :greedy balances the
 # ~8x cost gap between 3- and 2-body). Results land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
@@ -187,10 +200,7 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     (; nq, nθ, nµ, nσ) = t.orders
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
-        k = keyvec[i]
-        dec = k.nbody == 2 ? TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ) :
-              k.nbody == 3 ? ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ) :
-                             FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
+        dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ)
         out[i] = [Float32.(DecayMatrix(dec, n, t.grid, t.grid).W) for n in t.modes]
     end
     for (k, w) in zip(keyvec, out)
