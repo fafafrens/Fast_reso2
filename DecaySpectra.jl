@@ -194,6 +194,31 @@ abstract type MuAveraged end
     sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb[i],
                                 d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
 
+# Shared µ-average build (Eqs. 45–48): node energies E_b(µᵢ) and normalized
+# weights coefᵢ = vᵢ ρ(µᵢ)/N, N = Σᵢ vᵢ p_b(µᵢ) ρ(µᵢ), on nµ cosine-mapped
+# nodes µ ∈ [lo, ma−mb]. `density(µ)` is the cluster invariant-mass density —
+# the pair density q(µ;mc,md) for three-body, ρ₃(µ) for four-body — the only
+# thing that differs between them. `where {D}`: specialize on the density
+# closure so its call inlines (construction runs ~13k times per table build).
+function muweights(ma, mb, lo, density::D, nµ) where {D}
+    cµ, vµ = cosnodes(nµ)                # cosine map absorbs the √ endpoint zeros
+    hi = ma - mb
+    h, m = (hi - lo) / 2, (hi + lo) / 2
+    Eb = Vector{Float64}(undef, nµ)
+    coef = Vector{Float64}(undef, nµ)
+    norm = 0.0
+    for i in 1:nµ
+        µ = m - h * cµ[i]
+        Eb[i] = (ma^2 + mb^2 - µ^2) / (2ma)                    # Eq. (45)
+        pb = sqrt(max(kallen(ma^2, mb^2, µ^2), 0.0)) / (2ma)   # Eq. (46)
+        ρ = density(µ)                                         # Eq. (47) / ρ₃
+        coef[i] = vµ[i] * ρ
+        norm += vµ[i] * pb * ρ                                 # → N, Eq. (48)
+    end
+    coef ./= norm
+    return Eb, coef
+end
+
 # ---------------------------------------------------------------------------
 # Three-body decay a → b + c + d, Eq. (59)
 # ---------------------------------------------------------------------------
@@ -226,21 +251,8 @@ end
 function ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
     ma ≥ mb + mc + md || throw(ArgumentError("decay closed: ma < mb + mc + md"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
-    cµ, vµ = cosnodes(nµ)        # cosine map absorbs the √ endpoint zeros
-    lo, hi = mc + md, ma - mb
-    h, m = (hi - lo) / 2, (hi + lo) / 2
-    Eb = Vector{Float64}(undef, nµ)
-    coef = Vector{Float64}(undef, nµ)
-    norm = 0.0
-    for i in 1:nµ
-        µ = m - h * cµ[i]
-        Eb[i] = (ma^2 + mb^2 - µ^2) / (2ma)                    # Eq. (45)
-        pb = sqrt(max(kallen(ma^2, mb^2, µ^2), 0.0)) / (2ma)   # Eq. (46)
-        pc = sqrt(max(kallen(µ^2, mc^2, md^2), 0.0)) / (2µ)    # Eq. (47)
-        coef[i] = vµ[i] * pc
-        norm += vµ[i] * pb * pc                                # → N, Eq. (48)
-    end
-    coef ./= norm
+    pair(µ) = sqrt(max(kallen(µ^2, mc^2, md^2), 0.0)) / (2µ)   # ρ₂ = p_c̃(µ), Eq. (47)
+    Eb, coef = muweights(ma, mb, mc + md, pair, nµ)
     ThreeBodyDecay(ma, mb, mc, md, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
 end
 
@@ -293,22 +305,9 @@ end
 function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
     ma ≥ mb + mc + md + me || throw(ArgumentError("decay closed: ma < mb + mc + md + me"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
-    cµ, vµ = cosnodes(nµ)
     cσ, vσ = cosnodes(nσ)
-    lo, hi = mc + md + me, ma - mb
-    h, m = (hi - lo) / 2, (hi + lo) / 2
-    Eb = Vector{Float64}(undef, nµ)
-    coef = Vector{Float64}(undef, nµ)
-    norm = 0.0
-    for i in 1:nµ
-        µ = m - h * cµ[i]
-        Eb[i] = (ma^2 + mb^2 - µ^2) / (2ma)
-        pb = sqrt(max(kallen(ma^2, mb^2, µ^2), 0.0)) / (2ma)
-        ρ3 = clusterdensity3(µ, mc, md, me, cσ, vσ)          # cluster density
-        coef[i] = vµ[i] * ρ3
-        norm += vµ[i] * pb * ρ3                              # → N = ∫ dµ p_b ρ₃
-    end
-    coef ./= norm
+    ρ3(µ) = clusterdensity3(µ, mc, md, me, cσ, vσ)            # ρ₃(µ), inner σ-integral
+    Eb, coef = muweights(ma, mb, mc + md + me, ρ3, nµ)
     FourBodyDecay(ma, mb, mc, md, me, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
 end
 
