@@ -32,7 +32,7 @@ using Serialization, SHA, Dates
 export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        savetables, loadtables, ParticleInfo, DecayChannel
 
-const FORMAT = 1                       # bump on any layout change
+const FORMAT = 2                       # bump on any layout change (2: 4-body key + nσ)
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
@@ -58,18 +58,22 @@ struct ChannelKey
     nbody::Int8
     ma::Float64
     mb::Float64          # observed daughter — slot is load-bearing (E_b, band, 1/p_b)
-    mc::Float64          # unobserved partner(s), sorted mc ≤ md
+    mc::Float64          # unobserved partner(s), sorted mc ≤ md ≤ me
     md::Float64          # 0.0 for two-body
+    me::Float64          # 0.0 for two-/three-body
 end
 
 function ChannelKey(ma::Real, mb::Real, rest::AbstractVector{<:Real})
     if length(rest) == 1
-        return ChannelKey(Int8(2), ma, mb, rest[1], 0.0)
+        return ChannelKey(Int8(2), ma, mb, rest[1], 0.0, 0.0)
     elseif length(rest) == 2
         lo, hi = minmax(rest[1], rest[2])
-        return ChannelKey(Int8(3), ma, mb, lo, hi)
+        return ChannelKey(Int8(3), ma, mb, lo, hi, 0.0)
+    elseif length(rest) == 3
+        s = sort(collect(Float64, rest))
+        return ChannelKey(Int8(4), ma, mb, s[1], s[2], s[3])
     end
-    throw(ArgumentError("ChannelKey supports 2- and 3-body only"))
+    throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
 end
 
 # ---------------------------------------------------------------------------
@@ -78,7 +82,7 @@ end
 
 struct CascadeTable
     grid::Vector{Float64}
-    orders::NamedTuple{(:nq, :nθ, :nµ),Tuple{Int,Int,Int}}
+    orders::NamedTuple{(:nq, :nθ, :nµ, :nσ),Tuple{Int,Int,Int,Int}}
     modes::Vector{Int}
     meta::Dict{Symbol,Any}
     W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
@@ -88,14 +92,14 @@ end
 # Returns the key set and the skip statistics.
 function neededkeys(dl::DecayList)
     need = Set{ChannelKey}()
-    stats = Dict(:self => 0, :nd4 => 0, :closed => 0, :γdaughter => 0, :unknown => 0)
+    stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :γdaughter => 0, :unknown => 0)
     for (pid, chans) in dl.byparent
         ma = dl.parts[pid].mass
         for ch in chans
             ds = ch.daughters
             nd = length(ds)
             nd == 1 && (stats[:self] += 1; continue)          # stable self-channel
-            nd ≥ 4 && (stats[:nd4] += 1; continue)            # no 4-body kernel
+            nd ≥ 5 && (stats[:nd5] += 1; continue)            # no 5-body kernel (none in data)
             all(d -> haskey(dl.parts, d), ds) || (stats[:unknown] += 1; continue)
             ms = [dl.parts[d].mass for d in ds]
             # closed at nominal masses (finite-width only) + p_b > 0 guard
@@ -114,13 +118,13 @@ end
 # ~8x cost gap between 3- and 2-body). Results land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
-    (; nq, nθ, nµ) = t.orders
+    (; nq, nθ, nµ, nσ) = t.orders
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
         k = keyvec[i]
-        dec = k.nbody == 2 ?
-            TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ) :
-            ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ)
+        dec = k.nbody == 2 ? TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ) :
+              k.nbody == 3 ? ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ) :
+                             FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
         out[i] = [Float32.(DecayMatrix(dec, n, t.grid, t.grid).W) for n in t.modes]
     end
     for (k, w) in zip(keyvec, out)
@@ -152,7 +156,7 @@ metafor(dl::DecayList) = Dict{Symbol,Any}(
 
 """
     CascadeTable(dl; grid = range(0, 4.0, length = 134),
-                 orders = (nq = 32, nθ = 8, nµ = 8), modes = [0, 2],
+                 orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8), modes = [0, 2],
                  cache = nothing, rebuild = false)
 
 Load the tables from `cache` if present and compatible (same format, grid,
@@ -162,10 +166,11 @@ warns and builds any missing keys on demand.
 """
 function CascadeTable(dl::DecayList;
                       grid = range(0.0, 4.0, length = 134),
-                      orders = (nq = 32, nθ = 8, nµ = 8),
+                      orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8),
                       modes = [0, 2], cache = nothing, rebuild = false)
     gridv = collect(Float64, grid)
-    ordersnt = NamedTuple{(:nq, :nθ, :nµ)}((orders.nq, orders.nθ, orders.nµ))
+    ordersnt = NamedTuple{(:nq, :nθ, :nµ, :nσ)}(          # get(): tolerate callers omitting nσ
+        (orders.nq, orders.nθ, orders.nµ, get(orders, :nσ, 8)))
     modesv = collect(Int, modes)
     if cache !== nothing && !rebuild
         t = loadtables(cache)
@@ -228,7 +233,7 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
         for ch in dl.byparent[pid]
             ds = ch.daughters
             nd = length(ds)
-            (nd == 1 || nd ≥ 4) && continue
+            (nd == 1 || nd ≥ 5) && continue
             all(d -> haskey(dl.parts, d), ds) || continue
             ms = [dl.parts[d].mass for d in ds]
             ma > sum(ms) + 1e-6 || continue

@@ -35,7 +35,7 @@ using FastGaussQuadrature: gausslegendre
 include("LagrangeWeights.jl")
 using .LagrangeWeights
 
-export kallen, TwoBodyDecay, ThreeBodyDecay, DecayMatrix
+export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -177,6 +177,24 @@ end
     decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb, d.cq, d.vq, d.cθ, d.vθ)
 
 # ---------------------------------------------------------------------------
+# Effective-mass (µ-averaged) decays: three- and four-body
+# ---------------------------------------------------------------------------
+# Both cluster the unobserved daughters into a single effective particle of
+# mass µ and average the two-body kernel over µ.  They share the functor and
+# the matrix assembly (which use only the fields ma, mb, B, Eb, coef, cq…vθ)
+# and differ solely in how the per-µ weight `coef` is built: the cluster
+# invariant-mass density ρ_{n-1}(µ) — the pair density q(µ;mc,md) for
+# three-body, the nested ρ₃(µ) for four-body (matrix_notes §3.1).
+
+abstract type MuAveraged end
+
+# Shared functor: B·ma/(4π) · Σᵢ coefᵢ K(E_b(µᵢ)), Eq. (59) and its 4-body analog.
+(d::MuAveraged)(Fa::F, pT, ηp, ϕp) where {F} =
+    d.B * d.ma / (4π) *
+    sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb[i],
+                                d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
+
+# ---------------------------------------------------------------------------
 # Three-body decay a → b + c + d, Eq. (59)
 # ---------------------------------------------------------------------------
 
@@ -191,7 +209,7 @@ averaged over `nµ` cosine-mapped Gauss–Legendre nodes µᵢ with rest-frame
 energies E_b(µᵢ) (Eq. 45) and weights ∝ p_c̃(µᵢ) (Eq. 47), normalized by
 N = ∫ dµ p_b p_c̃ (Eq. 48).
 """
-struct ThreeBodyDecay
+struct ThreeBodyDecay <: MuAveraged
     ma::Float64
     mb::Float64
     mc::Float64
@@ -226,10 +244,73 @@ function ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
     ThreeBodyDecay(ma, mb, mc, md, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
 end
 
-(d::ThreeBodyDecay)(Fa::F, pT, ηp, ϕp) where {F} =
-    d.B * d.ma / (4π) *                                  # Eq. (59)
-    sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb[i],
-                                d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
+# ---------------------------------------------------------------------------
+# Four-body decay a → b + c + d + e (matrix_notes §3.1)
+# ---------------------------------------------------------------------------
+
+# Cluster invariant-mass density ρ₃(µ) = ∫_{md+me}^{µ−mc} dσ q(µ;mc,σ) q(σ;md,me),
+# the three-particle (cde) phase-space volume (Dalitz area) at cluster mass µ.
+# One cosine-mapped Gauss sweep over the sub-mass σ; the map absorbs the √
+# endpoint zeros of q at σ = md+me and σ = µ−mc. Kernel-free, hence cheap.
+@inline function clusterdensity3(µ, mc, md, me, cσ, vσ)
+    lo, hi = md + me, µ - mc
+    hi > lo || return 0.0
+    h, m = (hi - lo) / 2, (hi + lo) / 2
+    s = 0.0
+    @inbounds for k in eachindex(cσ)
+        σ = m - h * cσ[k]
+        qµ = sqrt(max(kallen(µ^2, mc^2, σ^2), 0.0)) / (2µ)   # q(µ; mc, σ)
+        qσ = sqrt(max(kallen(σ^2, md^2, me^2), 0.0)) / (2σ)  # q(σ; md, me)
+        s += vσ[k] * qµ * qσ
+    end
+    return h * s
+end
+
+"""
+    FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
+
+Callable decay map of the isotropic four-body decay a → b + c + d + e. Identical
+in structure to `ThreeBodyDecay` — the same kernel averaged over the cluster
+mass µ ∈ [mc+md+me, ma−mb] — but the per-µ weight uses the three-particle
+cluster density ρ₃(µ) (an inner `nσ`-point σ-integral) in place of the pair
+density. Normalized by N = ∫ dµ p_b ρ₃ (matrix_notes §3.1).
+"""
+struct FourBodyDecay <: MuAveraged
+    ma::Float64
+    mb::Float64
+    mc::Float64
+    md::Float64
+    me::Float64
+    B::Float64
+    Eb::Vector{Float64}          # E^a_b(µᵢ)
+    coef::Vector{Float64}        # vᵢ ρ₃(µᵢ) / N
+    cq::Vector{Float64}
+    vq::Vector{Float64}
+    cθ::Vector{Float64}
+    vθ::Vector{Float64}
+end
+
+function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
+    ma ≥ mb + mc + md + me || throw(ArgumentError("decay closed: ma < mb + mc + md + me"))
+    mb > 0 || throw(ArgumentError("massless daughter b not supported"))
+    cµ, vµ = cosnodes(nµ)
+    cσ, vσ = cosnodes(nσ)
+    lo, hi = mc + md + me, ma - mb
+    h, m = (hi - lo) / 2, (hi + lo) / 2
+    Eb = Vector{Float64}(undef, nµ)
+    coef = Vector{Float64}(undef, nµ)
+    norm = 0.0
+    for i in 1:nµ
+        µ = m - h * cµ[i]
+        Eb[i] = (ma^2 + mb^2 - µ^2) / (2ma)
+        pb = sqrt(max(kallen(ma^2, mb^2, µ^2), 0.0)) / (2ma)
+        ρ3 = clusterdensity3(µ, mc, md, me, cσ, vσ)          # cluster density
+        coef[i] = vµ[i] * ρ3
+        norm += vµ[i] * pb * ρ3                              # → N = ∫ dµ p_b ρ₃
+    end
+    coef ./= norm
+    FourBodyDecay(ma, mb, mc, md, me, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
+end
 
 # ---------------------------------------------------------------------------
 # Matrix representation on a fixed parent grid (η-independent sources)
@@ -281,11 +362,13 @@ function DecayMatrix(d::TwoBodyDecay, n::Integer, pTs, qgrid; P = Val(4))
     DecayMatrix(n, pTv, collect(Float64, qgrid), W)
 end
 
-function DecayMatrix(d::ThreeBodyDecay, n::Integer, pTs, qgrid; P = Val(4))
+# Three- and four-body share this: the µ-average is a coef-weighted sum of the
+# same two-body scatter (Eq. 59 and its 4-body analog), differing only in coef.
+function DecayMatrix(d::MuAveraged, n::Integer, pTs, qgrid; P = Val(4))
     pTv = collect(Float64, pTs)
     W = zeros(length(pTv), length(qgrid))
     Threads.@threads for k in eachindex(pTv)
-        for i in eachindex(d.coef)                          # µ-average, Eq. (59)
+        for i in eachindex(d.coef)                          # µ-average
             scatterrow!(view(W, k, :), n, d.ma, d.mb, d.Eb[i], pTv[k],
                         d.cq, d.vq, d.cθ, d.vθ, qgrid, P, d.B * d.ma / (4π) * d.coef[i])
         end

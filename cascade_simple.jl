@@ -26,7 +26,7 @@ using Printf
 
 const T = 0.145                                  # GeV
 const grid = collect(range(0.0, 5.0, length = 168))   # common grid, h ≈ 0.03
-const NQ, NΘ, NΜ = 32, 8, 8                      # quadrature orders (~1e-4 level)
+const NQ, NΘ, NΜ, NΣ = 32, 8, 8, 8              # quadrature orders (~1e-4 level)
 
 parts, byparent = read_decaylist("decays_QM2016Plus_massorder.dat")
 
@@ -43,14 +43,14 @@ function run_cascade!(F, parts, byparent, grid)
 
     # W depends only on the masses (and mode), not on charges or the source,
     # so charge/antiparticle partners share one matrix. Key layout:
-    # (2or3, ma, mb, mc[, md]) — mb is the OBSERVED daughter and must keep its
-    # slot (the kernel singles it out via E_b, the qT band and 1/p_b), while
+    # (nbody, ma, mb, mc[, md[, me]]) — mb is the OBSERVED daughter and must keep
+    # its slot (the kernel singles it out via E_b, the qT band and 1/p_b), while
     # the unobserved partners are interchangeable (they enter only through the
     # symmetric µ machinery) and are sorted to canonicalize the key.
-    cache = Dict{NTuple{5,Float64},Matrix{Float64}}()
-    seen = Set{NTuple{5,Float64}}()        # distinguishes rebuilds from new keys
+    cache = Dict{NTuple{6,Float64},Matrix{Float64}}()
+    seen = Set{NTuple{6,Float64}}()        # distinguishes rebuilds from new keys
 
-    stats = Dict(:built => 0, :applied => 0, :closed => 0, :nd4 => 0,
+    stats = Dict(:built => 0, :applied => 0, :closed => 0, :nd5 => 0,
                  :self => 0, :γdaughter => 0, :unknown => 0, :unique => 0)
     for pid in order
         haskey(byparent, pid) || continue
@@ -61,8 +61,8 @@ function run_cascade!(F, parts, byparent, grid)
             nd = length(ds)
             # stable particles are encoded as a self-channel (nd = 1)
             nd == 1 && (stats[:self] += 1; continue)
-            # no 4-body kernel; small total BR, counted and reported
-            nd ≥ 4 && (stats[:nd4] += 1; continue)
+            # no 5-body kernel (none in this list); counted and reported
+            nd ≥ 5 && (stats[:nd5] += 1; continue)
             all(d -> haskey(parts, d), ds) || (stats[:unknown] += 1; continue)
             ms = [parts[d].mass for d in ds]
             # channels closed at nominal masses proceed only via finite widths,
@@ -78,13 +78,16 @@ function run_cascade!(F, parts, byparent, grid)
                 # but stay valid as the unobserved partner (mc = 0, e.g. Σ⁰→Λγ)
                 mb > 0 || (stats[:γdaughter] += 1; continue)
                 rest = sort!([ms[t] for t in eachindex(ms) if t != slot])
-                key = nd == 2 ? (2.0, ma, mb, rest[1], 0.0) : (3.0, ma, mb, rest[1], rest[2])
+                key = nd == 2 ? (2.0, ma, mb, rest[1], 0.0, 0.0) :
+                      nd == 3 ? (3.0, ma, mb, rest[1], rest[2], 0.0) :
+                                (4.0, ma, mb, rest[1], rest[2], rest[3])
                 W = get!(cache, key) do
                     stats[:built] += 1
                     key in seen || (push!(seen, key); stats[:unique] += 1)
-                    dec = nd == 2 ?
-                        TwoBodyDecay(ma, mb, rest[1]; nq = NQ, nθ = NΘ) :
-                        ThreeBodyDecay(ma, mb, rest[1], rest[2]; nµ = NΜ, nq = NQ, nθ = NΘ)
+                    dec = nd == 2 ? TwoBodyDecay(ma, mb, rest[1]; nq = NQ, nθ = NΘ) :
+                          nd == 3 ? ThreeBodyDecay(ma, mb, rest[1], rest[2]; nµ = NΜ, nq = NQ, nθ = NΘ) :
+                                    FourBodyDecay(ma, mb, rest[1], rest[2], rest[3];
+                                                  nµ = NΜ, nσ = NΣ, nq = NQ, nθ = NΘ)
                     DecayMatrix(dec, 0, grid, grid).W
                 end
                 # matrices are built with B = 1; the branching ratio is applied
@@ -105,8 +108,8 @@ t0 = time()
 stats = run_cascade!(F, parts, byparent, grid)
 @printf("cascade done in %.1f s:  %d matrix builds (%d unique), %d applications, %d threads\n",
         time() - t0, stats[:built], stats[:unique], stats[:applied], Threads.nthreads())
-@printf("skipped:  %d stable self-channels, %d 4-body, %d closed-at-nominal-mass, %d γ daughters, %d unknown ids\n",
-        stats[:self], stats[:nd4], stats[:closed], stats[:γdaughter], stats[:unknown])
+@printf("skipped:  %d stable self-channels, %d 5-body, %d closed-at-nominal-mass, %d γ daughters, %d unknown ids\n",
+        stats[:self], stats[:nd5], stats[:closed], stats[:γdaughter], stats[:unknown])
 
 # ---------------------------------------------------------------- results
 idx(pT) = argmin(abs.(grid .- pT))

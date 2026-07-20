@@ -5,6 +5,7 @@
 # 2. Fourier modes: the cos(nϕ)-modulated-input trick (Eq. 41) must reconstruct
 #    the direct ϕ-dependent spectrum (Eq. 32) of a modulated source.
 # 3. Three-body number conservation, Eq. (59).
+# 3b. Four-body number conservation + cluster-mass permutation symmetry (§3.1).
 # 4. Quadrature convergence: default Gauss–Legendre orders vs doubled.
 
 include("DecaySpectra.jl")
@@ -62,6 +63,26 @@ Nbω = 2π * quadgk(pT -> quadgk(ηp -> pT * ω(Faω, pT, ηp, 0.0),
                   0, Inf; rtol = 1e-3)[1]
 @printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Naω, Nbω, Nbω / Naω)
 @assert isapprox(Nbω, ω.B * Naω; rtol = 5e-3)
+println("   PASS")
+
+# ---------------------------------------------------------------- test 3b
+println("== 3b. Four-body number conservation + cluster symmetry:  a → ππππ ==")
+d4 = FourBodyDecay(1.3, 0.1396, 0.1396, 0.1396, 0.1350; B = 1.0)
+Fa4 = thermal(1.3)
+Na4 = number(Fa4)
+Nb4 = 2π * quadgk(pT -> quadgk(ηp -> pT * d4(Fa4, pT, ηp, 0.0),
+                              -Inf, Inf; rtol = 1e-3)[1],
+                 0, Inf; rtol = 1e-3)[1]
+@printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Na4, Nb4, Nb4 / Na4)
+@assert isapprox(Nb4, d4.B * Na4; rtol = 5e-3)
+# ρ₃ is symmetric under permuting the three cluster masses (any particle may be
+# peeled first, Eq. rho3); the constructor does NOT sort them, so permuting the
+# inputs and getting the same spectrum genuinely tests the inner σ-integral.
+v0 = d4(Fa4, 0.5, 0.3, 0.2)
+dev = maximum(abs(FourBodyDecay(1.3, 0.1396, p...)(Fa4, 0.5, 0.3, 0.2) / v0 - 1)
+              for p in ([0.1350, 0.1396, 0.1396], [0.1396, 0.1350, 0.1396]))
+@printf("   cluster-mass permutation: max rel dev = %.1e\n", dev)
+@assert dev < 1e-3
 println("   PASS")
 
 # ---------------------------------------------------------------- test 4

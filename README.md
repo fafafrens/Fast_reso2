@@ -1,9 +1,9 @@
 # Fast_reso2
 
 Resonance **feed-down** for particle spectra in heavy-ion collisions: given a
-thermal source of primary resonances, propagate every decay (2- and 3-body)
-through the full mass-ordered cascade to obtain the final-state spectra,
-including azimuthal (elliptic-flow) modulation.
+thermal source of primary resonances, propagate every decay (2-, 3-, and
+4-body) through the full mass-ordered cascade to obtain the final-state
+spectra, including azimuthal (elliptic-flow) modulation.
 
 The decay map is represented as a **matrix** in transverse momentum and
 azimuthal Fourier mode, built once per channel and reused across the cascade.
@@ -14,7 +14,7 @@ finite-width extensions — are in [`matrix_notes.tex`](matrix_notes.tex).
 
 | File | Role |
 |------|------|
-| `DecaySpectra.jl`   | Core decay map: 2-/3-body kernels, spectra as functors |
+| `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels, spectra as functors |
 | `CascadeTables.jl`  | Persistent per-channel decay matrices + mass-descending cascade |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |

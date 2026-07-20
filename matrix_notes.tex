@@ -715,13 +715,16 @@ usual on-shell-spectral compromise, adequate while $\Gamma_a/m_a$ is not
 too large.
 
 \paragraph{Status.}
-Neither extension is implemented in the present code --- the cascade uses
-sharp masses and $\le3$-body channels, skipping four-body and
-nominally-closed channels (counted and reported).  Both are, however,
-pure applications of the machinery already built: four-body needs only the
-weight \eqref{eq:rho3} in place of $p^{\tilde c}_c$, and finite width needs
-an outer spectral average for parent/observed legs \eqref{eq:width-matrixsum}
-(or an enriched weight for the rest).  Finite width is not a small
+Four-body is now implemented (the $531$ unique cluster keys of the list's
+$400$ four-body channels): the constructor reuses the entire three-body
+kernel/matrix path and only swaps the pair density $p^{\tilde c}_c$ for the
+nested weight $\rho_3(\mu)$ of \eqref{eq:rho3} --- an inner cosine-mapped
+$\sigma$-quadrature --- exactly as argued here.  It is validated by
+four-body number conservation and by the cluster-mass permutation symmetry
+of $\rho_3$ (agreement at machine precision, $\sim\!10^{-16}$).  Finite
+width remains future work: it needs an outer spectral average for the
+parent/observed legs \eqref{eq:width-matrixsum} (or an enriched weight for
+the rest).  Finite width is not a small
 correction for this list: of the $1518$ species, $713$ carry a width and
 $464$ are broad ($\Gamma>150$\,MeV), and many broad states are parents ---
 so the expensive parent-average applies to hundreds of channels, and
