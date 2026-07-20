@@ -52,6 +52,33 @@ fig = plot(panels...; layout = (1, 3), size = (1150, 380), margin = 5Plots.mm)
 savefig(fig, "feeddown_topology.png")
 println("plot saved to feeddown_topology.png")
 
+# ---------------------------------------------------------------------------
+# Plot: the overall spectra F = E dN/d³p vs pT — top row log-y, bottom row
+# linear-y — per species, three nested topologies + the primary (no-decay)
+# reference. Log shows the shape over decades; linear shows the low-pT bulk.
+# ---------------------------------------------------------------------------
+speclist = (("π⁺", 211), ("K⁺", 321), ("p", 2212))
+panels2 = Any[]
+for (r, logy) in enumerate((true, false))
+    for (c, (name, id)) in enumerate(speclist)
+        first = (r == 1 && c == 1)
+        pl = plot(; xlabel = "pT  [GeV]",
+                  ylabel = c == 1 ? (logy ? "F = E dN/d³p  (log)" : "F  (linear)") : "",
+                  yscale = logy ? :log10 : :identity,
+                  title = r == 1 ? name : "",
+                  legend = first ? :topright : false, common...)
+        plot!(pl, pTs, results[1][2].Fprim[id][1][mask]; label = "primary",
+              color = "#999999", ls = :dash, common...)          # same for all topologies
+        for (j, (lbl, res)) in enumerate(results)
+            plot!(pl, pTs, res.F[id][1][mask]; label = lbl, color = ramp[j], common...)
+        end
+        push!(panels2, pl)
+    end
+end
+fig2 = plot(panels2...; layout = (2, 3), size = (1150, 720), margin = 5Plots.mm)
+savefig(fig2, "feeddown_spectra.png")
+println("plot saved to feeddown_spectra.png")
+
 # print the endpoint numbers so the figure has a text companion
 println("\nF_tot/F_prim at pT ≈ 0.6:")
 i06 = findmin(abs.(tab.grid .- 0.6))[2]

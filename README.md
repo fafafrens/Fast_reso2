@@ -21,7 +21,7 @@ finite-width extensions — are in [`matrix_notes.tex`](matrix_notes.tex).
 | `cascade.jl`        | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) |
 | `cascade_simple.jl` | Minimal single-mode cascade — regression reference |
 | `demo.jl`           | Worked example: pion feed-down from ρ→ππ and ω→πππ |
-| `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via channel filtering → `feeddown_topology.png` |
+| `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via channel filtering → enhancement `feeddown_topology.png` + spectra (log & linear) `feeddown_spectra.png` |
 | `runtests.jl`       | Test suite: conservation, Fourier modes, quadrature & Lagrange convergence, tables |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 
