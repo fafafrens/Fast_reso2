@@ -35,7 +35,7 @@ using FastGaussQuadrature: gausslegendre
 include("LagrangeWeights.jl")
 using .LagrangeWeights
 
-export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix
+export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix, decaymatrices
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -349,31 +349,55 @@ end
 _stencil(x, g::AbstractRange, P) = lagrangeweights(x, first(g), step(g), length(g), P)
 _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 
-# Rows are independent (each thread writes only its own row view), so the
-# assembly threads over daughter pT; result is bitwise identical to serial.
-function DecayMatrix(d::TwoBodyDecay, n::Integer, pTs, qgrid; P = Val(4))
+# ---------------------------------------------------------------------------
+# Fused multi-mode assembly: every Fourier mode in one quadrature sweep. The
+# qT/Z geometry, the R(Z) factors and the Lagrange stencil are mode-independent
+# — only the Chebyshev factor Tₙ(Z) differs — so building the modes together
+# shares that work. Modes are carried as a Tuple, so the per-mode accumulators
+# live on the stack (no heap, no per-thread scratch); one recurrence supplies
+# the whole Chebyshev string for the requested modes at each node.
+# Rows are independent (each thread writes only its own row of every matrix),
+# so the assembly threads over daughter pT and is bitwise identical to serial.
+# ---------------------------------------------------------------------------
+
+# Core (mt a Tuple of modes) → one Float64 matrix per mode.
+function decaymatrices(d::TwoBodyDecay, mt::Tuple, pTs, qgrid; P = Val(4))
     pTv = collect(Float64, pTs)
-    W = zeros(length(pTv), length(qgrid))
+    Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
+    nθ, pref = length(d.cθ), d.B * d.ma / (4π * d.pb)
     Threads.@threads for k in eachindex(pTv)
-        scatterrow!(view(W, k, :), n, d.ma, d.mb, d.Eb, pTv[k],
-                    d.cq, d.vq, d.cθ, d.vθ, qgrid, P, d.B * d.ma / (4π * d.pb))
+        scatterrows!(map(W -> view(W, k, :), Ws), mt, d.ma, d.mb, d.Eb, pTv[k],
+                     d.cq, d.vq, nθ, qgrid, P, pref)
     end
-    DecayMatrix(n, pTv, collect(Float64, qgrid), W)
+    return collect(Ws)
 end
 
-# Three- and four-body share this: the µ-average is a coef-weighted sum of the
-# same two-body scatter (Eq. 59 and its 4-body analog), differing only in coef.
-function DecayMatrix(d::MuAveraged, n::Integer, pTs, qgrid; P = Val(4))
+# Three- and four-body: the µ-average is a coef-weighted sum of the same scatter.
+function decaymatrices(d::MuAveraged, mt::Tuple, pTs, qgrid; P = Val(4))
     pTv = collect(Float64, pTs)
-    W = zeros(length(pTv), length(qgrid))
+    Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
+    nθ, base = length(d.cθ), d.B * d.ma / (4π)
     Threads.@threads for k in eachindex(pTv)
+        rows = map(W -> view(W, k, :), Ws)
         for i in eachindex(d.coef)                          # µ-average
-            scatterrow!(view(W, k, :), n, d.ma, d.mb, d.Eb[i], pTv[k],
-                        d.cq, d.vq, d.cθ, d.vθ, qgrid, P, d.B * d.ma / (4π) * d.coef[i])
+            scatterrows!(rows, mt, d.ma, d.mb, d.Eb[i], pTv[k],
+                         d.cq, d.vq, nθ, qgrid, P, base * d.coef[i])
         end
     end
-    DecayMatrix(n, pTv, collect(Float64, qgrid), W)
+    return collect(Ws)
 end
+
+# Entry from a modes vector, with a fallback for many modes (tuple ops stop
+# unrolling past ~32, so cap the fused path and loop single-mode beyond that).
+function decaymatrices(d, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4))
+    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P)
+    return [DecayMatrix(d, n, pTs, qgrid; P).W for n in modes]
+end
+
+# Single-mode public API: one DecayMatrix struct, via the fused core with (n,).
+DecayMatrix(d::Union{TwoBodyDecay,MuAveraged}, n::Integer, pTs, qgrid; P = Val(4)) =
+    DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
+                decaymatrices(d, (n,), pTs, qgrid; P)[1])
 
 # Chebyshev–Gauss nodes Z_k = cos((2k−1)π/(2n)), memoized like cosnodes.
 const _CHEBNODES = Dict{Int,Vector{Float64}}()
@@ -392,16 +416,24 @@ end
     return Tm
 end
 
-# Mirrors decaykernel's qT structure, but instead of evaluating Fa it
-# scatters the quadrature factor onto the parent-grid stencil. The inner
-# integral is done in Z = D/Q rather than Δη — an η-independent source never
-# needs the rapidity itself, and in Z everything is algebraic:
+# Tₘ(Z) for every requested mode m, as a tuple. `map` over the mode tuple
+# unrolls; chebT is cheap, so recomputing per mode is fine — the shared cost
+# is the √, the geometry and the stencil, all hoisted out of the mode loop.
+@inline chebvals(modes::Tuple, Z) = map(n -> chebT(n, Z), modes)
+
+# Multi-mode scatter: mirrors decaykernel's qT structure but scatters the
+# quadrature factor onto the parent-grid stencil instead of evaluating Fa. The
+# inner integral is done in Z = D/Q rather than Δη (an η-independent source never
+# needs the rapidity), so everything is algebraic (matrix_notes §8):
 #     2 ∫dΔη Θ/√(Q²−D²) · 2Tₙ(Z)  =  (4/M) ∫_{Zlo}^{1} Tₙ(Z) dZ / √((1−Z²)(c²−1)),
-# with c = cosh Δη = (C + QZ)/M and Zlo = (M−C)/Q (where c = 1). No acosh,
-# cosh, or acos appears. For Zlo ≤ −1 the 1/√(1−Z²) factor is exactly the
-# Chebyshev–Gauss weight (fixed nodes, weight π/n); otherwise the cosine map
-# absorbs the 1/√ endpoints at Zlo (from c²−1) and at 1 (from 1−Z²).
-function scatterrow!(row, n, ma, mb, Eb, pT, cq, vq, cθ, vθ, qgrid, P, pref)
+# c = (C+QZ)/M, Zlo = (M−C)/Q. Both windows use a Chebyshev–Gauss rule with the
+# inverse-√ weight removed analytically (R = √(c²−1) full, √((Q/M)(1+Z)(c+1))
+# partial), so no positivity guard. All of that is mode-independent; only Tₙ(Z)
+# varies. So K modes accumulate together in the stack tuple `s` and scatter onto
+# their K rows through the one shared stencil — each row bit-identical to a
+# single-mode build.
+function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, nθ,
+                      qgrid, P, pref) where {K}
     pb = sqrt(max(Eb^2 - mb^2, 0.0))
     C = ma * Eb
     mbT = hypot(mb, pT)
@@ -411,10 +443,11 @@ function scatterrow!(row, n, ma, mb, Eb, pT, cq, vq, cθ, vθ, qgrid, P, pref)
     segments = qlo < qstar < qhi ? ((qlo, qstar), (qstar, qhi)) :
                                    ((qlo, qhi), (qhi, qhi))
     qmin, qmax = first(qgrid), last(qgrid)
+    zc = chebnodes(nθ)
+    zero_s = ntuple(_ -> 0.0, Val(K))
     for (a, b) in segments
         a < b || continue
         hq, mq = (b - a) / 2, (a + b) / 2
-        zc = chebnodes(length(cθ))
         @inbounds for i in eachindex(cq)
             qT = mq - hq * cq[i]
             qmin ≤ qT ≤ qmax || continue           # F_a ≡ 0 off the grid
@@ -422,41 +455,37 @@ function scatterrow!(row, n, ma, mb, Eb, pT, cq, vq, cθ, vθ, qgrid, P, pref)
             Q = qT * pT
             M < C + Q || continue                  # Θ support (Z window nonempty)
             Zlo = (M - C) / Q
-            s = 0.0
+            s = zero_s
             if Zlo ≤ -1                            # full window: Chebyshev–Gauss
-                # for Zlo just below −1 the factor 1/√(c²−1) is steep at the
-                # Z = −1 edge (scale |Zlo+1|); densify the rule there
-                z = Zlo > -1.5 ? chebnodes(4 * length(cθ)) : zc
+                z = Zlo > -1.5 ? chebnodes(4 * nθ) : zc   # densify near the transition
                 for Z in z
                     c = (C + Q * Z) / M
-                    s += chebT(n, Z) / sqrt((c - 1) * (c + 1))
+                    s = s .+ chebvals(modes, Z) ./ sqrt((c - 1) * (c + 1))
                 end
-                s *= π / length(z)
-            else                                   # partial window [Zlo, 1]: shifted Chebyshev–Gauss
-                # Analytic cancellation (matrix_notes §8.2): because c−1 = (Q/M)(Z−Zlo)
-                # is exactly linear, the radicand factors into the endpoint weight
-                # (1−Z)(Z−Zlo) times a regular R² = (Q/M)(1+Z)(c+1) > 0. Removing the
-                # weight with the shifted Chebyshev rule (uniform π/nθ) leaves the smooth
-                # Tₙ(Z)/R — the same rule as the full window above, and no positivity guard.
-                # As Zlo→−1 the smooth part gains a nearby singularity at Z=−1 (the 1+Z
-                # in R); densify there, mirroring the full-window branch.
-                zp = Zlo < -0.5 ? chebnodes(4 * length(cθ)) : zc
+                s = s .* (π / length(z))
+            else                                   # partial window: shifted Chebyshev–Gauss
+                # analytic cancellation (matrix_notes §8.2): endpoint weight removed,
+                # regular R² = (Q/M)(1+Z)(c+1) > 0, no guard; densify near Zlo→−1.
+                zp = Zlo < -0.5 ? chebnodes(4 * nθ) : zc
                 hz, mz = (1 - Zlo) / 2, (1 + Zlo) / 2
                 for ζ in zp
                     Z = mz + hz * ζ
                     c = (C + Q * Z) / M
-                    s += chebT(n, Z) / sqrt((Q / M) * (1 + Z) * (c + 1))
+                    s = s .+ chebvals(modes, Z) ./ sqrt((Q / M) * (1 + Z) * (c + 1))
                 end
-                s *= π / length(zp)
+                s = s .* (π / length(zp))
             end
-            fac = pref * vq[i] * hq * qT * (4 / M) * s
+            fac0 = pref * vq[i] * hq * qT * (4 / M)
             j0, w = _stencil(qT, qgrid, P)
-            for (m, wm) in pairs(w)
-                row[j0 + m - 1] += fac * wm
+            for kk in 1:K
+                fac = fac0 * s[kk]
+                for (m, wm) in pairs(w)
+                    rows[kk][j0 + m - 1] += fac * wm
+                end
             end
         end
     end
-    return row
+    return rows
 end
 
 end # module

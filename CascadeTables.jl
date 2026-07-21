@@ -202,7 +202,7 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ)
-        out[i] = [Float32.(DecayMatrix(dec, n, t.grid, t.grid).W) for n in t.modes]
+        out[i] = [Float32.(W) for W in decaymatrices(dec, t.modes, t.grid, t.grid)]
     end
     for (k, w) in zip(keyvec, out)
         t.W[k] = w
