@@ -593,146 +593,126 @@ the rest are clustered, and $\rho_{n-1}$ is built from their masses.
 \subsection{Finite widths}
 \label{sec:width}
 
-The kernels above take every mass sharp.  A resonance of width $\Gamma_i$
-instead carries a spectral function $\varrho_i(m)$ --- a (relativistic,
-mass-dependent-width, kinematically truncated and renormalized)
-Breit--Wigner,
+So far every mass has been sharp.  A resonance of width $\Gamma_i$ is
+instead spread over a spectral function --- a relativistic Breit--Wigner,
 \begin{equation}
 \varrho_i(m)\;\propto\;
 \frac{m^2\,\Gamma_i(m)}
 {\big(m^2-m_i^2\big)^2+m_i^2\,\Gamma_i(m)^2},
 \qquad
-\int_{m_{\min}}^{m_{\max}}\!\varrho_i(m)\,\mathrm{d}m=1,
+\int\varrho_i(m)\,\mathrm{d}m=1,
 \end{equation}
-reducing to $\delta(m-m_i)$ as $\Gamma_i\to0$.  For a resonance decaying to
-two particles in relative orbital angular momentum $\ell$ the width itself
-is mass dependent,
+whose width is itself mass dependent when the resonance decays to two
+particles in relative angular momentum $\ell$,
 \begin{equation}
 \Gamma_i(m)=\Gamma_i\,\frac{m_i}{m}
 \left(\frac{q(m;m_1,m_2)}{q(m_i;m_1,m_2)}\right)^{2\ell+1}
-\frac{B_\ell\big(q(m)\big)}{B_\ell\big(q(m_i)\big)},
+\frac{B_\ell\big(q(m)\big)}{B_\ell\big(q(m_i)\big)}
 \label{eq:massdep-width}
 \end{equation}
-with $B_\ell$ the Blatt--Weisskopf barrier factor.  It vanishes at the
-threshold $m=m_1+m_2$ (where the daughter momentum $q\to0$), cutting the
-low tail of $\varrho_i$ and enforcing that the resonance cannot decay below
-threshold; the normalization runs over the open range and is recomputed per
-channel.  Finite width enters the decay map in three distinct places, which
-differ sharply in cost:
-\begin{enumerate}
-\item \textbf{Unobserved cluster constituents.}
-A width on any $c_i$ folds \emph{into the mass density}: in the recursion
-\eqref{eq:phasespace-recursion} the sharp $q(\mu;m_{c_1},\sigma)$ is
-averaged, $q\to\int\mathrm{d}m_{c_1}\varrho(m_{c_1})\,q(\mu;m_{c_1},\sigma)$.
-This is kernel-free --- it modifies $\rho_{n-1}(\mu)$ only --- and hence
-\emph{cheap}, exactly like adding a daughter.  Physically this is already
-how an intermediate resonance is represented (e.g.\ $a\to b\,\rho$,
-$\rho\to\pi\pi$ \emph{is} the three-body $\mu$ integral with $\varrho_\rho$
-sharpening the weight near $\mu=m_\rho$).
-\item \textbf{Observed daughter $b$.}
-Here $E_b$, $p_b$ and the whole $q_T$ band depend on $m_b$, so a width on
-$b$ requires an \emph{outer average of the kernel},
-$K\to\int\mathrm{d}m_b\,\varrho_b(m_b)\,K$, one full kernel evaluation per
-$m_b$ node --- \emph{expensive}.  In practice the observed daughter is
-usually stable or narrow (the measured $\pi,K,p,\Lambda$), so this reduces
-to the sharp $\delta$ and costs nothing; it matters only for broad
-observed resonances mid-cascade.
-\item \textbf{Parent $a$.}
-The parent mass sets $C=m_aE_b$, $m_{aT}$, and the band edges $q_T^\pm$;
-a width on $a$ likewise demands an outer average
-$\int\mathrm{d}m_a\,\varrho_a(m_a)\,(\cdots)$ with a full kernel per node
---- \emph{expensive}, but often the most important physically, since the
-broadest states ($\sigma$, $\rho$, $\Delta$, higher resonances) are
-parents.
-\end{enumerate}
-Thus the same organizing principle recurs: widths of particles that enter
-\emph{only through the effective mass} are absorbed into the precomputed
-weight at negligible cost, whereas widths of the two particles whose
-masses enter the \emph{kinematics of the observed leg} (parent and
-observed daughter) multiply the number of kernel evaluations.
+($B_\ell$ the Blatt--Weisskopf barrier factor).  It vanishes at threshold
+$m=m_1+m_2$, so $\varrho_i$ carries no weight below threshold, and
+$\varrho_i\to\delta(m-m_i)$ as $\Gamma_i\to0$.
 
-\subsubsection{Resonances and widths are one object}
+\paragraph{One principle, two costs.}
+Whether a given width is cheap or expensive to include is decided by
+\emph{how that mass enters the decay map}.  A mass that enters \emph{only
+through the effective cluster mass $\mu$} --- any of the unobserved
+daughters --- reshapes the precomputed weight $\rho_{n-1}(\mu)$ and nothing
+else, so it costs nothing extra.  A mass that enters the \emph{kinematics of
+the observed leg} --- the parent (through $C=m_aE_b$ and the $q_T$ band) or
+the observed daughter (through $E_b,p_b$) --- changes the kernel itself, and
+must be handled by an \emph{outer average}: one kernel build per mass node.
+The three places a width can sit map onto exactly this split:
+\begin{itemize}
+\item \textbf{Unobserved / cluster masses --- cheap.}  A width on any $c_i$
+just averages the sharp momentum inside the phase-space recursion
+\eqref{eq:phasespace-recursion},
+$q(\mu;m_{c_1},\sigma)\to\int\mathrm{d}m_{c_1}\,\varrho(m_{c_1})\,q(\mu;m_{c_1},\sigma)$.
+It modifies $\rho_{n-1}(\mu)$ and touches no kernel.
+\item \textbf{Observed daughter $b$ --- expensive, but usually moot.}
+$K\to\int\mathrm{d}m_b\,\varrho_b(m_b)\,K$.  The measured $\pi,K,p,\Lambda$
+are stable or narrow, so this collapses to the sharp $\delta$; it only
+matters for a broad observed resonance mid-cascade.
+\item \textbf{Parent $a$ --- expensive, and dominant.}
+$\int\mathrm{d}m_a\,\varrho_a(m_a)\,(\cdots)$.  The broadest states
+($\sigma,\rho,\Delta,\dots$) are parents, so this is where finite width
+matters most.
+\end{itemize}
+The next two subsections treat the cheap and the expensive case in turn.
 
-The cluster-width folding (case~1) and the effective-mass integral are not
-two mechanisms but one.  Near a resonance $R$ in the $c\,c'$ channel the
-invariant-mass density $\rho_2(\mu)=q(\mu;m_c,m_{c'})$ is multiplied by the
-resonance propagator, i.e.\ it \emph{becomes} a Breit--Wigner peak in
-$\mu$: the two statements ``$a\to b\,R$ with $R\to c\,c'$ of finite width''
-and ``$a\to b\,c\,c'$ with the pair weighted by $\varrho_R(\mu)$'' are
-literally the same $\mu$ integral \eqref{eq:threebody-recursive}.  A narrow
-$R$ sends $\varrho_R\to\delta(\mu-m_R)$ and factorizes the cascade into the
-sharp two-body steps $a\to bR$ then $R\to cc'$; a broad $R$ smears them
-together.  This is precisely why intermediate-resonance width is the cheap
-case --- it lives entirely in the weight that the effective-mass integral
-already evaluates --- and it is the physically dominant one, since the
-broad $\rho,\sigma,K^*,\Delta$ appear overwhelmingly as intermediate states.
+\subsubsection{The cheap case: width is a reweighting of the $\mu$ integral}
 
-\subsubsection{The parent-width average as a matrix sum}
+Case~1 is not a new mechanism --- it \emph{is} the effective-mass integral
+of Sec.~\ref{sec:recursive}.  When the unobserved pair $c\,c'$ forms a
+resonance $R$, its density $\rho_2(\mu)=q(\mu;m_c,m_{c'})$ picks up the $R$
+propagator and \emph{becomes} a Breit--Wigner peak in $\mu$.  The two
+statements
+\begin{center}
+``$a\to b\,R$, then $R\to c\,c'$ with $R$ broad''
+\quad$\Longleftrightarrow$\quad
+``$a\to b\,c\,c'$, pair weighted by $\varrho_R(\mu)$''
+\end{center}
+are literally the same integral \eqref{eq:threebody-recursive}.  A narrow
+$R$ collapses $\varrho_R\to\delta(\mu-m_R)$ and factorizes it back into the
+sharp two-body steps $a\to bR$ then $R\to cc'$; a broad $R$ smears the two
+together.  This is why the cheap case is also the dominant one: the broad
+$\rho,\sigma,K^*,\Delta$ appear overwhelmingly as intermediate resonances,
+and their width lives entirely in a weight the code already computes ---
+adding it is a change to the density, not to the kernel.
 
-For the matrix representation (Sec.~\ref{sec:matrix}) the parent-width case
-is especially clean.  The sharp-mass map is linear and $m_a$ enters only
-kinematically, so the width average is a weighted sum of sharp-mass
-matrices,
+\subsubsection{The expensive case: parent width as a matrix average}
+
+For the parent (or observed daughter) the mass reshapes the kinematics, so
+there is no weight to hide it in.  But the matrix form (Sec.~\ref{sec:matrix})
+keeps it clean: the sharp-mass map is linear in the source and $m_a$ enters
+only kinematically, so the width average is a weighted sum of sharp matrices,
 \begin{equation}
 W^{\rm eff}_n=\int\mathrm{d}m_a\,\varrho_a(m_a)\,W_n(m_a)
-\;\approx\;\sum_{i} w_i\,W_n\big(m_a^{(i)}\big),
+\;\approx\;\sum_i w_i\,W_n\big(m_a^{(i)}\big),
 \label{eq:width-matrixsum}
 \end{equation}
-built at $n_{m_a}$ mass-quadrature nodes spanning the truncated support of
-$\varrho_a$.  The result is a matrix of the \emph{same shape}: the cascade,
-apply, persistence and streaming machinery are all untouched, and the width
-is absorbed entirely at build time, once, then persisted.  The cost is
-$n_{m_a}$ sharp builds for that channel.  Interpolating $W_n$ in $m_a$
-rather than rebuilding is tempting but fails for the same reason a
-collocation in $\mu$ fails: the $q_T$ band $[q_T^-,q_T^+]$ of Eq.~\eqref{eq:band}
-\emph{moves} with $m_a$, so the matrices have shifting support and do not
-interpolate smoothly --- the honest mass-quadrature is required.
+built at $n_{m_a}$ mass nodes across the support of $\varrho_a$.  The result
+is a matrix of the \emph{same shape} --- cascade, apply and persistence are
+untouched, and the width is absorbed once, at build time.  (Interpolating
+$W_n$ in $m_a$ instead of rebuilding fails: the $q_T$ band
+$[q_T^-,q_T^+]$ of \eqref{eq:band} \emph{moves} with $m_a$, so the matrices
+have shifting support and do not interpolate.)  Two consequences follow.
 
-\paragraph{Reopening closed channels.}
-A channel with $\sum_{\rm daughters} m > m_a$ at the nominal parent mass is
-kinematically \emph{closed} and is skipped by the sharp-mass cascade
-(Sec.~\ref{sec:matrix}).  A finite parent width reopens it: on the upper
-tail $m_a'>\sum m$ of $\varrho_a$ the channel is allowed, and its
-contribution is
-$\int_{\sum m}^{m_{\max}}\mathrm{d}m_a'\,\varrho_a(m_a')\,(\cdots)$,
-weighted by the (small) probability in that tail.  This is the physical
-content of the ``closed-at-nominal-mass'' count reported by the cascade:
-those channels carry zero weight in the sharp limit and nonzero weight
-once the parent spectral function is restored.
+\paragraph{A width opens closed channels.}
+At the sharp pole mass a channel with $\sum_{\rm daughters}m>m_a$ is
+forbidden, and the cascade skips it.  But $\varrho_a$ has support above the
+pole: on the tail $m_a'>\sum m$ the daughters fit, and the channel
+contributes.  Nothing special is required --- the same mass average
+\eqref{eq:width-matrixsum} does it, with the closed nodes
+($m_a'<\sum m$) simply contributing zero:
+\begin{equation}
+W^{\rm eff}_n\big|_{\text{closed channel}}
+=\int_{\sum m}^{m_{\max}}\!\mathrm{d}m_a'\;\varrho_a(m_a')\,W_n(m_a').
+\end{equation}
+A channel that is exactly zero in the sharp limit thus acquires a small
+weight from the parent's high-mass tail --- this is the physical meaning of
+the ``closed-at-nominal-mass'' count the cascade reports.
 
-\paragraph{Production and decay consistency.}
-One subtlety is worth stating.  In a thermal source the parent is produced
-\emph{with} its spectral function already folded into the density, so the
-source $\Fa$ carries $\varrho_a$ in its normalization.  The decay then
-requires the parent's mass distribution \emph{conditional} on its
-momentum.  The standard approximation takes the production and decay
-spectral functions identical --- the same $\varrho_a$ in both places ---
-which is exact in the narrow-width limit and a controlled approximation
-otherwise.  A fully consistent treatment integrates the parent
-four-momentum and its mass jointly; the factorized form used here, $\Fa$
-times the $\varrho_a$-averaged decay \eqref{eq:width-matrixsum}, is the
-usual on-shell-spectral compromise, adequate while $\Gamma_a/m_a$ is not
-too large.
+\paragraph{Production and decay use the same $\varrho_a$.}
+In a thermal source the parent is produced already dressed with its spectral
+function, so $\Fa$ carries $\varrho_a$; the decay then needs the parent's
+mass \emph{conditional} on its momentum.  The standard approximation uses the
+same $\varrho_a$ in both places --- exact as $\Gamma_a\to0$, and controlled
+otherwise.  The factorized form here ($\Fa$ times the $\varrho_a$-averaged
+decay) is the usual on-shell-spectral compromise, good while $\Gamma_a/m_a$
+is not large.
 
 \paragraph{Status.}
-Four-body is now implemented (the $531$ unique cluster keys of the list's
-$400$ four-body channels): the constructor reuses the entire three-body
-kernel/matrix path and only swaps the pair density $p^{\tilde c}_c$ for the
-nested weight $\rho_3(\mu)$ of \eqref{eq:rho3} --- an inner cosine-mapped
-$\sigma$-quadrature --- exactly as argued here.  It is validated by
-four-body number conservation and by the cluster-mass permutation symmetry
-of $\rho_3$ (agreement at machine precision, $\sim\!10^{-16}$).  Finite
-width remains future work: it needs an outer spectral average for the
-parent/observed legs \eqref{eq:width-matrixsum} (or an enriched weight for
-the rest).  Finite width is not a small
-correction for this list: of the $1518$ species, $713$ carry a width and
-$464$ are broad ($\Gamma>150$\,MeV), and many broad states are parents ---
-so the expensive parent-average applies to hundreds of channels, and
-persistence (Sec.~\ref{sec:matrix}) becomes essential rather than optional.
-The cost accounting sets the implementation priority: cluster/intermediate
-widths first (cheap, and --- being the broad $\rho,\sigma,K^*,\Delta$ ---
-the dominant feed-down effect), parent width second (expensive but
-important for the broad primaries), observed-daughter width last (rare).
+Four-body is implemented (the $531$ cluster keys of Sec.~\ref{sec:recursive},
+validated by number conservation and the machine-precision cluster-mass
+symmetry of $\rho_3$).  Finite width is not yet, but this list makes it a
+leading effect rather than a correction: of the $1518$ species, $713$ carry
+a width and $464$ are broad ($\Gamma>150$\,MeV), and many broad states are
+parents.  The cost accounting sets the order --- cluster/intermediate widths
+first (free, via the density, and the dominant feed-down effect), parent
+width second (the outer average \eqref{eq:width-matrixsum}, expensive but
+where the physics lives), observed-daughter width last (rare).
 
 \section{Boost-invariant sources: one matrix per mode}
 \label{sec:matrix}
