@@ -7,35 +7,66 @@ spectra, including azimuthal (elliptic-flow) modulation.
 
 The decay map is represented as a **matrix** in transverse momentum and
 azimuthal Fourier mode, built once per channel and reused across the cascade.
-Derivations — kernels, the Toeplitz structure of the map, and the four-body /
-finite-width extensions — are in [`matrix_notes.tex`](matrix_notes.tex).
+The method — the two-body kernel and its Chebyshev–Gauss quadrature, the
+effective-mass recursion behind 3-/4-body decays, and the (documented, not yet
+coded) finite-width and rapidity-Toeplitz extensions — is derived in
+[`matrix_notes.tex`](matrix_notes.tex).
+
+**Implemented:** 2-/3-/4-body decays, boost-invariant (η-independent) sources,
+Fourier modes `n = 0, 2`, the full mass-ordered cascade, and channel filtering.
+**Documented but not yet coded:** finite resonance widths and rapidity-dependent
+(η-resolved) sources — see the note.
+
+## Requirements
+
+Julia ≥ 1.8. External packages (installed into your active environment):
+
+```julia
+using Pkg
+Pkg.add(["FastGaussQuadrature",   # core: Gauss–Legendre nodes
+         "QuadGK",                 # test suite only
+         "Plots"])                 # demo / cascade figures only
+```
+
+The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
+`FastGaussQuadrature` plus the standard library (`Serialization`, `SHA`,
+`Dates`, `Printf`); the tests add `QuadGK`; the figure scripts add `Plots`.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels, spectra as functors |
-| `CascadeTables.jl`  | Persistent per-channel decay matrices + mass-descending cascade |
+| `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
+| `CascadeTables.jl`  | Persistent per-channel decay matrices, channel filtering, mass-descending cascade |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
-| `cascade.jl`        | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) |
-| `cascade_simple.jl` | Minimal single-mode cascade — regression reference |
-| `demo.jl`           | Worked example: pion feed-down from ρ→ππ and ω→πππ |
-| `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via channel filtering → enhancement `feeddown_topology.png` + spectra (log & linear) `feeddown_spectra.png` |
-| `runtests.jl`       | Test suite: conservation, Fourier modes, quadrature & Lagrange convergence, tables |
+| `cascade.jl`        | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) → `cascade.png` |
+| `cascade_simple.jl` | Minimal single-mode cascade — the regression reference for `cascade.jl` |
+| `demo.jl`           | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
+| `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
+| `runtests.jl`       | Test suite (see below) |
+| `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 
 ## Usage
 
 ```julia
-julia runtests.jl        # validate everything
-julia demo.jl            # minimal feed-down example
-julia cascade.jl         # full cascade (first run builds the ~2.5 GB table cache; later runs ~2 s)
+julia -t auto runtests.jl     # validate everything
+julia -t auto demo.jl         # minimal ρ→ππ / ω→πππ example + figure
+julia -t auto demo_filter.jl  # feed-down by decay topology + figures
+julia -t auto cascade.jl      # full cascade + figure
 ```
 
-Only `Printf` and the standard library are required. The `Wtables.jls` cache is
-regenerable and git-ignored; the first `cascade.jl` run creates it (~37 s) and
-subsequent runs load it.
+`-t auto` (threads) matters for the table build, which parallelizes over
+channels and fuses all Fourier modes into a single quadrature sweep. The
+`Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
+builds and saves it (~30 s on 8 threads, ~2.5 GB Float32); later runs load it
+(~7 s), and the cascade sweep itself takes ~2 s.
+
+The test suite covers number conservation (2-/3-/4-body), Fourier-mode
+reconstruction, quadrature and Lagrange-weight convergence (incl. 1st/2nd
+derivatives), matrix-vs-functor agreement, the cascade round-trip, and channel
+filtering.
 
 ## Channel filtering
 
