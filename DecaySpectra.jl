@@ -432,16 +432,22 @@ function scatterrow!(row, n, ma, mb, Eb, pT, cq, vq, cθ, vθ, qgrid, P, pref)
                     s += chebT(n, Z) / sqrt((c - 1) * (c + 1))
                 end
                 s *= π / length(z)
-            else                                   # partial window [Zlo, 1]
+            else                                   # partial window [Zlo, 1]: shifted Chebyshev–Gauss
+                # Analytic cancellation (matrix_notes §8.2): because c−1 = (Q/M)(Z−Zlo)
+                # is exactly linear, the radicand factors into the endpoint weight
+                # (1−Z)(Z−Zlo) times a regular R² = (Q/M)(1+Z)(c+1) > 0. Removing the
+                # weight with the shifted Chebyshev rule (uniform π/nθ) leaves the smooth
+                # Tₙ(Z)/R — the same rule as the full window above, and no positivity guard.
+                # As Zlo→−1 the smooth part gains a nearby singularity at Z=−1 (the 1+Z
+                # in R); densify there, mirroring the full-window branch.
+                zp = Zlo < -0.5 ? chebnodes(4 * length(cθ)) : zc
                 hz, mz = (1 - Zlo) / 2, (1 + Zlo) / 2
-                for j in eachindex(cθ)
-                    Z = mz - hz * cθ[j]
+                for ζ in zp
+                    Z = mz + hz * ζ
                     c = (C + Q * Z) / M
-                    u = (1 - Z) * (1 + Z) * (c - 1) * (c + 1)
-                    u > 0 || continue
-                    s += vθ[j] * chebT(n, Z) / sqrt(u)
+                    s += chebT(n, Z) / sqrt((Q / M) * (1 + Z) * (c + 1))
                 end
-                s *= hz
+                s *= π / length(zp)
             end
             fac = pref * vq[i] * hq * qT * (4 / M) * s
             j0, w = _stencil(qT, qgrid, P)

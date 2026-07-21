@@ -34,7 +34,8 @@ export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent
 
-const FORMAT = 2                       # bump on any layout change (2: 4-body key + nσ)
+const FORMAT = 3                       # bump on any layout OR matrix-value change
+                                       # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral)
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them

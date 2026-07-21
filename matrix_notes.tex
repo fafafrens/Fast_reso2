@@ -910,24 +910,37 @@ g(Z)=\frac{T_n(Z)}{R(Z)}
      =\frac{T_n(Z)}{\sqrt{\tfrac{Q}{M}(1+Z)(c+1)}} .
 \label{eq:zsmooth}
 \end{equation}
-The cosine substitution \eqref{eq:cosmap} on $[Z_{\rm lo},1]$ then cancels
-the singular factor \emph{identically} by \eqref{eq:cancel}: the
-$\sin\theta$ of the Jacobian and the $1/\sqrt{(Z-Z_{\rm lo})(1-Z)}$ are the
-two halves of one cancellation, and the $\theta$-integrand is just
-$g(Z(\theta))$.  Discretizing with the plain $n_\theta$-point
-Gauss--Legendre rule on $[0,\pi]$,
+So $g$ carries the \emph{shifted Chebyshev weight}
+$1/\sqrt{(Z-Z_{\rm lo})(1-Z)}$ on $[Z_{\rm lo},1]$ --- the identical
+structure to the full window \eqref{eq:chebgauss}, only on a shifted
+interval --- and is integrated by the \emph{same} rule: shifted
+Gauss--Chebyshev, whose nodes carry the weight exactly and whose weights are
+the uniform $\pi/n_\theta$,
 \begin{equation}
-I_n\;\approx\;\frac{4}{M}\,\frac{\pi}{2}
-\sum_{i=1}^{n_\theta} w_i\,\frac{T_n(Z_i)}{R(Z_i)},
+I_n\;\approx\;\frac{4}{M}\,\frac{\pi}{n_\theta}
+\sum_{k=1}^{n_\theta} \frac{T_n(Z_k)}{R(Z_k)},
 \qquad
-Z_i=m-h\cos\theta_i,\quad c_i=\frac{C+QZ_i}{M},
+Z_k=m+h\cos\theta_k,\quad \theta_k=\frac{(2k-1)\pi}{2n_\theta},
+\quad c_k=\frac{C+QZ_k}{M},
 \label{eq:zpartial}
 \end{equation}
-$m,h$ the midpoint and half-width of $[Z_{\rm lo},1]$ and $w_i$ the plain
-Gauss weights.  This is the exact analogue of the full-window formula
-\eqref{eq:chebgauss}: \emph{both regimes remove the inverse-square-root
-weight analytically}, so the summand is bounded, no positivity guard is
-needed, and the near-edge nodes carry their correct finite contribution.
+$m,h$ the midpoint and half-width of $[Z_{\rm lo},1]$.  Equations
+\eqref{eq:chebgauss} and \eqref{eq:zpartial} are \emph{one formula}
+$I_n=\tfrac{4}{M}\tfrac{\pi}{n_\theta}\sum_k T_n(Z_k)/R(Z_k)$ on the two
+windows, differing only in the interval ($[-1,1]$ vs $[Z_{\rm lo},1]$) and in
+the regular factor left in $R$: $R^{2}=c^{2}-1$ for the full window,
+$R^{2}=\tfrac{Q}{M}(1+Z)(c+1)$ for the partial.  Both remove the
+inverse-square-root weight \emph{analytically}, so the summand is bounded, no
+positivity guard is needed, and the near-edge nodes carry their correct
+finite contribution.
+
+\emph{Transition zone.}  As $Z_{\rm lo}\to-1^{+}$ the smooth $g$ acquires a
+square-root branch point at $Z=-1$ (from the $1+Z$ in $R$) just below the
+lower endpoint, and the fixed-order Gauss--Chebyshev error degrades --- at
+$Z_{\rm lo}=-0.995$, $n_\theta=32$ gives relative error $\sim10^{-3}$.
+Quadrupling the node count restores it ($\sim10^{-12}$): the partial branch
+densifies for $Z_{\rm lo}<-\tfrac12$, exactly as the full branch does
+(Eq.~\ref{eq:chebgauss} region) on the other side of the boundary.
 
 The algebraically equivalent alternative --- forming
 $v_i\,T_n(Z_i)/\sqrt{(1-Z_i^{2})(c_i^{2}-1)}$ with the fused weight
