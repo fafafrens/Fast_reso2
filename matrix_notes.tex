@@ -675,7 +675,21 @@ $\int\mathrm{d}m_a\,\varrho_a(m_a)\,(\cdots)$.  The broadest states
 ($\sigma,\rho,\Delta,\dots$) are parents, so this is where finite width
 matters most.
 \end{itemize}
-The next two subsections treat the cheap and the expensive case in turn.
+
+\paragraph{Which case this cascade needs.}
+The split above is general, but the cascade of Sec.~\ref{sec:matrix} decays
+every resonance in \emph{its own} mass-ordered step: $a\to bR$ and
+$R\to cc'$ are two separate two-body decays, never collapsed into one
+three-body $a\to bcc'$.  A broad $R$ therefore enters \emph{as a parent}
+--- when $R$ itself decays --- not as a cluster mass.  The cluster case is
+the \emph{collapsed} picture, which this cascade does not use; and the
+genuine multi-body channels it does treat by the effective-mass integral
+($\omega\to3\pi$, $\eta\to3\pi$) have \emph{stable} daughters, carrying no
+cluster width either.  So for this cascade the parent average --- the
+\emph{expensive} case --- is the main use of the per-species widths in the
+decay list.  The cheap case is kept for completeness (a collapsed treatment,
+or a genuinely broad unobserved daughter), but it is the exception here.  The
+next two subsections treat each in turn, cheap first.
 
 \subsection{The cheap case: width is a reweighting of the $\mu$ integral}
 
@@ -692,12 +706,14 @@ statements
 are literally the same integral \eqref{eq:threebody-recursive}.  A narrow
 $R$ collapses $\varrho_R\to\delta(\mu-m_R)$ and factorizes it back into the
 sharp two-body steps $a\to bR$ then $R\to cc'$; a broad $R$ smears the two
-together.  This is why the cheap case is also the dominant one: the broad
-$\rho,\sigma,K^*,\Delta$ appear overwhelmingly as intermediate resonances,
-and their width lives entirely in a weight the code already computes ---
-adding it is a change to the density, not to the kernel.
+together.  This is the elegant limit --- the width lives entirely in a weight
+the effective-mass integral already computes, a change to the density rather
+than the kernel.  But it is exactly the \emph{collapsed} step the sequential
+cascade avoids: there the same broad $R$ reappears as a parent in its own
+decay (next subsection), which is where its width acts.  So this route,
+though cheap, is the exception in this cascade, not the rule.
 
-\subsection{The expensive case: parent width as a matrix average}
+\subsection{The main case: parent width as a matrix average}
 
 For the parent (or observed daughter) the mass reshapes the kinematics, so
 there is no weight to hide it in.  But the matrix form (Sec.~\ref{sec:matrix})
@@ -744,11 +760,15 @@ Four-body is implemented (the $531$ cluster keys of Sec.~\ref{sec:recursive},
 validated by number conservation and the machine-precision cluster-mass
 symmetry of $\rho_3$).  Finite width is not yet, but this list makes it a
 leading effect rather than a correction: of the $1518$ species, $713$ carry
-a width and $464$ are broad ($\Gamma>150$\,MeV), and many broad states are
-parents.  The cost accounting sets the order --- cluster/intermediate widths
-first (free, via the density, and the dominant feed-down effect), parent
-width second (the outer average \eqref{eq:width-matrixsum}, expensive but
-where the physics lives), observed-daughter width last (rare).
+a width and $464$ are broad ($\Gamma>150$\,MeV), and most of those broad
+states are parents.  For \emph{this} cascade the physics fixes the order: the
+parent average \eqref{eq:width-matrixsum} first --- it is how the list's
+per-species widths actually act, and where the effect on the final spectra
+lives --- then the cheap cluster reweight for any genuine broad unobserved
+daughter, and observed-daughter width last (rare).  The parent average
+multiplies the build of every broad-parent channel by its $n_{m_a}$ mass
+nodes, so persistence (Sec.~\ref{sec:matrix}) becomes essential rather than
+optional.
 
 \section{The matrix representation: one matrix per mode}
 \label{sec:matrix}
