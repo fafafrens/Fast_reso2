@@ -16,14 +16,33 @@ of the decay feed-down kernel}
 \begin{document}
 \maketitle
 
-These notes document (i) the numerical integration scheme used to evaluate
-the two- and three-body decay maps of the main notes (equation numbers
-below refer to \emph{Maximum\_Entropy\_notes.pdf}) --- the integration
-domain, its singularity structure, and the substitutions that make
-fixed-order Gauss--Legendre quadrature applicable --- and (ii) how the maps
-are precomputed as matrices acting on a parent spectrum sampled on a fixed
-grid, including the block-Toeplitz (convolution) structure of the rapidity
-dependence.
+These notes accompany \texttt{DecaySpectra.jl}.  For the two-, three-, and
+four-body decay maps of the main notes (equation numbers below refer to
+\emph{Maximum\_Entropy\_notes.pdf}) they document how each map is (i) reduced
+to a form that fixed-order Gauss--Legendre quadrature evaluates rapidly, and
+(ii) precomputed as a matrix acting on a parent spectrum sampled on a fixed
+grid.
+
+\paragraph{How to read this.}
+The presentation is \emph{topic by topic}, and within each topic the
+\emph{analytic} structure is kept separate from its \emph{numerical}
+treatment: first what an integral \emph{is} --- its domain, its
+singularities, any closed-form structure --- then how it is \emph{computed}.
+The topics build on one another:
+\begin{itemize}
+\item the two-body kernel and its quadrature (Sec.~\ref{sec:quadrature});
+\item the effective-mass average that carries three- and four-body decays
+(Sec.~\ref{sec:extensions});
+\item finite resonance widths (Sec.~\ref{sec:width});
+\item the matrix representation for boost-invariant sources
+(Sec.~\ref{sec:matrix});
+\item its block-Toeplitz generalization to rapidity-dependent sources
+(Sec.~\ref{sec:rapidity}).
+\end{itemize}
+One device recurs throughout and is worth keeping in mind: every multi-body
+or finite-width complication is an \emph{average of the same two-body kernel}
+over an effective-mass or spectral distribution.  The expensive kernel is
+therefore evaluated once; only the cheap averaging weight changes.
 
 \section{The decay map is linear}
 
@@ -50,7 +69,7 @@ $\Fa$.  Once the parent spectrum is represented by its values on a fixed
 grid, the map is a matrix, built once per decay and per mode; applying it
 to any source is a matrix--vector product.
 
-\section{Numerical evaluation of the kernel}
+\section{The two-body kernel}
 \label{sec:quadrature}
 
 Both decays reduce to the double integral
@@ -62,13 +81,19 @@ K(E_b)=\int q_T\,\mathrm{d}q_T\int\mathrm{d}\eta_q\,
 \label{eq:K}
 \end{equation}
 where the bracket is the source sum of \eqref{eq:map} (or $2T_n(Z)\Fan$
-in mode form).  The integrand is supported on a compact region with
-inverse-square-root boundary singularities; the strategy is to determine
-the support in closed form and remove every non-smooth feature by a
-substitution, so that plain tensor-product Gauss--Legendre quadrature
-converges rapidly.
+in mode form).  The integrand lives on a compact region with
+inverse-square-root boundary singularities.  This section has two halves.
+The analytic half (Sec.~\ref{sec:kernel-analytic}) fixes that region in
+closed form and locates every non-smooth feature: the $1/\sqrt{\phantom{x}}$
+window edges and a single logarithmic singularity where the domain changes
+topology.  The numerical half (Sec.~\ref{sec:kernel-numeric}) removes each
+by one substitution, so that plain tensor-product Gauss--Legendre quadrature
+converges rapidly, and reports the measured accuracy.
 
-\subsection{The $\Delta\eta$ window}
+\subsection{Analytic structure: domain and singularities}
+\label{sec:kernel-analytic}
+
+\subsubsection{The $\Delta\eta$ window}
 \label{sec:window}
 
 \paragraph{What the window is.}
@@ -189,7 +214,7 @@ guards accompany the window: $q_T$ nodes with $(C+Q)/M\le1$ are skipped
 (roundoff can push a node marginally outside the support), and inside the
 loop $S_2=(Q-D)(Q+D)\le0$ nodes are dropped for the same reason.
 
-\subsection{The $q_T$ band}
+\subsubsection{The $q_T$ band}
 \label{sec:band}
 
 By \eqref{eq:nonempty}, the window is nonempty exactly when
@@ -263,7 +288,7 @@ sets the required extent of any fixed parent grid.  Note that
 $T_{\rm eff}$ is the slope of the \emph{actual} source --- radial flow
 blueshifts it well above the freeze-out temperature.
 
-\subsection{The logarithmic singularity at $q_T^{*}$}
+\subsubsection{The logarithmic singularity at $q_T^{*}$}
 \label{sec:logsing}
 
 Inside the band the window changes topology where $\eta_{\rm lo}$ reaches
@@ -335,7 +360,15 @@ $q_T^{*}$ whenever $q_T^-<0<q_T^{*}<q_T^+$; the residual
 $\theta\ln\theta$ endpoint behavior after the cosine map is discussed in
 Sec.~\ref{sec:cosmap}.
 
-\subsection{The cosine substitution and the tensor-product rule}
+\subsection{Numerical treatment: the cosine-mapped Gauss rule}
+\label{sec:kernel-numeric}
+
+Every non-smooth feature located above is removed by a single substitution:
+the $1/\sqrt{\phantom{x}}$ window edges and the $\sqrt{\phantom{x}}$ zeros of
+the $\mu$ average both cancel against a cosine map's Jacobian, leaving the
+lone $q_T^{*}$ logarithm, which is isolated by splitting the interval there.
+
+\subsubsection{The cosine substitution and the tensor-product rule}
 \label{sec:cosmap}
 
 Every one-dimensional interval $[x_{\rm lo},x_{\rm hi}]$, of midpoint
@@ -412,7 +445,7 @@ continuous but not analytic --- for which the Gauss error decreases
 algebraically, $\sim n_q^{-4}$ (measured: the error at low $p_T$ drops
 $\approx16\times$ per doubling of $n_q$).
 
-\subsection{Three-body: the $\mu$ average}
+\subsubsection{Three-body: the $\mu$ average}
 
 For $a\to b+c+d$ the kernel is averaged over the effective mass
 $\mu\in[m_c+m_d,\,m_a-m_b]$ with weight
@@ -427,7 +460,7 @@ $\mu$ integral is done with an $n_\mu$-point cosine-mapped Gauss rule; the
 nodes $\mu_i$, energies $E_b(\mu_i)$ and normalized weights are
 precomputed at construction.
 
-\subsection{Measured convergence and default orders}
+\subsubsection{Measured convergence and default orders}
 
 For a Boltzmann source ($T=0.15$\,GeV) relative errors against
 high-order references behave as follows (worst case is low $p_T$, where
@@ -455,18 +488,21 @@ $(n_q,n_\theta,n_\mu)=(128,32,32)$ are conservative; cost scales linearly
 in each order.  Number conservation, $N_b=B\,N_a$, holds at the
 $10^{-5}$ level for both decays at default orders.
 
-\section{Extensions: four-body decays and finite widths}
+\section{Multi-body decays: the effective-mass average}
 \label{sec:extensions}
 
-The two- and three-body kernels above cover the bulk of a hadronic decay
-list, but two physical ingredients are missing from the sharp-mass,
-$\le3$-body treatment: decays with four or more daughters, and the finite
-widths of the resonances themselves.  Both are handled by the \emph{same}
-device already used for the three-body case --- an average of the
-two-body kernel over an effective-mass distribution --- and the key
-practical question for each is whether the extra integration multiplies
-the number of (expensive) kernel evaluations or only enriches the (cheap)
-weight.
+The three-body $\mu$ average of Sec.~\ref{sec:quadrature} is the first
+instance of a general pattern: any number of unobserved daughters can be
+clustered into a single effective particle of mass $\mu$, and the same
+two-body kernel is averaged over that cluster's mass.  This section makes the
+pattern explicit --- its \emph{analytic} form is a phase-space recursion, its
+\emph{numerical} cost is one extra mass quadrature per additional daughter
+--- and applies it to four-body decays.  (Finite widths,
+Sec.~\ref{sec:width}, are the very same construction with a spectral function
+in place of the phase-space weight.)  The organizing question throughout is
+whether the extra integration multiplies the number of \emph{expensive}
+kernel evaluations or only enriches the \emph{cheap} weight --- and here, as
+we will see, it is only the weight.
 
 \subsection{Recursive effective-mass structure}
 \label{sec:recursive}
@@ -590,7 +626,7 @@ $n-1$ form the cluster.  The construction above is symmetric under that
 relabelling, so nothing new is required --- the observed slot is chosen,
 the rest are clustered, and $\rho_{n-1}$ is built from their masses.
 
-\subsection{Finite widths}
+\section{Finite widths}
 \label{sec:width}
 
 So far every mass has been sharp.  A resonance of width $\Gamma_i$ is
@@ -641,7 +677,7 @@ matters most.
 \end{itemize}
 The next two subsections treat the cheap and the expensive case in turn.
 
-\subsubsection{The cheap case: width is a reweighting of the $\mu$ integral}
+\subsection{The cheap case: width is a reweighting of the $\mu$ integral}
 
 Case~1 is not a new mechanism --- it \emph{is} the effective-mass integral
 of Sec.~\ref{sec:recursive}.  When the unobserved pair $c\,c'$ forms a
@@ -661,7 +697,7 @@ $\rho,\sigma,K^*,\Delta$ appear overwhelmingly as intermediate resonances,
 and their width lives entirely in a weight the code already computes ---
 adding it is a change to the density, not to the kernel.
 
-\subsubsection{The expensive case: parent width as a matrix average}
+\subsection{The expensive case: parent width as a matrix average}
 
 For the parent (or observed daughter) the mass reshapes the kinematics, so
 there is no weight to hide it in.  But the matrix form (Sec.~\ref{sec:matrix})
@@ -714,7 +750,7 @@ first (free, via the density, and the dominant feed-down effect), parent
 width second (the outer average \eqref{eq:width-matrixsum}, expensive but
 where the physics lives), observed-daughter width last (rare).
 
-\section{Boost-invariant sources: one matrix per mode}
+\section{The matrix representation: one matrix per mode}
 \label{sec:matrix}
 
 Let the parent mode $\Fan$ be independent of $\eta_q$ and sampled on a
@@ -1001,6 +1037,7 @@ azimuthal angle are genuine arguments and the $\Delta\eta$-space form of
 Sec.~\ref{sec:quadrature} remains the appropriate one.
 
 \section{Rapidity-dependent sources: the $\Delta\eta$-Toeplitz structure}
+\label{sec:rapidity}
 
 \subsection{The kernel as a rapidity convolution}
 \label{sec:conv}
