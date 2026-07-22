@@ -34,9 +34,10 @@ export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent
 
-const FORMAT = 4                       # bump on any layout OR matrix-value change
+const FORMAT = 5                       # bump on any layout OR matrix-value change
                                        # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral;
-                                       #  4: parent-width key Γ + nma order)
+                                       #  4: parent-width key Γ + nma order;
+                                       #  5: ChannelKey field reorder — Γ before mc/md/me)
 
 # Finite parent width (BroadParent): parents broader than WIDTHCUT get the
 # spectral-function mass average, truncated to ±WIDTHK·Γ; narrower ones stay
@@ -132,23 +133,18 @@ struct ChannelKey
     nbody::Int8
     ma::Float64
     mb::Float64          # observed daughter — slot is load-bearing (E_b, band, 1/p_b)
-    mc::Float64          # unobserved partner(s), sorted mc ≤ md ≤ me
-    md::Float64          # 0.0 for two-body
-    me::Float64          # 0.0 for two-/three-body
     Γ::Float64           # parent width: 0.0 = sharp; >0 = BroadParent mass average
+    mc::Float64          # unobserved partner(s), sorted mc ≤ md ≤ me — a trailing
+    md::Float64          # splat block, 0.0-padded (md=me=0 two-body, me=0 three-body)
+    me::Float64
 end
 
 function ChannelKey(ma::Real, mb::Real, rest::AbstractVector{<:Real}, Γ::Real = 0.0)
-    if length(rest) == 1
-        return ChannelKey(Int8(2), ma, mb, rest[1], 0.0, 0.0, Γ)
-    elseif length(rest) == 2
-        lo, hi = minmax(rest[1], rest[2])
-        return ChannelKey(Int8(3), ma, mb, lo, hi, 0.0, Γ)
-    elseif length(rest) == 3
-        s = sort(collect(Float64, rest))
-        return ChannelKey(Int8(4), ma, mb, s[1], s[2], s[3], Γ)
-    end
-    throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
+    n = length(rest)
+    1 ≤ n ≤ 3 || throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
+    s = sort!(collect(Float64, rest))                # partners canonicalized (sort of 1 = no-op)
+    partners = ntuple(i -> i ≤ n ? s[i] : 0.0, 3)    # zero-pad to fixed (mc, md, me)
+    return ChannelKey(Int8(n + 1), ma, mb, Γ, partners...)   # Γ, then splat the partner block
 end
 
 # ---------------------------------------------------------------------------
