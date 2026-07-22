@@ -776,6 +776,25 @@ only the build (an $n_{m_a}$-fold repeat for broad-parent keys), so persistence
 broad unobserved daughter) and observed-daughter width (rare) remain future
 work.
 
+\paragraph{One kernel average.}
+The effective-mass average of Sec.~\ref{sec:extensions} and the parent-width
+average above are the \emph{same} object: a coef-weighted sum of the two-body
+kernel over mass nodes,
+\begin{equation}
+\Fb=\sum_i c_i\,K\!\big(\Fa;\;m_a^{(i)},\,m_b,\,E_b^{(i)}\big),
+\label{eq:kernelaverage}
+\end{equation}
+differing only in \emph{which} mass is swept and how $c_i$ is built.  Two-body
+is a single node.  The effective-mass average sweeps the \emph{cluster} mass
+$\mu$ at fixed $m_a$, with $E_b^{(i)}=E_b(\mu_i)$ and $c_i\propto
+\rho_{n-1}(\mu_i)$.  The parent-width average sweeps the \emph{parent} mass
+$m_a$, with $c_i\propto\varrho_a(m_a^{(i)})$ --- and a broad multi-body parent
+is simply the two nested: its parent-mass nodes $\times$ cluster nodes flatten
+into one list.  All three are therefore the \emph{same} node sum, and the
+matrix assembly (Sec.~\ref{sec:matrix}) --- which reads only the per-node
+$(m_a^{(i)},E_b^{(i)},c_i)$ --- consumes them identically, distinguishing
+nothing.
+
 \section{The matrix representation: one matrix per mode}
 \label{sec:matrix}
 
