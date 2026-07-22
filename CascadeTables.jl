@@ -223,8 +223,10 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ, nma)
         # threaded=false: the key loop above already saturates the pool; a nested
-        # @threads over pT rows would only oversubscribe it (much slower at 8+ threads)
-        out[i] = [Float32.(W) for W in decaymatrices(dec, t.modes, t.grid, t.grid; threaded = false)]
+        # @threads over pT rows would only oversubscribe it (much slower at 8+ threads).
+        # T=Float32: the matrix is built straight into Float32 storage (accumulation
+        # stays Float64 per row, rounded once), skipping a throwaway Float64 matrix.
+        out[i] = decaymatrices(dec, t.modes, t.grid, t.grid; threaded = false, T = Float32)
     end
     for (k, w) in zip(keyvec, out)
         t.W[k] = w

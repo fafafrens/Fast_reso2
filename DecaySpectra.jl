@@ -406,12 +406,22 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # so the assembly threads over daughter pT and is bitwise identical to serial.
 # ---------------------------------------------------------------------------
 
-# fill row k of every mode matrix — the node sum for one daughter pT.
-@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, zc, zc4, qgrid, P)
-    rows = map(W -> view(W, k, :), Ws)
+# fill row k of every mode matrix — the node sum for one daughter pT. The row is
+# accumulated in the contiguous Float64 buffers `buf` (one per mode) rather than
+# straight into a strided matrix row: a P-point stencil then hits consecutive
+# memory (same cache line) instead of P rows npT apart. The finished Float64 row
+# is rounded once into `Ws` — whose eltype may be Float32 for storage, folding
+# the buildkeys! downcast in here and dropping the throwaway Float64 matrix.
+@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, zc, zc4, qgrid, P, buf)
+    for r in buf; fill!(r, 0.0); end
     for i in eachindex(d.coef)
-        scatterrows!(rows, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
+        scatterrows!(buf, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
                      d.cq, d.vq, zc, zc4, qgrid, P, d.coef[i])
+    end
+    for (W, r) in zip(Ws, buf)
+        @inbounds for j in eachindex(r)
+            W[k, j] = eltype(W)(r[j])          # exact when Float64; the one Float32 round
+        end
     end
 end
 
@@ -421,18 +431,21 @@ end
 # own (ma_i, Eb_i, coef_i). `threaded` parallelizes over daughter pT rows; set
 # it false when already inside a threaded loop (e.g. the cascade key build), so
 # the inner and outer `@threads` don't oversubscribe the pool.
-function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid; P = Val(4), threaded = true)
+function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
+                       P = Val(4), threaded = true, T::Type = Float64)
     pTv = collect(Float64, pTs)
-    Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
+    nq = length(qgrid)
+    Ws = map(_ -> zeros(T, length(pTv), nq), mt)   # output eltype T (Float32 to store)
     nθ = length(d.cθ)
     zc, zc4 = chebnodes(nθ), chebnodes(4nθ)   # compute once; threaded down to the scatter
     if threaded
         Threads.@threads for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P)
+            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, map(_ -> zeros(nq), mt))
         end
     else
+        buf = map(_ -> zeros(nq), mt)         # one Float64 row buffer set, reused per row
         for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P)
+            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, buf)
         end
     end
     return collect(Ws)
@@ -444,9 +457,9 @@ end
 # per call, cold); the ::return annotation keeps the boundary type-stable for the
 # caller (e.g. the Float32 conversion in buildkeys!) instead of leaking `Any`.
 function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid;
-                       P = Val(4), threaded = true)::Vector{Matrix{Float64}}
-    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded)
-    return [DecayMatrix(d, n, pTs, qgrid; P).W for n in modes]
+                       P = Val(4), threaded = true, T::Type = Float64)::Vector{Matrix{T}}
+    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded, T)
+    return [Matrix{T}(DecayMatrix(d, n, pTs, qgrid; P).W) for n in modes]
 end
 
 # Single-mode public API: one DecayMatrix struct, via the fused core with (n,).
