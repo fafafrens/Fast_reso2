@@ -36,7 +36,7 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, BreitWigner, BroadParent
+       DecayMatrix, decaymatrices, BreitWigner, BroadParent, warmnodes!
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -49,7 +49,13 @@ kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
 # assemblies); the lock covers concurrent first-time construction.
 const _COSNODES = Dict{Int,Tuple{Vector{Float64},Vector{Float64}}}()
 const _COSNODES_LOCK = ReentrantLock()
+# Double-checked: a lock-free read on the (append-only, warmed) cache hits >99.9%
+# of the time in a threaded build; only first-time construction takes the lock.
+# Reads are safe against the locked writes because sizes are warmed up front
+# (warmnodes!) so no write races a read during the threaded assembly.
 function cosnodes(n::Int)
+    v = get(_COSNODES, n, nothing)
+    v === nothing || return v
     lock(_COSNODES_LOCK) do
         get!(_COSNODES, n) do
             x, w = gausslegendre(n)
@@ -400,19 +406,33 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # so the assembly threads over daughter pT and is bitwise identical to serial.
 # ---------------------------------------------------------------------------
 
+# fill row k of every mode matrix — the node sum for one daughter pT.
+@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, nθ, qgrid, P)
+    rows = map(W -> view(W, k, :), Ws)
+    for i in eachindex(d.coef)
+        scatterrows!(rows, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
+                     d.cq, d.vq, nθ, qgrid, P, d.coef[i])
+    end
+end
+
 # Core (mt a Tuple of modes) → one Float64 matrix per mode. The node sum covers
 # every case at once: one node (two-body), the µ-average (three-/four-body), or
 # the flattened parent-mass × cluster nodes (broad parent) — each carrying its
-# own (ma_i, Eb_i, coef_i).
-function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid; P = Val(4))
+# own (ma_i, Eb_i, coef_i). `threaded` parallelizes over daughter pT rows; set
+# it false when already inside a threaded loop (e.g. the cascade key build), so
+# the inner and outer `@threads` don't oversubscribe the pool.
+function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid; P = Val(4), threaded = true)
     pTv = collect(Float64, pTs)
     Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
     nθ = length(d.cθ)
-    Threads.@threads for k in eachindex(pTv)
-        rows = map(W -> view(W, k, :), Ws)
-        for i in eachindex(d.coef)
-            scatterrows!(rows, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
-                         d.cq, d.vq, nθ, qgrid, P, d.coef[i])
+    chebnodes(nθ); chebnodes(4nθ)          # warm before the threaded row loop reads them
+    if threaded
+        Threads.@threads for k in eachindex(pTv)
+            fillrow!(Ws, k, d, mt, pTv, nθ, qgrid, P)
+        end
+    else
+        for k in eachindex(pTv)
+            fillrow!(Ws, k, d, mt, pTv, nθ, qgrid, P)
         end
     end
     return collect(Ws)
@@ -420,8 +440,8 @@ end
 
 # Entry from a modes vector, with a fallback for many modes (tuple ops stop
 # unrolling past ~32, so cap the fused path and loop single-mode beyond that).
-function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4))
-    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P)
+function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4), threaded = true)
+    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded)
     return [DecayMatrix(d, n, pTs, qgrid; P).W for n in modes]
 end
 
@@ -432,8 +452,20 @@ DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P = Val(4)) =
 
 # Chebyshev–Gauss nodes Z_k = cos((2k−1)π/(2n)), memoized like cosnodes.
 const _CHEBNODES = Dict{Int,Vector{Float64}}()
-chebnodes(n::Int) = lock(_COSNODES_LOCK) do
-    get!(() -> [cos((2k - 1) * π / (2n)) for k in 1:n], _CHEBNODES, n)
+function chebnodes(n::Int)
+    v = get(_CHEBNODES, n, nothing)         # lock-free hot path (see cosnodes)
+    v === nothing || return v
+    lock(_COSNODES_LOCK) do
+        get!(() -> [cos((2k - 1) * π / (2n)) for k in 1:n], _CHEBNODES, n)
+    end
+end
+
+# Warm the node caches for all sizes a build will request, single-threaded, so
+# the threaded assembly only ever reads them (no write races the lock-free path).
+function warmnodes!(nq, nθ, nµ, nσ)
+    for n in (nq, nθ, nµ, nσ); cosnodes(n); end
+    chebnodes(nθ); chebnodes(4nθ)
+    return nothing
 end
 
 # Tₙ(Z) = cos(n·acos Z) by the Chebyshev recurrence (Eq. 40): the assembly
