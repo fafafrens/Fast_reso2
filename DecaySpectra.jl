@@ -407,11 +407,11 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # ---------------------------------------------------------------------------
 
 # fill row k of every mode matrix — the node sum for one daughter pT.
-@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, nθ, qgrid, P)
+@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, zc, zc4, qgrid, P)
     rows = map(W -> view(W, k, :), Ws)
     for i in eachindex(d.coef)
         scatterrows!(rows, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
-                     d.cq, d.vq, nθ, qgrid, P, d.coef[i])
+                     d.cq, d.vq, zc, zc4, qgrid, P, d.coef[i])
     end
 end
 
@@ -425,14 +425,14 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid; P = Val(4), thread
     pTv = collect(Float64, pTs)
     Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
     nθ = length(d.cθ)
-    chebnodes(nθ); chebnodes(4nθ)          # warm before the threaded row loop reads them
+    zc, zc4 = chebnodes(nθ), chebnodes(4nθ)   # compute once; threaded down to the scatter
     if threaded
         Threads.@threads for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, nθ, qgrid, P)
+            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P)
         end
     else
         for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, nθ, qgrid, P)
+            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P)
         end
     end
     return collect(Ws)
@@ -499,7 +499,7 @@ end
 # varies. So K modes accumulate together in the stack tuple `s` and scatter onto
 # their K rows through the one shared stencil — each row bit-identical to a
 # single-mode build.
-function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, nθ,
+function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, zc, zc4,
                       qgrid, P, pref) where {K}
     pb = sqrt(max(Eb^2 - mb^2, 0.0))
     C = ma * Eb
@@ -510,7 +510,6 @@ function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, nθ,
     segments = qlo < qstar < qhi ? ((qlo, qstar), (qstar, qhi)) :
                                    ((qlo, qhi), (qhi, qhi))
     qmin, qmax = first(qgrid), last(qgrid)
-    zc = chebnodes(nθ)
     zero_s = ntuple(_ -> 0.0, Val(K))
     for (a, b) in segments
         a < b || continue
@@ -524,7 +523,7 @@ function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, nθ,
             Zlo = (M - C) / Q
             s = zero_s
             if Zlo ≤ -1                            # full window: Chebyshev–Gauss
-                z = Zlo > -1.5 ? chebnodes(4 * nθ) : zc   # densify near the transition
+                z = Zlo > -1.5 ? zc4 : zc   # densify near the transition
                 for Z in z
                     c = (C + Q * Z) / M
                     s = s .+ chebvals(modes, Z) ./ sqrt((c - 1) * (c + 1))
@@ -533,7 +532,7 @@ function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, nθ,
             else                                   # partial window: shifted Chebyshev–Gauss
                 # analytic cancellation (matrix_notes §8.2): endpoint weight removed,
                 # regular R² = (Q/M)(1+Z)(c+1) > 0, no guard; densify near Zlo→−1.
-                zp = Zlo < -0.5 ? chebnodes(4 * nθ) : zc
+                zp = Zlo < -0.5 ? zc4 : zc
                 hz, mz = (1 - Zlo) / 2, (1 + Zlo) / 2
                 for ζ in zp
                     Z = mz + hz * ζ
