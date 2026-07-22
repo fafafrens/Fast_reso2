@@ -440,7 +440,11 @@ end
 
 # Entry from a modes vector, with a fallback for many modes (tuple ops stop
 # unrolling past ~32, so cap the fused path and loop single-mode beyond that).
-function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4), threaded = true)
+# `Tuple(modes)` is a runtime tuple, so the dispatch to the core is dynamic (once
+# per call, cold); the ::return annotation keeps the boundary type-stable for the
+# caller (e.g. the Float32 conversion in buildkeys!) instead of leaking `Any`.
+function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid;
+                       P = Val(4), threaded = true)::Vector{Matrix{Float64}}
     length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded)
     return [DecayMatrix(d, n, pTs, qgrid; P).W for n in modes]
 end
