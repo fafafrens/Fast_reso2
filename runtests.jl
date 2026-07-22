@@ -244,7 +244,7 @@ using .CascadeTables
 
 # synthetic decay list: ρ → ππ (BR 0.6) and ω → ππϖ (BR 1.0)
 mρ, mπ, mω, mϖ = 0.7752, 0.1396, 0.7827, 0.135
-parts7 = Dict(1 => ParticleInfo(1, "rho", mρ, 0.15, 1.0, 0, 0),
+parts7 = Dict(1 => ParticleInfo(1, "rho", mρ, 0.0, 1.0, 0, 0),   # width 0 ⇒ sharp cascade
               2 => ParticleInfo(2, "pi", mπ, 0.0, 1.0, 0, 1),
               3 => ParticleInfo(3, "om", mω, 0.0, 1.0, 0, 0),
               4 => ParticleInfo(4, "pi0", mϖ, 0.0, 1.0, 0, 0))
@@ -316,5 +316,24 @@ resall = runcascade(tab7, allpass; primary = prim7)
 res2 = runcascade(tab7, filter(nbody(2), dl7); primary = prim7)
 @assert all(res2.F[2][1] .≤ res7.F[2][1]) && all(res2.F[2][1] .≥ prim7(parts7[2], 0, gv))
 println("   PASS")
+
+# ---------------------------------------------------------------- test 7c
+println("== 7c. Cascade with a broad parent (finite width, Part B wiring) ==")
+let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8)
+    prim(p, n, gr) = (n == 0 ? 1.0 : 0.0) .* [exp(-hypot(p.mass, q) / T) for q in gr]
+    πi = ParticleInfo(2, "pi", 0.1396, 0.0, 1.0, 0, 1)
+    byp = Dict(1 => [DecayChannel(1, 1.0, [2, 2])])                         # R → ππ
+    dl0 = DecayList(Dict(1 => ParticleInfo(1, "R", 0.9, 0.0,  1.0, 0, 0), 2 => πi), byp, "s", "s0")
+    dlb = DecayList(Dict(1 => ParticleInfo(1, "R", 0.9, 0.12, 1.0, 0, 0), 2 => πi), byp, "b", "b0")
+    r0 = runcascade(CascadeTable(dl0; grid = g, orders = ord, modes = [0]), dl0; primary = prim)
+    rb = runcascade(CascadeTable(dlb; grid = g, orders = ord, modes = [0]), dlb; primary = prim)
+    # compare the feed-down (F − Fprim); the total F is diluted by the primary pion
+    f0 = r0.F[2][1] .- r0.Fprim[2][1]
+    fb = rb.F[2][1] .- rb.Fprim[2][1]
+    dif = maximum(abs.(fb .- f0)) / maximum(abs.(f0))
+    @assert dif > 1e-2        # the Γ=0.12 parent takes the BroadParent path and smears the pion
+    @printf("   broad-parent pion feed-down differs from sharp by %.1e\n", dif)
+    println("   PASS")
+end
 
 println("\nAll tests passed.")

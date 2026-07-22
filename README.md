@@ -8,14 +8,17 @@ spectra, including azimuthal (elliptic-flow) modulation.
 The decay map is represented as a **matrix** in transverse momentum and
 azimuthal Fourier mode, built once per channel and reused across the cascade.
 The method — the two-body kernel and its Chebyshev–Gauss quadrature, the
-effective-mass recursion behind 3-/4-body decays, and the (documented, not yet
-coded) finite-width and rapidity-Toeplitz extensions — is derived in
-[`matrix_notes.tex`](matrix_notes.tex).
+effective-mass recursion behind 3-/4-body decays, the finite parent-width mass
+average, and the (documented, not-yet-coded) rapidity-Toeplitz extension — is
+derived in [`matrix_notes.tex`](matrix_notes.tex).
 
 **Implemented:** 2-/3-/4-body decays, boost-invariant (η-independent) sources,
-Fourier modes `n = 0, 2`, the full mass-ordered cascade, and channel filtering.
-**Documented but not yet coded:** finite resonance widths and rapidity-dependent
-(η-resolved) sources — see the note.
+Fourier modes `n = 0, 2`, the full mass-ordered cascade, channel filtering, and
+**finite parent widths** (broad resonances averaged over a Breit–Wigner spectral
+function, with channel reopening — applied automatically from each species'
+width in the decay list).
+**Documented but not yet coded:** rapidity-dependent (η-resolved) sources, and
+the cluster / observed-daughter width cases — see the note.
 
 ## Requirements
 

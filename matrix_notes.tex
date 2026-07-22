@@ -756,19 +756,25 @@ decay) is the usual on-shell-spectral compromise, good while $\Gamma_a/m_a$
 is not large.
 
 \paragraph{Status.}
-Four-body is implemented (the $531$ cluster keys of Sec.~\ref{sec:recursive},
-validated by number conservation and the machine-precision cluster-mass
-symmetry of $\rho_3$).  Finite width is not yet, but this list makes it a
-leading effect rather than a correction: of the $1518$ species, $713$ carry
-a width and $464$ are broad ($\Gamma>150$\,MeV), and most of those broad
-states are parents.  For \emph{this} cascade the physics fixes the order: the
-parent average \eqref{eq:width-matrixsum} first --- it is how the list's
-per-species widths actually act, and where the effect on the final spectra
-lives --- then the cheap cluster reweight for any genuine broad unobserved
-daughter, and observed-daughter width last (rare).  The parent average
-multiplies the build of every broad-parent channel by its $n_{m_a}$ mass
-nodes, so persistence (Sec.~\ref{sec:matrix}) becomes essential rather than
-optional.
+Four-body is implemented (the $531$ cluster keys of Sec.~\ref{sec:recursive}),
+and so now is the \emph{parent width} --- the main case for this cascade.  Each
+species with $\Gamma>1$\,MeV is averaged over its (constant-width, truncated)
+Breit--Wigner by \eqref{eq:width-matrixsum}: the decay matrix at $n_{m_a}$
+parent-mass nodes, weighted by $\varrho_a$ and summed, giving a same-shape
+matrix that the cascade uses unchanged.  The mass integral uses the
+tan-substitution $s=m_a^2+m_am_R\Gamma\tan\psi$, which flattens the Lorentzian
+so plain Gauss--Legendre in $\psi$ resolves the peak for any $\Gamma$ (a cosine
+map would starve it).  Closed nodes ($m_a<\sum m_{\rm daughters}$) enter only
+the normalization, so a channel closed at the pole keeps its open-tail fraction
+--- channel reopening, for free.  Validated by number conservation, the
+single-node$\,\to\,$sharp and narrow-$\Gamma\to$sharp limits, spectral
+convergence in $n_{m_a}$, and reopening; on the full list $\sim3200$ of the
+$18{,}000$ keys are broad, shifting the feed-down at the few-percent level.
+Since the averaged matrix is the \emph{same shape}, the cache does not grow ---
+only the build (an $n_{m_a}$-fold repeat for broad-parent keys), so persistence
+(Sec.~\ref{sec:matrix}) is essential.  The cheap cluster reweight (for a genuine
+broad unobserved daughter) and observed-daughter width (rare) remain future
+work.
 
 \section{The matrix representation: one matrix per mode}
 \label{sec:matrix}

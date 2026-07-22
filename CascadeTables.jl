@@ -34,8 +34,15 @@ export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent
 
-const FORMAT = 3                       # bump on any layout OR matrix-value change
-                                       # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral)
+const FORMAT = 4                       # bump on any layout OR matrix-value change
+                                       # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral;
+                                       #  4: parent-width key Γ + nma order)
+
+# Finite parent width (BroadParent): parents broader than WIDTHCUT get the
+# spectral-function mass average, truncated to ±WIDTHK·Γ; narrower ones stay
+# sharp (identical to before).
+const WIDTHCUT = 0.001                 # GeV
+const WIDTHK   = 4.0
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
@@ -128,17 +135,18 @@ struct ChannelKey
     mc::Float64          # unobserved partner(s), sorted mc ≤ md ≤ me
     md::Float64          # 0.0 for two-body
     me::Float64          # 0.0 for two-/three-body
+    Γ::Float64           # parent width: 0.0 = sharp; >0 = BroadParent mass average
 end
 
-function ChannelKey(ma::Real, mb::Real, rest::AbstractVector{<:Real})
+function ChannelKey(ma::Real, mb::Real, rest::AbstractVector{<:Real}, Γ::Real = 0.0)
     if length(rest) == 1
-        return ChannelKey(Int8(2), ma, mb, rest[1], 0.0, 0.0)
+        return ChannelKey(Int8(2), ma, mb, rest[1], 0.0, 0.0, Γ)
     elseif length(rest) == 2
         lo, hi = minmax(rest[1], rest[2])
-        return ChannelKey(Int8(3), ma, mb, lo, hi, 0.0)
+        return ChannelKey(Int8(3), ma, mb, lo, hi, 0.0, Γ)
     elseif length(rest) == 3
         s = sort(collect(Float64, rest))
-        return ChannelKey(Int8(4), ma, mb, s[1], s[2], s[3])
+        return ChannelKey(Int8(4), ma, mb, s[1], s[2], s[3], Γ)
     end
     throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
 end
@@ -149,7 +157,7 @@ end
 
 struct CascadeTable
     grid::Vector{Float64}
-    orders::NamedTuple{(:nq, :nθ, :nµ, :nσ),Tuple{Int,Int,Int,Int}}
+    orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma),Tuple{Int,Int,Int,Int,Int}}
     modes::Vector{Int}
     meta::Dict{Symbol,Any}
     W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
@@ -159,9 +167,12 @@ end
 # Returns the key set and the skip statistics.
 function neededkeys(dl::DecayList)
     need = Set{ChannelKey}()
-    stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :γdaughter => 0, :unknown => 0)
+    stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
+                 :γdaughter => 0, :unknown => 0)
     for (pid, chans) in dl.byparent
         ma = dl.parts[pid].mass
+        Γa = dl.parts[pid].width
+        broad = Γa > WIDTHCUT
         for ch in chans
             ds = ch.daughters
             nd = length(ds)
@@ -169,12 +180,17 @@ function neededkeys(dl::DecayList)
             nd ≥ 5 && (stats[:nd5] += 1; continue)            # no 5-body kernel (none in data)
             all(d -> haskey(dl.parts, d), ds) || (stats[:unknown] += 1; continue)
             ms = [dl.parts[d].mass for d in ds]
-            # closed at nominal masses (finite-width only) + p_b > 0 guard
-            ma > sum(ms) + 1e-6 || (stats[:closed] += 1; continue)
+            Σm = sum(ms)
+            openpole = ma > Σm + 1e-6                          # open at the pole mass
+            # a broad parent's spectral tail can reopen a nominally-closed channel
+            reopenable = broad && (ma + WIDTHK * Γa > Σm + 1e-6)
+            openpole || reopenable || (stats[:closed] += 1; continue)
+            openpole || (stats[:reopened] += 1)               # closed at pole, tail-reopened
+            Γk = broad ? Γa : 0.0                             # 0 ⇒ sharp key
             for (slot, _) in enumerate(ds)
                 mb = ms[slot]
                 mb > 0 || (stats[:γdaughter] += 1; continue)  # photon not observable
-                push!(need, ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot]))
+                push!(need, ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot], Γk))
             end
         end
     end
@@ -184,24 +200,27 @@ end
 # The decay map for one key. `k.nbody` is a runtime value, so this must branch
 # (the result is a small Union that the DecayMatrix call then splits on) — a
 # branch is cheaper than Val-dispatch, and this is cold build-time code.
-function decayfor(k::ChannelKey; nq, nθ, nµ, nσ)
-    if k.nbody == 2
-        TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ)
-    elseif k.nbody == 3
-        ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ)
-    else
-        FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
+function decayfor(k::ChannelKey; nq, nθ, nµ, nσ, nma)
+    if k.Γ > 0                                    # broad parent → BroadParent mass average
+        bw = BreitWigner(k.ma, k.Γ; mmin = max(k.ma - WIDTHK * k.Γ, 0.05),
+                                    mmax = k.ma + WIDTHK * k.Γ)
+        return k.nbody == 2 ? BroadParent(k.mb, k.mc, bw; nma, nq, nθ) :
+               k.nbody == 3 ? BroadParent(k.mb, k.mc, k.md, bw; nma, nµ, nq, nθ) :
+                              BroadParent(k.mb, k.mc, k.md, k.me, bw; nma, nσ, nµ, nq, nθ)
     end
+    k.nbody == 2 ? TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ) :
+    k.nbody == 3 ? ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ) :
+                   FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
 end
 
 # Parallel build of the listed keys (independent work; :greedy balances the
 # ~8x cost gap between 3- and 2-body). Results land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
-    (; nq, nθ, nµ, nσ) = t.orders
+    (; nq, nθ, nµ, nσ, nma) = t.orders
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
-        dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ)
+        dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ, nma)
         out[i] = [Float32.(W) for W in decaymatrices(dec, t.modes, t.grid, t.grid)]
     end
     for (k, w) in zip(keyvec, out)
@@ -233,7 +252,7 @@ metafor(dl::DecayList) = Dict{Symbol,Any}(
 
 """
     CascadeTable(dl; grid = range(0, 4.0, length = 134),
-                 orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8), modes = [0, 2],
+                 orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8), modes = [0, 2],
                  cache = nothing, rebuild = false)
 
 Load the tables from `cache` if present and compatible (same format, grid,
@@ -243,11 +262,11 @@ warns and builds any missing keys on demand.
 """
 function CascadeTable(dl::DecayList;
                       grid = range(0.0, 4.0, length = 134),
-                      orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8),
+                      orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8),
                       modes = [0, 2], cache = nothing, rebuild = false)
     gridv = collect(Float64, grid)
-    ordersnt = NamedTuple{(:nq, :nθ, :nµ, :nσ)}(          # get(): tolerate callers omitting nσ
-        (orders.nq, orders.nθ, orders.nµ, get(orders, :nσ, 8)))
+    ordersnt = NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma)}(    # get(): tolerate callers omitting nσ/nma
+        (orders.nq, orders.nθ, orders.nµ, get(orders, :nσ, 8), get(orders, :nma, 8)))
     modesv = collect(Int, modes)
     if cache !== nothing && !rebuild
         t = loadtables(cache)
@@ -306,6 +325,8 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
     for pid in order
         haskey(dl.byparent, pid) || continue
         ma = dl.parts[pid].mass
+        Γa = dl.parts[pid].width
+        broad = Γa > WIDTHCUT
         Fp = F[pid]
         for ch in dl.byparent[pid]
             ds = ch.daughters
@@ -313,11 +334,14 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
             (nd == 1 || nd ≥ 5) && continue
             all(d -> haskey(dl.parts, d), ds) || continue
             ms = [dl.parts[d].mass for d in ds]
-            ma > sum(ms) + 1e-6 || continue
+            Σm = sum(ms)
+            # same enrollment as neededkeys: open at the pole, or reopened by the tail
+            (ma > Σm + 1e-6 || (broad && ma + WIDTHK * Γa > Σm + 1e-6)) || continue
+            Γk = broad ? Γa : 0.0
             for (slot, did) in enumerate(ds)
                 mb = ms[slot]
                 mb > 0 || continue
-                key = ChannelKey(ma, mb, [ms[x] for x in eachindex(ms) if x != slot])
+                key = ChannelKey(ma, mb, [ms[x] for x in eachindex(ms) if x != slot], Γk)
                 Ws = t.W[key]
                 for m in eachindex(t.modes)
                     F[did][m] .+= ch.br .* (Ws[m] * Fp[m])
