@@ -85,6 +85,34 @@ dev = maximum(abs(FourBodyDecay(1.3, 0.1396, p...)(Fa4, 0.5, 0.3, 0.2) / v0 - 1)
 @assert dev < 1e-3
 println("   PASS")
 
+# ---------------------------------------------------------------- test 3c
+println("== 3c. Finite parent width: BroadParent (Breit–Wigner average) ==")
+let mρ = 0.7752, mπ = 0.1396, mp = 0.938, g = collect(range(0, 6, length = 300))
+    # functor number conservation (ρ→ππ, ρ broad) — the BroadParent as a functor
+    ρw = BroadParent(mπ, mπ, BreitWigner(mρ, 0.149; mmin = 2mπ); B = 1.0, nma = 8, nq = 64, nθ = 16)
+    Faw = thermal(mρ)
+    Nbw = 2π * quadgk(pT -> quadgk(ηp -> pT * ρw(Faw, pT, ηp, 0.0), -Inf, Inf; rtol = 2e-3)[1],
+                      0, Inf; rtol = 2e-3)[1]
+    @printf("   functor N_b/(B N_a) = %.5f\n", Nbw / number(Faw))
+    @assert isapprox(Nbw, number(Faw); rtol = 5e-3)
+    # matrix: a single node at the pole reproduces the sharp matrix
+    Wsharp = decaymatrices(TwoBodyDecay(mρ, mπ, mπ), [0], g, g)[1]
+    W1 = decaymatrices(BroadParent(mπ, mπ, BreitWigner(mρ, 1e-3); nma = 1), [0], g, g)[1]
+    @assert maximum(abs.(W1 .- Wsharp)) < 1e-3 * maximum(abs.(Wsharp))
+    # narrow width → sharp spectrum (number-weighted)
+    Fa = [exp(-hypot(mρ, q) / T) for q in g]
+    relw(F, R) = sum(abs.(F .- R) .* g) / sum(abs.(R) .* g)
+    dn = relw((decaymatrices(BroadParent(mπ, mπ, BreitWigner(mρ, 1e-3; mmin = 2mπ); nma = 24), [0], g, g)[1]) * Fa,
+              Wsharp * Fa)
+    @assert dn < 5e-3
+    # channel reopening: pole below the (π,p) threshold, spectral tail above it
+    clsd = maximum(abs.(decaymatrices(BroadParent(mπ, mp, BreitWigner(1.0, 1e-3); nma = 32), [0], g, g)[1]))
+    opnd = maximum(abs.(decaymatrices(BroadParent(mπ, mp, BreitWigner(1.0, 0.2);  nma = 32), [0], g, g)[1]))
+    @assert clsd == 0.0 && opnd > 0.0
+    @printf("   nma=1==sharp, narrow→sharp %.1e, reopening (closed=0, open≠0): OK\n", dn)
+    println("   PASS")
+end
+
 # ---------------------------------------------------------------- test 4
 println("== 4. Gauss–Legendre convergence: default orders vs doubled ==")
 ρfine = TwoBodyDecay(0.7752, 0.1396, 0.1396; nq = 256, nθ = 64)

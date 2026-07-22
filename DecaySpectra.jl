@@ -35,7 +35,8 @@ using FastGaussQuadrature: gausslegendre
 include("LagrangeWeights.jl")
 using .LagrangeWeights
 
-export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix, decaymatrices
+export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix, decaymatrices,
+       BreitWigner, BroadParent
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -312,6 +313,106 @@ function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128
 end
 
 # ---------------------------------------------------------------------------
+# Finite parent width: average the decay matrix over the parent spectral function
+# ---------------------------------------------------------------------------
+
+"""
+    BreitWigner(mR, Γ; k = 4.0, mmin = mR - k*Γ, mmax = mR + k*Γ)
+
+Relativistic (constant-width) Breit–Wigner spectral function of a resonance,
+`ϱ(m) ∝ m²Γ / ((m²−mR²)² + mR²Γ²)`, truncated to `[mmin, mmax]` and zero
+outside. Unnormalized: callers that average over it (`widthaverage`) divide by
+the integrated weight, so only the shape matters.
+"""
+struct BreitWigner
+    mR::Float64
+    Γ::Float64
+    mmin::Float64
+    mmax::Float64
+end
+BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
+    BreitWigner(mR, Γ, mmin, mmax)
+@inline (bw::BreitWigner)(m) =
+    bw.mmin ≤ m ≤ bw.mmax ?
+    m^2 * bw.Γ / ((m^2 - bw.mR^2)^2 + bw.mR^2 * bw.Γ^2) : 0.0
+
+# Parent-mass nodes for the width average. The tan-substitution
+# s = mR² + mR·Γ·tanψ flattens the Breit–Wigner Lorentzian (∫ϱ(m)·f dm ∝
+# ∫√s·f dψ, smooth in ψ), so plain Gauss–Legendre in ψ resolves the central
+# peak for any Γ — a cosine map would starve it (nodes cluster at the endpoints,
+# not the peak). Node weight ∝ √s = m_a; `norm` sums over the full support
+# (incl. closed nodes) so a channel closed at the pole keeps only its open-tail
+# fraction. Returns all nodes, weights, and the full-support norm.
+function parentmassnodes(bw::BreitWigner, nma)
+    x, u = gausslegendre(nma)
+    ψlo = atan((bw.mmin^2 - bw.mR^2) / (bw.mR * bw.Γ))
+    ψhi = atan((bw.mmax^2 - bw.mR^2) / (bw.mR * bw.Γ))
+    hψ, mψ = (ψhi - ψlo) / 2, (ψhi + ψlo) / 2
+    mas, ws, norm = Float64[], Float64[], 0.0
+    for i in 1:nma
+        s = bw.mR^2 + bw.mR * bw.Γ * tan(mψ + hψ * x[i])
+        s > 0 || continue
+        ma, w = sqrt(s), u[i] * sqrt(s)
+        push!(mas, ma); push!(ws, w); norm += w
+    end
+    return mas, ws, norm
+end
+
+"""
+    BroadParent(daughter masses..., bw::BreitWigner; B = 1.0, nma = 16, kw...)
+
+A decay whose parent has finite width: it wraps the underlying sharp decay
+(`TwoBodyDecay`/`ThreeBodyDecay`/`FourBodyDecay`, chosen by the number of
+daughter masses) and averages it over the parent spectral function `bw`
+(pole `bw.mR`, width `bw.Γ`). Usable exactly like a sharp decay — as a functor
+`(d)(Fa, pT, ηp, ϕp)` or via `DecayMatrix`/`decaymatrices` — the average being
+`Σᵢ wᵢ ϱ(m_aⁱ) [·] / N` over the parent mass. Nodes below the daughter
+threshold are dropped, so a channel closed at the pole keeps only its open-tail
+fraction (channel reopening). `kw...` pass through to the underlying decay
+(e.g. `nµ, nσ, nq, nθ`).
+"""
+struct BroadParent{D}
+    subs::Vector{D}       # sharp decays at the open parent-mass nodes
+    ws::Vector{Float64}   # their ϱ weights
+    norm::Float64         # full-support normalization (incl. closed nodes)
+end
+
+function BroadParent(build, bw::BreitWigner, opensum; nma = 16)
+    mas, wall, norm = parentmassnodes(bw, nma)
+    keep = findall(>(opensum), mas)               # drop closed nodes
+    BroadParent([build(mas[i]) for i in keep], wall[keep], norm)
+end
+
+BroadParent(mb, mc, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
+    BroadParent(ma -> TwoBodyDecay(ma, mb, mc; B, kw...), bw, mb + mc; nma)
+BroadParent(mb, mc, md, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
+    BroadParent(ma -> ThreeBodyDecay(ma, mb, mc, md; B, kw...), bw, mb + mc + md; nma)
+BroadParent(mb, mc, md, me, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
+    BroadParent(ma -> FourBodyDecay(ma, mb, mc, md, me; B, kw...), bw, mb + mc + md + me; nma)
+
+# functor: ϱ-average of the wrapped decay's functor
+(d::BroadParent)(Fa::F, pT, ηp, ϕp) where {F} =
+    sum(d.ws[i] * d.subs[i](Fa, pT, ηp, ϕp) for i in eachindex(d.subs); init = 0.0) / d.norm
+
+# matrix: ϱ-average of the wrapped decay's matrices (one per mode). Two typed
+# dispatches (Vector / Tuple modes) resolve the ambiguity with the generic
+# modes-vector entry; both share this body.
+function _bpmatrices(d::BroadParent, modes, pTs, qgrid, P)
+    Ws = [zeros(length(pTs), length(qgrid)) for _ in modes]
+    for i in eachindex(d.subs)
+        for (k, Wi) in enumerate(decaymatrices(d.subs[i], modes, pTs, qgrid; P))
+            Ws[k] .+= d.ws[i] .* Wi
+        end
+    end
+    d.norm > 0 && foreach(W -> W ./= d.norm, Ws)
+    return Ws
+end
+decaymatrices(d::BroadParent, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4)) =
+    _bpmatrices(d, modes, pTs, qgrid, P)
+decaymatrices(d::BroadParent, modes::Tuple, pTs, qgrid; P = Val(4)) =
+    _bpmatrices(d, modes, pTs, qgrid, P)
+
+# ---------------------------------------------------------------------------
 # Matrix representation on a fixed parent grid (η-independent sources)
 # ---------------------------------------------------------------------------
 
@@ -396,6 +497,11 @@ end
 
 # Single-mode public API: one DecayMatrix struct, via the fused core with (n,).
 DecayMatrix(d::Union{TwoBodyDecay,MuAveraged}, n::Integer, pTs, qgrid; P = Val(4)) =
+    DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
+                decaymatrices(d, (n,), pTs, qgrid; P)[1])
+
+# broad-parent wrapper (defined here, after the DecayMatrix struct exists)
+DecayMatrix(d::BroadParent, n::Integer, pTs, qgrid; P = Val(4)) =
     DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
                 decaymatrices(d, (n,), pTs, qgrid; P)[1])
 
