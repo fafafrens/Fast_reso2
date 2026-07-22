@@ -35,8 +35,8 @@ using FastGaussQuadrature: gausslegendre
 include("LagrangeWeights.jl")
 using .LagrangeWeights
 
-export kallen, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay, DecayMatrix, decaymatrices,
-       BreitWigner, BroadParent
+export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
+       DecayMatrix, decaymatrices, BreitWigner, BroadParent
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -141,66 +141,60 @@ end
 end
 
 # ---------------------------------------------------------------------------
-# Two-body decay a → b + c, Eq. (32)
+# One decay map: a coef-weighted sum of two-body kernels at per-node (ma, Eb)
 # ---------------------------------------------------------------------------
+# Every isotropic decay is the two-body kernel of an observed daughter b (mass
+# mb) recoiling against an effective particle, summed over nodes:
+#     F_b  =  Σᵢ coefᵢ · K(Fa; ma_i, mb, Eb_i).
+# What varies per node is the parent mass ma_i and the recoil energy Eb_i;
+# coefᵢ carries B, the 1/p_b Jacobian, and any averaging weight. This one type
+# covers every case (constructors below build the (ma, Eb, coef) arrays):
+#   • two-body  a→bc        — one node (Eq. 32);
+#   • 3-/4-body a→b(c…)     — nµ nodes, ma fixed, Eb over the cluster mass µ,
+#                              coef ∝ ρ_{n-1}(µ) (Eq. 59 and its 4-body analog);
+#   • broad parent          — the above with ma_i varying over the parent
+#                              spectral function ϱ_a (matrix_notes §4).
+# Nothing downstream needs to know which decay it was: the functor and the
+# matrix assembly read only (ma, mb, Eb, coef, cq…vθ).
+
+struct MassAverage
+    ma::Vector{Float64}          # per-node parent mass
+    mb::Float64                  # observed daughter (fixed)
+    Eb::Vector{Float64}          # per-node E_b(node)
+    coef::Vector{Float64}        # per-node weight: B·ma·[1/p_b or ρ/N]/(4π)
+    cq::Vector{Float64}          # cosine-mapped qT nodes/weights (cosnodes)
+    vq::Vector{Float64}
+    cθ::Vector{Float64}          # Δη nodes/weights (cosnodes; length sets nθ)
+    vθ::Vector{Float64}
+end
+
+# functor:  Σᵢ coefᵢ · K(Fa; ma_i, mb, Eb_i)
+(d::MassAverage)(Fa::F, pT, ηp, ϕp) where {F} =
+    sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma[i], d.mb, d.Eb[i],
+                                d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
+
+# --- constructors: each builds the (ma, Eb, coef) arrays -------------------
 
 """
     TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32)
 
-Callable decay map of the isotropic two-body decay a → b + c with branching
-ratio `B`; `(d::TwoBodyDecay)(Fa, pT, ηp, ϕp)` returns the daughter spectrum
-of b, Eq. (32). `nq`, `nθ` are the Gauss–Legendre orders in qT and Δη
-(defaults converged to ≲1e-7 for thermal-like sources).
+Isotropic two-body decay a → b + c (Eq. 32), as a one-node [`MassAverage`].
+Callable: `d(Fa, pT, ηp, ϕp)` is the daughter spectrum of b.
 """
-struct TwoBodyDecay
-    ma::Float64
-    mb::Float64
-    mc::Float64
-    B::Float64
-    Eb::Float64                  # E^a_{b|c}, Eq. (5)
-    pb::Float64                  # p^a_{b|c}, Eq. (6)
-    cq::Vector{Float64}          # cosine-mapped qT nodes/weights (cosnodes)
-    vq::Vector{Float64}
-    cθ::Vector{Float64}          # cosine-mapped Δη nodes/weights (cosnodes)
-    vθ::Vector{Float64}
-end
-
 function TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32)
     ma ≥ mb + mc || throw(ArgumentError("decay closed: ma < mb + mc"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
-    Eb = (ma^2 + mb^2 - mc^2) / (2ma)
-    pb = sqrt(max(kallen(ma^2, mb^2, mc^2), 0.0)) / (2ma)
-    TwoBodyDecay(ma, mb, mc, B, Eb, pb, cosnodes(nq)..., cosnodes(nθ)...)
+    Eb = (ma^2 + mb^2 - mc^2) / (2ma)                          # Eq. (5)
+    pb = sqrt(max(kallen(ma^2, mb^2, mc^2), 0.0)) / (2ma)      # Eq. (6)
+    MassAverage([float(ma)], mb, [Eb], [B * ma / (4π * pb)], cosnodes(nq)..., cosnodes(nθ)...)
 end
-
-(d::TwoBodyDecay)(Fa::F, pT, ηp, ϕp) where {F} =
-    d.B * d.ma / (4π * d.pb) *                           # Eq. (32)
-    decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb, d.cq, d.vq, d.cθ, d.vθ)
-
-# ---------------------------------------------------------------------------
-# Effective-mass (µ-averaged) decays: three- and four-body
-# ---------------------------------------------------------------------------
-# Both cluster the unobserved daughters into a single effective particle of
-# mass µ and average the two-body kernel over µ.  They share the functor and
-# the matrix assembly (which use only the fields ma, mb, B, Eb, coef, cq…vθ)
-# and differ solely in how the per-µ weight `coef` is built: the cluster
-# invariant-mass density ρ_{n-1}(µ) — the pair density q(µ;mc,md) for
-# three-body, the nested ρ₃(µ) for four-body (matrix_notes §3.1).
-
-abstract type MuAveraged end
-
-# Shared functor: B·ma/(4π) · Σᵢ coefᵢ K(E_b(µᵢ)), Eq. (59) and its 4-body analog.
-(d::MuAveraged)(Fa::F, pT, ηp, ϕp) where {F} =
-    d.B * d.ma / (4π) *
-    sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma, d.mb, d.Eb[i],
-                                d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
 
 # Shared µ-average build (Eqs. 45–48): node energies E_b(µᵢ) and normalized
 # weights coefᵢ = vᵢ ρ(µᵢ)/N, N = Σᵢ vᵢ p_b(µᵢ) ρ(µᵢ), on nµ cosine-mapped
 # nodes µ ∈ [lo, ma−mb]. `density(µ)` is the cluster invariant-mass density —
 # the pair density q(µ;mc,md) for three-body, ρ₃(µ) for four-body — the only
-# thing that differs between them. `where {D}`: specialize on the density
-# closure so its call inlines (construction runs ~13k times per table build).
+# thing that differs. `where {D}`: specialize on the density closure so its
+# call inlines (construction runs ~13k times per table build).
 function muweights(ma, mb, lo, density::D, nµ) where {D}
     cµ, vµ = cosnodes(nµ)                # cosine map absorbs the √ endpoint zeros
     hi = ma - mb
@@ -220,46 +214,27 @@ function muweights(ma, mb, lo, density::D, nµ) where {D}
     return Eb, coef
 end
 
-# ---------------------------------------------------------------------------
-# Three-body decay a → b + c + d, Eq. (59)
-# ---------------------------------------------------------------------------
+# a µ-averaged decay: nµ nodes at fixed parent mass ma, Eb over the cluster µ,
+# coef = B·ma/(4π)·(ρ/N). Shared by three- and four-body.
+function muaverage(ma, mb, lo, density; B, nµ, nq, nθ)
+    Eb, coef = muweights(ma, mb, lo, density, nµ)
+    MassAverage(fill(float(ma), length(Eb)), mb, Eb, (B * ma / (4π)) .* coef,
+                cosnodes(nq)..., cosnodes(nθ)...)
+end
 
 """
     ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
 
-Callable decay map of the isotropic three-body decay a → b + c + d with
-branching ratio `B`; `(d::ThreeBodyDecay)(Fa, pT, ηp, ϕp)` returns the
-daughter spectrum of b, Eq. (59). The pair c+d acts as an effective particle
-of mass µ ∈ [mc+md, ma−mb] (Eqs. 43–44): the same kernel as two-body is
-averaged over `nµ` cosine-mapped Gauss–Legendre nodes µᵢ with rest-frame
-energies E_b(µᵢ) (Eq. 45) and weights ∝ p_c̃(µᵢ) (Eq. 47), normalized by
-N = ∫ dµ p_b p_c̃ (Eq. 48).
+Isotropic three-body decay a → b + c + d (Eq. 59): the two-body kernel averaged
+over the (cd) effective mass µ ∈ [mc+md, ma−mb] with weight ∝ q(µ;mc,md).
+Returns a [`MassAverage`].
 """
-struct ThreeBodyDecay <: MuAveraged
-    ma::Float64
-    mb::Float64
-    mc::Float64
-    md::Float64
-    B::Float64
-    Eb::Vector{Float64}          # E^a_b(µᵢ), Eq. (45)
-    coef::Vector{Float64}        # vᵢ p_c̃(µᵢ) / N
-    cq::Vector{Float64}
-    vq::Vector{Float64}
-    cθ::Vector{Float64}
-    vθ::Vector{Float64}
-end
-
 function ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
     ma ≥ mb + mc + md || throw(ArgumentError("decay closed: ma < mb + mc + md"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     pair(µ) = sqrt(max(kallen(µ^2, mc^2, md^2), 0.0)) / (2µ)   # ρ₂ = p_c̃(µ), Eq. (47)
-    Eb, coef = muweights(ma, mb, mc + md, pair, nµ)
-    ThreeBodyDecay(ma, mb, mc, md, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
+    muaverage(ma, mb, mc + md, pair; B, nµ, nq, nθ)
 end
-
-# ---------------------------------------------------------------------------
-# Four-body decay a → b + c + d + e (matrix_notes §3.1)
-# ---------------------------------------------------------------------------
 
 # Cluster invariant-mass density ρ₃(µ) = ∫_{md+me}^{µ−mc} dσ q(µ;mc,σ) q(σ;md,me),
 # the three-particle (cde) phase-space volume (Dalitz area) at cluster mass µ.
@@ -282,34 +257,16 @@ end
 """
     FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
 
-Callable decay map of the isotropic four-body decay a → b + c + d + e. Identical
-in structure to `ThreeBodyDecay` — the same kernel averaged over the cluster
-mass µ ∈ [mc+md+me, ma−mb] — but the per-µ weight uses the three-particle
-cluster density ρ₃(µ) (an inner `nσ`-point σ-integral) in place of the pair
-density. Normalized by N = ∫ dµ p_b ρ₃ (matrix_notes §3.1).
+Isotropic four-body decay a → b + c + d + e (matrix_notes §3.1): the two-body
+kernel averaged over the (cde) cluster mass µ with weight ∝ ρ₃(µ), the nested
+Dalitz-area density (an inner `nσ`-point σ-integral). Returns a [`MassAverage`].
 """
-struct FourBodyDecay <: MuAveraged
-    ma::Float64
-    mb::Float64
-    mc::Float64
-    md::Float64
-    me::Float64
-    B::Float64
-    Eb::Vector{Float64}          # E^a_b(µᵢ)
-    coef::Vector{Float64}        # vᵢ ρ₃(µᵢ) / N
-    cq::Vector{Float64}
-    vq::Vector{Float64}
-    cθ::Vector{Float64}
-    vθ::Vector{Float64}
-end
-
 function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
     ma ≥ mb + mc + md + me || throw(ArgumentError("decay closed: ma < mb + mc + md + me"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     cσ, vσ = cosnodes(nσ)
     ρ3(µ) = clusterdensity3(µ, mc, md, me, cσ, vσ)            # ρ₃(µ), inner σ-integral
-    Eb, coef = muweights(ma, mb, mc + md + me, ρ3, nµ)
-    FourBodyDecay(ma, mb, mc, md, me, B, Eb, coef, cosnodes(nq)..., cosnodes(nθ)...)
+    muaverage(ma, mb, mc + md + me, ρ3; B, nµ, nq, nθ)
 end
 
 # ---------------------------------------------------------------------------
@@ -361,26 +318,30 @@ end
 """
     BroadParent(daughter masses..., bw::BreitWigner; B = 1.0, nma = 16, kw...)
 
-A decay whose parent has finite width: it wraps the underlying sharp decay
-(`TwoBodyDecay`/`ThreeBodyDecay`/`FourBodyDecay`, chosen by the number of
-daughter masses) and averages it over the parent spectral function `bw`
-(pole `bw.mR`, width `bw.Γ`). Usable exactly like a sharp decay — as a functor
-`(d)(Fa, pT, ηp, ϕp)` or via `DecayMatrix`/`decaymatrices` — the average being
-`Σᵢ wᵢ ϱ(m_aⁱ) [·] / N` over the parent mass. Nodes below the daughter
-threshold are dropped, so a channel closed at the pole keeps only its open-tail
-fraction (channel reopening). `kw...` pass through to the underlying decay
-(e.g. `nµ, nσ, nq, nθ`).
+A decay whose parent has finite width: the underlying sharp decay (two-, three-,
+or four-body, chosen by the number of daughter masses) averaged over the parent
+spectral function `bw` (pole `bw.mR`, width `bw.Γ`). Returns a [`MassAverage`] —
+the parent-mass nodes of every sub-decay are *flattened* into one node list, so
+a broad-parent decay is just another `MassAverage`, handled exactly like a sharp
+one. Nodes below the daughter threshold are dropped and enter only the
+normalization, so a channel closed at the pole keeps its open-tail fraction
+(channel reopening). `kw...` pass through to the underlying decay (nµ, nσ, nq, nθ).
 """
-struct BroadParent{D}
-    subs::Vector{D}       # sharp decays at the open parent-mass nodes
-    ws::Vector{Float64}   # their ϱ weights
-    norm::Float64         # full-support normalization (incl. closed nodes)
-end
-
 function BroadParent(build, bw::BreitWigner, opensum; nma = 16)
     mas, wall, norm = parentmassnodes(bw, nma)
-    keep = findall(>(opensum), mas)               # drop closed nodes
-    BroadParent([build(mas[i]) for i in keep], wall[keep], norm)
+    ma_all, Eb_all, coef_all = Float64[], Float64[], Float64[]
+    local sub                                     # a sample sub-decay (shared cq…vθ, mb)
+    got = false
+    for i in eachindex(mas)
+        mas[i] > opensum || continue              # closed node: enters only `norm`
+        s = build(mas[i])::MassAverage
+        append!(ma_all, s.ma)
+        append!(Eb_all, s.Eb)
+        append!(coef_all, (wall[i] / norm) .* s.coef)   # fold ϱ weight into coef
+        sub, got = s, true
+    end
+    got || (sub = build(opensum + 0.05))          # degenerate: no open node ⇒ zero matrix
+    MassAverage(ma_all, sub.mb, Eb_all, coef_all, sub.cq, sub.vq, sub.cθ, sub.vθ)
 end
 
 BroadParent(mb, mc, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
@@ -389,28 +350,6 @@ BroadParent(mb, mc, md, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
     BroadParent(ma -> ThreeBodyDecay(ma, mb, mc, md; B, kw...), bw, mb + mc + md; nma)
 BroadParent(mb, mc, md, me, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
     BroadParent(ma -> FourBodyDecay(ma, mb, mc, md, me; B, kw...), bw, mb + mc + md + me; nma)
-
-# functor: ϱ-average of the wrapped decay's functor
-(d::BroadParent)(Fa::F, pT, ηp, ϕp) where {F} =
-    sum(d.ws[i] * d.subs[i](Fa, pT, ηp, ϕp) for i in eachindex(d.subs); init = 0.0) / d.norm
-
-# matrix: ϱ-average of the wrapped decay's matrices (one per mode). Two typed
-# dispatches (Vector / Tuple modes) resolve the ambiguity with the generic
-# modes-vector entry; both share this body.
-function _bpmatrices(d::BroadParent, modes, pTs, qgrid, P)
-    Ws = [zeros(length(pTs), length(qgrid)) for _ in modes]
-    for i in eachindex(d.subs)
-        for (k, Wi) in enumerate(decaymatrices(d.subs[i], modes, pTs, qgrid; P))
-            Ws[k] .+= d.ws[i] .* Wi
-        end
-    end
-    d.norm > 0 && foreach(W -> W ./= d.norm, Ws)
-    return Ws
-end
-decaymatrices(d::BroadParent, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4)) =
-    _bpmatrices(d, modes, pTs, qgrid, P)
-decaymatrices(d::BroadParent, modes::Tuple, pTs, qgrid; P = Val(4)) =
-    _bpmatrices(d, modes, pTs, qgrid, P)
 
 # ---------------------------------------------------------------------------
 # Matrix representation on a fixed parent grid (η-independent sources)
@@ -461,28 +400,19 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # so the assembly threads over daughter pT and is bitwise identical to serial.
 # ---------------------------------------------------------------------------
 
-# Core (mt a Tuple of modes) → one Float64 matrix per mode.
-function decaymatrices(d::TwoBodyDecay, mt::Tuple, pTs, qgrid; P = Val(4))
+# Core (mt a Tuple of modes) → one Float64 matrix per mode. The node sum covers
+# every case at once: one node (two-body), the µ-average (three-/four-body), or
+# the flattened parent-mass × cluster nodes (broad parent) — each carrying its
+# own (ma_i, Eb_i, coef_i).
+function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid; P = Val(4))
     pTv = collect(Float64, pTs)
     Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
-    nθ, pref = length(d.cθ), d.B * d.ma / (4π * d.pb)
-    Threads.@threads for k in eachindex(pTv)
-        scatterrows!(map(W -> view(W, k, :), Ws), mt, d.ma, d.mb, d.Eb, pTv[k],
-                     d.cq, d.vq, nθ, qgrid, P, pref)
-    end
-    return collect(Ws)
-end
-
-# Three- and four-body: the µ-average is a coef-weighted sum of the same scatter.
-function decaymatrices(d::MuAveraged, mt::Tuple, pTs, qgrid; P = Val(4))
-    pTv = collect(Float64, pTs)
-    Ws = map(_ -> zeros(length(pTv), length(qgrid)), mt)
-    nθ, base = length(d.cθ), d.B * d.ma / (4π)
+    nθ = length(d.cθ)
     Threads.@threads for k in eachindex(pTv)
         rows = map(W -> view(W, k, :), Ws)
-        for i in eachindex(d.coef)                          # µ-average
-            scatterrows!(rows, mt, d.ma, d.mb, d.Eb[i], pTv[k],
-                         d.cq, d.vq, nθ, qgrid, P, base * d.coef[i])
+        for i in eachindex(d.coef)
+            scatterrows!(rows, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
+                         d.cq, d.vq, nθ, qgrid, P, d.coef[i])
         end
     end
     return collect(Ws)
@@ -490,18 +420,13 @@ end
 
 # Entry from a modes vector, with a fallback for many modes (tuple ops stop
 # unrolling past ~32, so cap the fused path and loop single-mode beyond that).
-function decaymatrices(d, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4))
+function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid; P = Val(4))
     length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P)
     return [DecayMatrix(d, n, pTs, qgrid; P).W for n in modes]
 end
 
 # Single-mode public API: one DecayMatrix struct, via the fused core with (n,).
-DecayMatrix(d::Union{TwoBodyDecay,MuAveraged}, n::Integer, pTs, qgrid; P = Val(4)) =
-    DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
-                decaymatrices(d, (n,), pTs, qgrid; P)[1])
-
-# broad-parent wrapper (defined here, after the DecayMatrix struct exists)
-DecayMatrix(d::BroadParent, n::Integer, pTs, qgrid; P = Val(4)) =
+DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P = Val(4)) =
     DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
                 decaymatrices(d, (n,), pTs, qgrid; P)[1])
 

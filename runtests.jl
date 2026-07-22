@@ -26,13 +26,13 @@ number(F; rtol = 1e-6) =
 # ---------------------------------------------------------------- test 1
 println("== 1. Two-body number conservation:  ρ → ππ, static thermal source ==")
 ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396; B = 1.0)
-Fa = thermal(ρ.ma)
+Fa = thermal(0.7752)
 Na = number(Fa)
 Nb = 2π * quadgk(pT -> quadgk(ηp -> pT * ρ(Fa, pT, ηp, 0.0),
                               -Inf, Inf; rtol = 1e-4)[1],
                  0, Inf; rtol = 1e-4)[1]
-@printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Na, Nb, Nb / (ρ.B * Na))
-@assert isapprox(Nb, ρ.B * Na; rtol = 1e-3)
+@printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Na, Nb, Nb / Na)
+@assert isapprox(Nb, Na; rtol = 1e-3)
 println("   PASS")
 
 # ---------------------------------------------------------------- test 2
@@ -62,7 +62,7 @@ Nbω = 2π * quadgk(pT -> quadgk(ηp -> pT * ω(Faω, pT, ηp, 0.0),
                                -Inf, Inf; rtol = 1e-3)[1],
                   0, Inf; rtol = 1e-3)[1]
 @printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Naω, Nbω, Nbω / Naω)
-@assert isapprox(Nbω, ω.B * Naω; rtol = 5e-3)
+@assert isapprox(Nbω, Naω; rtol = 5e-3)
 println("   PASS")
 
 # ---------------------------------------------------------------- test 3b
@@ -74,7 +74,7 @@ Nb4 = 2π * quadgk(pT -> quadgk(ηp -> pT * d4(Fa4, pT, ηp, 0.0),
                               -Inf, Inf; rtol = 1e-3)[1],
                  0, Inf; rtol = 1e-3)[1]
 @printf("   N_a = %.6e   N_b = %.6e   ratio N_b/(B N_a) = %.6f\n", Na4, Nb4, Nb4 / Na4)
-@assert isapprox(Nb4, d4.B * Na4; rtol = 5e-3)
+@assert isapprox(Nb4, Na4; rtol = 5e-3)
 # ρ₃ is symmetric under permuting the three cluster masses (any particle may be
 # peeled first, Eq. rho3); the constructor does NOT sort them, so permuting the
 # inputs and getting the same spectrum genuinely tests the inner σ-integral.
