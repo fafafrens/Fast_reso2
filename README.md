@@ -63,8 +63,8 @@ julia -t auto cascade.jl      # full cascade + figure
 `-t auto` (threads) matters for the table build, which parallelizes over
 channels and fuses all Fourier modes into a single quadrature sweep. The
 `Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
-builds and saves it (~30 s on 8 threads, ~2.5 GB Float32); later runs load it
-(~7 s), and the cascade sweep itself takes ~2 s.
+builds it (~11 s on 8 threads, incl. finite parent widths) and saves it (~2.5 GB
+Float32); later runs load it (~7 s), and the cascade sweep itself takes ~2 s.
 
 The test suite covers number conservation (2-/3-/4-body), Fourier-mode
 reconstruction, quadrature and Lagrange-weight convergence (incl. 1st/2nd
