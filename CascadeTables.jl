@@ -163,17 +163,25 @@ struct CascadeTable
     W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
 end
 
-# The skip rules of the cascade, applied once to enumerate every needed key.
-# Returns the key set and the skip statistics.
-function neededkeys(dl::DecayList)
-    need = Set{ChannelKey}()
+# Single source of truth for the cascade's channel enrollment. For every decay
+# channel of `dl` that survives the skip rules — multiplicity (2–4 body), the
+# threshold (open at the pole mass, or reopened by a broad parent's spectral
+# tail), and the photon-slot filter — this invokes `f(pid, ch, did, key)` once
+# per observed-daughter slot, with the `ChannelKey` the matrix is stored under.
+# Both the table build (`neededkeys`) and the apply (`runcascade`) walk this, so
+# they can never disagree on which keys exist or how they are keyed. Pass
+# `ordered = true` to visit parents mass-descending (the apply needs each parent
+# spectrum complete before it decays). Returns the skip statistics.
+function eachchannelkey(f, dl::DecayList; ordered::Bool = false)
     stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
                  :γdaughter => 0, :unknown => 0)
-    for (pid, chans) in dl.byparent
+    pids = collect(keys(dl.byparent))
+    ordered && sort!(pids; by = pid -> dl.parts[pid].mass, rev = true)
+    for pid in pids
         ma = dl.parts[pid].mass
         Γa = dl.parts[pid].width
         broad = Γa > WIDTHCUT
-        for ch in chans
+        for ch in dl.byparent[pid]
             ds = ch.daughters
             nd = length(ds)
             nd == 1 && (stats[:self] += 1; continue)          # stable self-channel
@@ -187,13 +195,21 @@ function neededkeys(dl::DecayList)
             openpole || reopenable || (stats[:closed] += 1; continue)
             openpole || (stats[:reopened] += 1)               # closed at pole, tail-reopened
             Γk = broad ? Γa : 0.0                             # 0 ⇒ sharp key
-            for (slot, _) in enumerate(ds)
+            for (slot, did) in enumerate(ds)
                 mb = ms[slot]
                 mb > 0 || (stats[:γdaughter] += 1; continue)  # photon not observable
-                push!(need, ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot], Γk))
+                key = ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot], Γk)
+                f(pid, ch, did, key)
             end
         end
     end
+    return stats
+end
+
+# Every matrix key the cascade will read, with the skip statistics.
+function neededkeys(dl::DecayList)
+    need = Set{ChannelKey}()
+    stats = eachchannelkey((_pid, _ch, _did, key) -> push!(need, key), dl)
     return need, stats
 end
 
@@ -326,32 +342,14 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
     F = Dict(id => [Vector{Float64}(primary(p, n, t.grid)) for n in t.modes]
              for (id, p) in dl.parts)
     Fprim = Dict(id => [copy(v) for v in vs] for (id, vs) in F)
-    order = sort(collect(keys(dl.parts)); by = id -> dl.parts[id].mass, rev = true)
-    for pid in order
-        haskey(dl.byparent, pid) || continue
-        ma = dl.parts[pid].mass
-        Γa = dl.parts[pid].width
-        broad = Γa > WIDTHCUT
+    # walk the enrolled channels parent-mass-descending: F[pid] is complete
+    # (primary + all feed-down) by the time pid decays. Enrollment and key layout
+    # are the shared eachchannelkey, identical to the build — no drift possible.
+    eachchannelkey(dl; ordered = true) do pid, ch, did, key
+        Ws = t.W[key]
         Fp = F[pid]
-        for ch in dl.byparent[pid]
-            ds = ch.daughters
-            nd = length(ds)
-            (nd == 1 || nd ≥ 5) && continue
-            all(d -> haskey(dl.parts, d), ds) || continue
-            ms = [dl.parts[d].mass for d in ds]
-            Σm = sum(ms)
-            # same enrollment as neededkeys: open at the pole, or reopened by the tail
-            (ma > Σm + 1e-6 || (broad && ma + WIDTHK * Γa > Σm + 1e-6)) || continue
-            Γk = broad ? Γa : 0.0
-            for (slot, did) in enumerate(ds)
-                mb = ms[slot]
-                mb > 0 || continue
-                key = ChannelKey(ma, mb, [ms[x] for x in eachindex(ms) if x != slot], Γk)
-                Ws = t.W[key]
-                for m in eachindex(t.modes)
-                    F[did][m] .+= ch.br .* (Ws[m] * Fp[m])
-                end
-            end
+        for m in eachindex(t.modes)
+            F[did][m] .+= ch.br .* (Ws[m] * Fp[m])
         end
     end
     return (F = F, Fprim = Fprim)
