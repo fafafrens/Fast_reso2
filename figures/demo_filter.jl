@@ -4,14 +4,16 @@
 # 2+3+4-body decays — three NESTED filters (2 ⊆ 23 ⊆ 234) applied to the ONE
 # cached table (build once, filter freely). See the README "Channel filtering".
 
-isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
+isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
+
+const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
 const T = 0.145        # GeV
 
-dl  = DecayList("decays_QM2016Plus_massorder.dat")
-tab = CascadeTable(dl; cache = "Wtables.jls")     # full table, loaded (or built once)
+dl  = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
+tab = CascadeTable(dl; cache = joinpath(ROOT, "Wtables.jls"))     # full table, loaded (or built once)
 
 # mode-0 Boltzmann primaries with degeneracy (no v₂ needed for the ratio)
 primary(p, n, grid) =
@@ -49,7 +51,7 @@ for (k, (name, id)) in enumerate((("π⁺", 211), ("K⁺", 321), ("p", 2212)))
     push!(panels, pl)
 end
 fig = plot(panels...; layout = (1, 3), size = (1150, 380), margin = 5Plots.mm)
-savefig(fig, "feeddown_topology.png")
+savefig(fig, joinpath(@__DIR__, "feeddown_topology.png"))
 println("plot saved to feeddown_topology.png")
 
 # ---------------------------------------------------------------------------
@@ -76,7 +78,7 @@ for (r, logy) in enumerate((true, false))
     end
 end
 fig2 = plot(panels2...; layout = (2, 3), size = (1150, 720), margin = 5Plots.mm)
-savefig(fig2, "feeddown_spectra.png")
+savefig(fig2, joinpath(@__DIR__, "feeddown_spectra.png"))
 println("plot saved to feeddown_spectra.png")
 
 # print the endpoint numbers so the figure has a text companion

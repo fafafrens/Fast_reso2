@@ -2,22 +2,20 @@
 # decay matrices (modes n = 0 and n = 2), lenient mass-keyed caching, single
 # mass-descending sweep. First run builds and saves the tables (~2.5 GB,
 # Float32); later runs load them and the cascade itself takes ~2 s.
-#
-# For the minimal, dependency-light illustration of the same physics (single
-# mode, matrices built inline, no persistence), see `cascade_simple.jl`; its
-# F_total/F_primary ratios are the regression reference for this file.
 
-isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
+isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
+
+const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
 const T   = 0.145        # GeV
 const v2p = 0.05         # primary elliptic-flow amplitude (all species)
 
-dl = DecayList("decays_QM2016Plus_massorder.dat")
+dl = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
 
 t0 = time()
-tab = CascadeTable(dl; cache = "Wtables.jls")
+tab = CascadeTable(dl; cache = joinpath(ROOT, "Wtables.jls"))
 @printf("tables ready in %.1f s:  %d keys × %d modes, grid %d pts [%.1f, %.1f] GeV\n",
         time() - t0, length(tab.W), length(tab.modes), length(tab.grid),
         first(tab.grid), last(tab.grid))
@@ -78,5 +76,5 @@ plot!(p2, pTs, fill(v2p, length(pTs)); label = "primary v₂",
       color = :gray, ls = :dash, common...)
 
 fig = plot(p1, p2; layout = (1, 2), size = (920, 380), margin = 5Plots.mm)
-savefig(fig, "cascade.png")
+savefig(fig, joinpath(@__DIR__, "cascade.png"))
 println("\nplot saved to cascade.png")

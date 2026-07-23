@@ -37,33 +37,39 @@ The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
 
 ## Files
 
+Core modules, the test suite and the data live at the root; everything that
+produces a figure (script **and** its output) lives in `figures/`.
+
 | File | Role |
 |------|------|
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
 | `CascadeTables.jl`  | Persistent per-channel decay matrices, channel filtering, mass-descending cascade |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
-| `cascade.jl`        | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) → `cascade.png` |
-| `cascade_simple.jl` | Minimal single-mode cascade — the regression reference for `cascade.jl` |
-| `physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
-| `physics_charm.jl` | Charm feed-down (D⁰/D⁺/D_s/Λc) from excited charm, SHM thermal primaries → `feeddown_charm.png` |
-| `demo.jl`           | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
-| `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
 | `runtests.jl`       | Test suite (see below) |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 | `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
 | `tools/gen_heavy_flavour.py` | Regenerates the charm+bottom list from the PDG database (`pip install pdg`) |
+| `figures/cascade.jl` | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) → `cascade.png` |
+| `figures/physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
+| `figures/physics_charm.jl` | Charm feed-down (D⁰/D⁺/D_s/Λc) from excited charm, SHM thermal primaries → `feeddown_charm.png` |
+| `figures/demo.jl`   | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
+| `figures/demo_filter.jl` | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
+
+The figure scripts resolve paths from their own location (`@__DIR__`), so they
+run from anywhere; data is read from the root and figures are written next to
+the script that makes them.
 
 ## Usage
 
 ```bash
-julia --project -t auto runtests.jl          # validate everything
-julia --project -t auto demo.jl              # minimal ρ→ππ / ω→πππ example + figure
-julia --project -t auto demo_filter.jl       # feed-down by decay topology + figures
-julia --project -t auto cascade.jl           # full cascade + figure
-julia --project -t auto physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
-julia --project -t auto physics_charm.jl     # charm feed-down (needs the charm supplement)
+julia --project -t auto runtests.jl                  # validate everything
+julia --project -t auto figures/demo.jl              # minimal ρ→ππ / ω→πππ example + figure
+julia --project -t auto figures/demo_filter.jl       # feed-down by decay topology + figures
+julia --project -t auto figures/cascade.jl           # full cascade + figure
+julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
+julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
 ```
 
 `-t auto` (threads) matters for the table build, which parallelizes over

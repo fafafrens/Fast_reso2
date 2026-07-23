@@ -9,15 +9,17 @@
 # Needs the charm+bottom supplement.  Run: julia -t auto physics_charm.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
+isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
+
+const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
 # merge the main list (light daughters) with the charm+bottom supplement
 combined = tempname() * ".dat"
 open(combined, "w") do io
-    write(io, read("decays_QM2016Plus_massorder.dat"))
-    write(io, read("decays_charm_bottom.dat"))
+    write(io, read(joinpath(ROOT, "decays_QM2016Plus_massorder.dat")))
+    write(io, read(joinpath(ROOT, "decays_charm_bottom.dat")))
 end
 dl  = DecayList(combined)
 dlc = filter(charmparent(), dl)                   # only charm-parent decays matter
@@ -85,5 +87,5 @@ for (nm, id, col) in charm
 end
 hline!(psup, [1.0]; color = :gray, ls = :dash, label = "no feed-down", common...)
 fig = plot(ps, pe, psup; layout = (1, 3), size = (1360, 400), margin = 5Plots.mm)
-savefig(fig, "feeddown_charm.png")
+savefig(fig, joinpath(@__DIR__, "feeddown_charm.png"))
 println("\nsaved feeddown_charm.png")

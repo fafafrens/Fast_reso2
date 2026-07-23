@@ -2,7 +2,7 @@
 # (two-body, Eq. 32) and ω → π⁺π⁻π⁰ (three-body, Eq. 59) for a static
 # thermal source with elliptic-flow modulation.
 
-include("DecaySpectra.jl")
+include("../DecaySpectra.jl")
 using .DecaySpectra
 using Printf
 
@@ -75,7 +75,7 @@ plot!(p2, pTs, vω; label = "ω → π⁺π⁻π⁰", color = col_ω, common...)
 plot!(p2, pTs, fill(v2, length(pTs)); label = "primary π", color = col_π, common...)
 
 fig = plot(p1, p2; layout = (1, 2), size = (920, 380), margin = 5Plots.mm)
-savefig(fig, "demo_feeddown.png")
+savefig(fig, joinpath(@__DIR__, "demo_feeddown.png"))
 println("\nplot saved to demo_feeddown.png")
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,9 @@
 # (right) v₂(pT), input vs total.  Run: julia -t auto physics_feeddown.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
+isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
+
+const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
@@ -25,7 +27,7 @@ primary(p, n, grid) =
     n == 2 ? [v2in(q) * p.degeneracy * exp(-hypot(p.mass, q) / T) for q in grid] :
              zeros(length(grid))
 
-dl  = DecayList("decays_QM2016Plus_massorder.dat")
+dl  = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
 t0  = time()
 tab = CascadeTable(dl; cache = nothing)           # build in-memory (no 2.5 GB on disk)
 @printf("table built in %.1f s:  %d keys × %d modes\n", time() - t0,
@@ -79,5 +81,5 @@ plot!(pv2, pTs, v2in.(pTs); color = :gray, ls = :dash, label = "input v₂", com
 hline!(psup, [1.0]; color = :gray, ls = :dash, label = "no feed-down", common...)
 
 fig = plot(pspec, pv2, psup; layout = (1, 3), size = (1360, 400), margin = 5Plots.mm)
-savefig(fig, "feeddown_physics.png")
+savefig(fig, joinpath(@__DIR__, "feeddown_physics.png"))
 println("\nsaved feeddown_physics.png")
