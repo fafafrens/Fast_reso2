@@ -336,4 +336,58 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     println("   PASS")
 end
 
+# ---------------------------------------------------------------- test 8
+println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
+# Pins the boost-invariant public interface so refactors (and the planned
+# rapidity-tensor extension) cannot silently drift it. The math is covered
+# above; this asserts the *contract* every extension must preserve.
+let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
+    ρ8  = TwoBodyDecay(0.7752, 0.1396, 0.1396)
+    ω8  = ThreeBodyDecay(0.7827, 0.1396, 0.1396, 0.1350)
+    d48 = FourBodyDecay(1.3, 0.1396, 0.1396, 0.1396, 0.1350)
+    bp8 = BroadParent(0.1396, 0.1396, BreitWigner(0.7752, 0.05); nma = 6)
+
+    # every decay constructor collapses to the one unified dispatch type
+    @assert all(x isa MassAverage for x in (ρ8, ω8, d48, bp8))
+    # node arrays are aligned; two-body is one node, µ-averages are many
+    for x in (ρ8, ω8, d48, bp8)
+        @assert length(x.ma) == length(x.Eb) == length(x.coef) ≥ 1
+    end
+    @assert length(ρ8.coef) == 1 && length(ω8.coef) > 1
+
+    # decaymatrices(::Vector) : Vector{Matrix{Float64}}, one (npT × nq) per mode
+    W = decaymatrices(ρ8, [0, 2], pT8, g)
+    @assert W isa Vector{Matrix{Float64}} && length(W) == 2
+    @assert all(size(w) == (length(pT8), length(g)) for w in W)
+
+    # T kwarg selects the storage eltype and is exactly the rounded Float64 result
+    W32 = decaymatrices(ρ8, [0, 2], pT8, g; T = Float32)
+    @assert W32 isa Vector{Matrix{Float32}} && all(W32[m] == Float32.(W[m]) for m in 1:2)
+
+    # single-mode DecayMatrix wraps the fused core: .W ≡ decaymatrices((n,))[1]
+    M = DecayMatrix(ρ8, 0, pT8, g)
+    @assert M.W isa Matrix{Float64} && size(M.W) == (length(pT8), length(g))
+    @assert M.n == 0 && M.pT == pT8 && M.q == collect(g)
+    @assert M.W == decaymatrices(ρ8, (0,), pT8, g)[1]
+
+    # the parallel assembly is deterministic: threaded ≡ serial, bitwise
+    @assert decaymatrices(ω8, [0, 2], pT8, g; threaded = true) ==
+            decaymatrices(ω8, [0, 2], pT8, g; threaded = false)
+
+    # functor apply contract: M(F) == M.W * F.(q)  (the reference the rapidity
+    # collapse w[k,j,0]+2Σ_{d≥1}w[k,j,d] must reproduce for an η-independent source)
+    F8(q) = exp(-hypot(0.7752, q) / T)
+    @assert M(F8) == M.W * F8.(M.q)
+
+    # BreitWigner: callable spectral function, positive on a window around the pole
+    bw = BreitWigner(0.7752, 0.05)
+    @assert bw isa BreitWigner && bw(0.7752) > 0 && bw.mmin < 0.7752 < bw.mmax
+
+    # hot paths are type-stable (an Any-leak here would poison any assembly)
+    @assert only(Base.return_types(ρ8, (typeof(F8), Float64, Float64, Float64))) == Float64
+    @assert isconcretetype(only(Base.return_types(decaymatrices,
+                (MassAverage, Tuple{Int}, Vector{Float64}, Vector{Float64}))))
+end
+println("   PASS")
+
 println("\nAll tests passed.")
