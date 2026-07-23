@@ -32,7 +32,8 @@ using Serialization, SHA, Dates
 export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        savetables, loadtables, ParticleInfo, DecayChannel,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
-       fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent
+       fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
+       parentstrangeness, strangeparent, charmparent, parentisospin
 
 const FORMAT = 5                       # bump on any layout OR matrix-value change
                                        # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral;
@@ -122,6 +123,14 @@ toid(ids::Integer...)                = ChannelFilter((p, ch, ds) -> any(d -> d.i
 baryonicparent()                     = ChannelFilter((p, ch, ds) -> p.baryon != 0)
 "Keep channels whose parent is a meson (zero baryon number)."
 mesonicparent()                      = ChannelFilter((p, ch, ds) -> p.baryon == 0)
+"Keep channels whose parent strangeness is one of `ss` — e.g. `parentstrangeness(1, -1)`."
+parentstrangeness(ss::Integer...)    = ChannelFilter((p, ch, ds) -> p.strangeness in ss)
+"Keep channels whose parent carries nonzero strangeness."
+strangeparent()                      = ChannelFilter((p, ch, ds) -> p.strangeness != 0)
+"Keep channels whose parent carries nonzero charm."
+charmparent()                        = ChannelFilter((p, ch, ds) -> p.charm != 0)
+"Keep channels whose parent isospin is one of `is` — half-integers, e.g. `parentisospin(0.5, 1.5)`."
+parentisospin(is::Real...)           = ChannelFilter((p, ch, ds) -> any(≈(p.isospin), is))
 "Wrap a raw predicate `(p, ch, ds) -> Bool` as a `ChannelFilter`."
 channelfilter(f)                     = ChannelFilter(f)
 

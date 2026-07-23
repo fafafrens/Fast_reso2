@@ -24,7 +24,14 @@ struct ParticleInfo
     degeneracy::Float64
     baryon::Int
     charge::Int
+    strangeness::Int      # S  (field 7)
+    charm::Int            # C  (field 8) — all zero in the QM2016 list
+    isospin::Float64      # I  (field 10), a half-integer: 0, ½, 1, 1½
 end
+
+# 7-arg form (pre-quantum-number callers, tests) defaults S = C = 0, I = 0.
+ParticleInfo(id, name, mass, width, deg, baryon, charge) =
+    ParticleInfo(id, name, mass, width, deg, baryon, charge, 0, 0, 0.0)
 
 struct DecayChannel
     parent::Int
@@ -51,12 +58,14 @@ function read_decaylist(path::AbstractString)
         if length(s) == 12
             # header: id name mass width degeneracy B S C Bot I Q n_channels
             #         1  2    3    4     5          6 7 8 9   10 11 12
-            # (fields 7–10 and 12 are not needed downstream and are skipped;
-            #  the trailing count is redundant — channels carry the parent id)
+            # (Bot (9) and the redundant trailing count (12) are skipped;
+            #  channels carry their own parent id, so 12 is never needed)
             id = parse(Int, s[1])
             particles[id] = ParticleInfo(id, String(s[2]),
                 parse(Float64, s[3]), parse(Float64, s[4]), parse(Float64, s[5]),
-                round(Int, parse(Float64, s[6])), round(Int, parse(Float64, s[11])))
+                round(Int, parse(Float64, s[6])), round(Int, parse(Float64, s[11])),
+                round(Int, parse(Float64, s[7])), round(Int, parse(Float64, s[8])),
+                parse(Float64, s[10]))
         elseif length(s) == 8
             # channel: id n_daughters BR d1 d2 d3 d4 d5
             # only the first n_daughters slots are meaningful, the rest are 0.

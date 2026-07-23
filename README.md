@@ -100,7 +100,8 @@ Ready-made filters (all return a `ChannelFilter`):
 ```
 nbody(ns...)        parentmass(lo,hi)     daughtermass(lo,hi)   brabove(x)
 fromparent(names…)  todaughter(names…)    fromid(ids…)          toid(ids…)
-baryonicparent()    mesonicparent()       channelfilter(f)      # raw (p,ch,ds)->Bool
+baryonicparent()    mesonicparent()       strangeparent()       charmparent()
+parentstrangeness(ss…)  parentisospin(is…)  channelfilter(f)    # raw (p,ch,ds)->Bool
 ```
 
 Two properties this design buys:
