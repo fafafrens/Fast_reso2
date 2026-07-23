@@ -1,0 +1,25 @@
+# Environment for Fast_reso2 — a modules-plus-scripts repo, not a registered
+# package (the modules are `include`d from the root, so there is no src/ layout
+# and no name/uuid here).
+#
+#   julia --project -e 'using Pkg; Pkg.instantiate()'   # once
+#   julia --project -t auto runtests.jl
+#
+# FastGaussQuadrature is the only hard dependency of the core; QuadGK is used by
+# the test suite and Plots by the figure scripts.
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
+[compat]
+FastGaussQuadrature = "1"
+Plots = "1"
+QuadGK = "2"
+# `Threads.@threads :greedy` (CascadeTables.buildkeys!) requires Julia 1.11+
+julia = "1.11"

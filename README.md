@@ -22,13 +22,13 @@ the cluster / observed-daughter width cases — see the note.
 
 ## Requirements
 
-Julia ≥ 1.8. External packages (installed into your active environment):
+**Julia ≥ 1.11** — the table build uses `Threads.@threads :greedy`, added in 1.11.
 
-```julia
-using Pkg
-Pkg.add(["FastGaussQuadrature",   # core: Gauss–Legendre nodes
-         "QuadGK",                 # test suite only
-         "Plots"])                 # demo / cascade figures only
+Dependencies are declared in `Project.toml`; instantiate once, then run
+everything with `--project`:
+
+```bash
+julia --project -e 'using Pkg; Pkg.instantiate()'
 ```
 
 The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
@@ -57,11 +57,13 @@ The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
 
 ## Usage
 
-```julia
-julia -t auto runtests.jl     # validate everything
-julia -t auto demo.jl         # minimal ρ→ππ / ω→πππ example + figure
-julia -t auto demo_filter.jl  # feed-down by decay topology + figures
-julia -t auto cascade.jl      # full cascade + figure
+```bash
+julia --project -t auto runtests.jl          # validate everything
+julia --project -t auto demo.jl              # minimal ρ→ππ / ω→πππ example + figure
+julia --project -t auto demo_filter.jl       # feed-down by decay topology + figures
+julia --project -t auto cascade.jl           # full cascade + figure
+julia --project -t auto physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
+julia --project -t auto physics_charm.jl     # charm feed-down (needs the charm supplement)
 ```
 
 `-t auto` (threads) matters for the table build, which parallelizes over
