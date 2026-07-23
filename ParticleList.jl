@@ -15,7 +15,7 @@ Stable particles carry one self-channel (n_daughters = 1, daughter = id).
 module ParticleList
 
 export ParticleInfo, DecayChannel, read_decaylist,
-       isospin, isbaryon, ismeson, isantiparticle, isstrange
+       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange
 
 struct ParticleInfo
     id::Int
@@ -37,6 +37,10 @@ ParticleInfo(id, name, mass, width, deg, baryon, charge) =
 # --- derived quantities (exact from stored fields) -------------------------
 "Physical isospin I (half-integer), recovered from the stored 2I."
 isospin(p::ParticleInfo)        = p.twiceisospin / 2
+"Physical spin J (half-integer), from the 2J+1 spin degeneracy (charge states
+are split and isospin is separate, so `degeneracy` is spin-only — even the
+high-spin baryons like Δ(2950), J=15/2, deg=16)."
+spin(p::ParticleInfo)           = (p.degeneracy - 1) / 2
 "True for a baryon (nonzero baryon number)."
 isbaryon(p::ParticleInfo)       = p.baryon != 0
 "True for a meson (zero baryon number)."
