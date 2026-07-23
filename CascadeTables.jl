@@ -27,9 +27,9 @@ module CascadeTables
 
 include("DecaySpectra.jl");  using .DecaySpectra
 include("ParticleList.jl");  using .ParticleList
-using Serialization, SHA, Dates
+using Serialization, SHA, Dates, Printf
 
-export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
+export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate,
        savetables, loadtables, ParticleInfo, DecayChannel,
        isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
@@ -359,6 +359,94 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
         end
     end
     return (F = F, Fprim = Fprim)
+end
+
+# ---------------------------------------------------------------------------
+# Decay-list validation: conservation laws + branching-ratio sanity
+# ---------------------------------------------------------------------------
+
+"""
+    validate(dl::DecayList; brtol = 0.02, verbose = true) -> NamedTuple
+
+Check every decay channel of `dl` against the physics it must obey and return
+the statistics (printing a report when `verbose`). Self-contained — no PDG
+needed. The checks, and how to read them:
+
+  * **charge** and **baryon number** — conserved by *every* channel (strong, EM,
+    weak alike); any nonzero count is a data error.
+  * **branching ratios** — `ΣBR ≈ 1` per decaying parent (`brtol`), and each
+    `BR ∈ [0, 1]`; outliers flag a malformed or truncated list.
+  * **daughter resolution** — every daughter id must be a known species.
+  * **strangeness / charm change** — *informational*: zero means a strong/EM-only
+    list; nonzero counts the weak (ΔS or ΔC) decays it includes.
+  * **threshold** — channels closed at the pole mass (open only via finite width).
+"""
+function validate(dl::DecayList; brtol = 0.02, verbose = true)
+    nchan = 0; nself = 0; nunresolved = 0; brbad = 0
+    schange = 0; cchange = 0; subthresh = 0
+    qviol = Tuple{Int,Vector{Int}}[]; bviol = Tuple{Int,Vector{Int}}[]
+    ndist = Dict{Int,Int}(); brsum = Dict{Int,Float64}()
+    for (pid, chans) in dl.byparent
+        p = dl.parts[pid]; s = 0.0; hasreal = false
+        for ch in chans
+            ds = ch.daughters; nd = length(ds)
+            ndist[nd] = get(ndist, nd, 0) + 1
+            nd == 1 && (nself += 1; continue)          # stable self-channel
+            hasreal = true; nchan += 1; s += ch.br
+            (0.0 ≤ ch.br ≤ 1 + 1e-6) || (brbad += 1)
+            all(d -> haskey(dl.parts, d), ds) || (nunresolved += 1; continue)
+            di = (dl.parts[d] for d in ds)
+            sum(d -> d.charge,      di) == p.charge      || push!(qviol, (pid, ds))
+            sum(d -> d.baryon,      di) == p.baryon      || push!(bviol, (pid, ds))
+            sum(d -> d.strangeness, di) == p.strangeness || (schange += 1)
+            sum(d -> d.charm,       di) == p.charm       || (cchange += 1)
+            p.mass + 1e-6 < sum(d -> d.mass, di)         && (subthresh += 1)
+        end
+        hasreal && (brsum[pid] = s)
+    end
+    brdev = [abs(v - 1) for v in values(brsum)]
+    stats = (particles = length(dl.parts), channels = nchan, selfstable = nself,
+             multiplicity = sort(collect(ndist)),
+             unresolved = nunresolved, br_out_of_range = brbad,
+             charge_violations = length(qviol), baryon_violations = length(bviol),
+             strangeness_changing = schange, charm_changing = cchange,
+             subthreshold = subthresh,
+             br_norm_outliers = count(>(brtol), brdev),
+             br_maxdev = isempty(brdev) ? 0.0 : maximum(brdev))
+    verbose && _report(dl, stats, qviol, bviol, brsum, brtol)
+    return stats
+end
+
+function _report(dl, st, qviol, bviol, brsum, brtol)
+    name(id) = haskey(dl.parts, id) ? dl.parts[id].name : "?$id"
+    ok(n) = n == 0 ? "OK" : "*** $n ***"
+    println("── decay-list validation ", repeat("─", 44))
+    @printf("  %d particles, %d decay channels (%d stable), multiplicities %s\n",
+            st.particles, st.channels, st.selfstable, string(st.multiplicity))
+    println("  conservation (must be zero):")
+    @printf("    charge violations ........ %s\n", ok(st.charge_violations))
+    @printf("    baryon-number violations . %s\n", ok(st.baryon_violations))
+    @printf("    unresolved daughters ..... %s\n", ok(st.unresolved))
+    @printf("    BR out of [0,1] .......... %s\n", ok(st.br_out_of_range))
+    @printf("  branching ratios: max |ΣBR-1| = %.2e,  %s parents beyond %.0f%%\n",
+            st.br_maxdev, ok(st.br_norm_outliers), 100brtol)
+    @printf("  informational: %d strangeness-changing, %d charm-changing (weak decays),  %d closed-at-pole\n",
+            st.strangeness_changing, st.charm_changing, st.subthreshold)
+    for (label, v) in (("charge", qviol), ("baryon", bviol))
+        isempty(v) && continue
+        println("  first $label violations:")
+        for (pid, ds) in first(v, 3)
+            @printf("    %s -> %s\n", name(pid), join((name(d) for d in ds), " "))
+        end
+    end
+    worst = sort(collect(brsum); by = kv -> abs(kv[2] - 1), rev = true)
+    if !isempty(worst) && abs(worst[1][2] - 1) > brtol
+        println("  parents with worst ΣBR:")
+        for (pid, s) in first(worst, 3)
+            @printf("    %-12s ΣBR = %.3f\n", name(pid), s)
+        end
+    end
+    println(repeat("─", 70))
 end
 
 end # module
