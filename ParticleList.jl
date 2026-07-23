@@ -26,12 +26,12 @@ struct ParticleInfo
     charge::Int
     strangeness::Int      # S  (field 7)
     charm::Int            # C  (field 8) — all zero in the QM2016 list
-    isospin::Float64      # I  (field 10), a half-integer: 0, ½, 1, 1½
+    twiceisospin::Int     # 2I (field 10 × 2): integer 0,1,2,3 for I = 0,½,1,1½
 end
 
-# 7-arg form (pre-quantum-number callers, tests) defaults S = C = 0, I = 0.
+# 7-arg form (pre-quantum-number callers, tests) defaults S = C = 0, 2I = 0.
 ParticleInfo(id, name, mass, width, deg, baryon, charge) =
-    ParticleInfo(id, name, mass, width, deg, baryon, charge, 0, 0, 0.0)
+    ParticleInfo(id, name, mass, width, deg, baryon, charge, 0, 0, 0)
 
 struct DecayChannel
     parent::Int
@@ -65,7 +65,7 @@ function read_decaylist(path::AbstractString)
                 parse(Float64, s[3]), parse(Float64, s[4]), parse(Float64, s[5]),
                 round(Int, parse(Float64, s[6])), round(Int, parse(Float64, s[11])),
                 round(Int, parse(Float64, s[7])), round(Int, parse(Float64, s[8])),
-                parse(Float64, s[10]))
+                round(Int, 2 * parse(Float64, s[10])))     # store 2I as an integer
         elseif length(s) == 8
             # channel: id n_daughters BR d1 d2 d3 d4 d5
             # only the first n_daughters slots are meaningful, the rest are 0.

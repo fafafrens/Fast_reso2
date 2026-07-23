@@ -129,8 +129,8 @@ parentstrangeness(ss::Integer...)    = ChannelFilter((p, ch, ds) -> p.strangenes
 strangeparent()                      = ChannelFilter((p, ch, ds) -> p.strangeness != 0)
 "Keep channels whose parent carries nonzero charm."
 charmparent()                        = ChannelFilter((p, ch, ds) -> p.charm != 0)
-"Keep channels whose parent isospin is one of `is` — half-integers, e.g. `parentisospin(0.5, 1.5)`."
-parentisospin(is::Real...)           = ChannelFilter((p, ch, ds) -> any(≈(p.isospin), is))
+"Keep channels whose parent isospin is one of `is` — pass physical values, e.g. `parentisospin(0.5, 1.5)`."
+parentisospin(is::Real...)           = ChannelFilter((p, ch, ds) -> any(i -> round(Int, 2i) == p.twiceisospin, is))
 "Wrap a raw predicate `(p, ch, ds) -> Bool` as a `ChannelFilter`."
 channelfilter(f)                     = ChannelFilter(f)
 
