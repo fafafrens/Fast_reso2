@@ -14,7 +14,8 @@ Stable particles carry one self-channel (n_daughters = 1, daughter = id).
 """
 module ParticleList
 
-export ParticleInfo, DecayChannel, read_decaylist
+export ParticleInfo, DecayChannel, read_decaylist,
+       isospin, isbaryon, ismeson, isantiparticle, isstrange
 
 struct ParticleInfo
     id::Int
@@ -32,6 +33,18 @@ end
 # 7-arg form (pre-quantum-number callers, tests) defaults S = C = 0, 2I = 0.
 ParticleInfo(id, name, mass, width, deg, baryon, charge) =
     ParticleInfo(id, name, mass, width, deg, baryon, charge, 0, 0, 0)
+
+# --- derived quantities (exact from stored fields) -------------------------
+"Physical isospin I (half-integer), recovered from the stored 2I."
+isospin(p::ParticleInfo)        = p.twiceisospin / 2
+"True for a baryon (nonzero baryon number)."
+isbaryon(p::ParticleInfo)       = p.baryon != 0
+"True for a meson (zero baryon number)."
+ismeson(p::ParticleInfo)        = p.baryon == 0
+"True for an antiparticle (negative id in this list's convention)."
+isantiparticle(p::ParticleInfo) = p.id < 0
+"True for a strange hadron (nonzero strangeness)."
+isstrange(p::ParticleInfo)      = p.strangeness != 0
 
 struct DecayChannel
     parent::Int

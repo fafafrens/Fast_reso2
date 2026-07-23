@@ -31,6 +31,7 @@ using Serialization, SHA, Dates
 
 export DecayList, ChannelKey, CascadeTable, runcascade, prune!,
        savetables, loadtables, ParticleInfo, DecayChannel,
+       isospin, isbaryon, ismeson, isantiparticle, isstrange,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
        parentstrangeness, strangeparent, charmparent, parentisospin
