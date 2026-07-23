@@ -50,6 +50,8 @@ The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
 | `runtests.jl`       | Test suite (see below) |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
+| `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
+| `tools/gen_heavy_flavour.py` | Regenerates the charm+bottom list from the PDG database (`pip install pdg`) |
 
 ## Usage
 
