@@ -1,24 +1,29 @@
 """
     DecaySpectra
 
-Two- and three-body isotropic decay feed-down from `Maximum_Entropy_notes.pdf`
-(equation numbers refer to the notes). Functor style: construct a decay once
-(masses, branching ratio, Gauss–Legendre nodes), then call it like a function
-on a parent spectrum:
+Isotropic decay feed-down — two-, three- and four-body, with optional finite
+parent width — derived in `matrix_notes.tex`; equation numbers below refer to
+`Maximum_Entropy_notes.pdf`, the original derivation. Functor style: construct a
+decay once (masses, branching ratio, Gauss–Legendre nodes), then call it like a
+function on a parent spectrum:
 
-    ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396)          # a → b + c
+    ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396)           # a → b + c
     ω = ThreeBodyDecay(0.7827, 0.1396, 0.1396, 0.1350) # a → b + c + d
+    ρw = BroadParent(0.1396, 0.1396, BreitWigner(0.7752, 0.149))   # broad a
     Fb = ρ(Fa, pT, ηp, ϕp)                             # Eq. (32)
     Fb = ω(Fa, pT, ηp, ϕp)                             # Eq. (59)
 
 `Fa(qT, ηq, ϕq)` is the invariant parent spectrum E dN_a/d³q (Eq. 14) and the
 result is the invariant daughter spectrum F_b(pT, ηp, ϕp) of particle b.
 
-Both decays share the kernel `decaykernel` — the qT × Δη Gauss–Legendre sum
-of the square-root representation, common to Eqs. (32)/(41)/(59)/(61) — and
-differ only in the rest-frame energy E_b of the daughter: fixed by the masses
-for two-body (Eq. 5), averaged over the effective mass µ of the c+d pair
-(weight p_b(µ)·p_c̃(µ)/N, Eqs. 43–48) for three-body.
+Every decay is the same type, [`MassAverage`]: a coef-weighted sum of the shared
+two-body kernel `decaykernel` (the qT × Δη Gauss–Legendre sum of the square-root
+representation, common to Eqs. 32/41/59/61) over nodes that each carry their own
+parent mass and daughter rest-frame energy E_b. Only those nodes differ between
+cases — one node for two-body (E_b fixed by the masses, Eq. 5); nµ nodes over the
+c+d effective mass for three-body (weight p_b(µ)·p_c̃(µ)/N, Eqs. 43–48) and its
+four-body analog; and, for a broad parent, those same nodes spread over the
+parent spectral function (matrix_notes §4).
 
 Fourier modes (Eqs. 41 and 61, convention F = Σₙ Fₙ e^{inϕ}, Eq. 62) need no
 separate code: the n-th daughter mode is obtained by calling the same functor

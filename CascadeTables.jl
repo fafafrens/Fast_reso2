@@ -11,17 +11,18 @@ Design (see matrix_notes.pdf and the project discussion):
   * inputs are hashed and embedded, derived data is serialized: the decay
     list is re-parsed each session (0.1 s) and its SHA256 + raw bytes travel
     in the table metadata; only the expensive matrices are persisted;
-  * matrices are keyed by `ChannelKey` (masses only, observed daughter slot
-    fixed, unobserved partners sorted), so charge/antiparticle partners
-    share one entry, a changed BR invalidates nothing, and a changed mass
-    self-invalidates by missing the key;
+  * matrices are keyed by `ChannelKey` (the masses plus the parent width,
+    observed daughter slot fixed, unobserved partners sorted), so
+    charge/antiparticle partners share one entry, a changed BR invalidates
+    nothing, and a changed mass or width self-invalidates by missing the key;
   * invalidation is lenient: on a decay-list hash mismatch the tables are
     kept, missing keys are built on demand, and orphans (keys no channel
     references) are reported; `prune!` removes them;
   * matrices are stored Float32 (rounding 6e-8, far below the quadrature
     setting); spectra accumulate in Float64;
-  * builds parallelize over unique keys (`Threads.@threads :greedy` —
-    three-body keys cost ~8x two-body, so greedy scheduling balances).
+  * builds parallelize over unique keys (`Threads.@threads :greedy`): measured
+    per-key cost spans ~509 us (2-body sharp) to ~5.5 ms (3-body broad, the
+    nma-fold spectral average), so greedy scheduling balances the ~11x spread.
 """
 module CascadeTables
 
@@ -136,7 +137,8 @@ parentisospin(is::Real...)           = ChannelFilter((p, ch, ds) -> any(i -> rou
 channelfilter(f)                     = ChannelFilter(f)
 
 # ---------------------------------------------------------------------------
-# Channel key: the masses that determine a decay matrix, invariants enforced
+# Channel key: the masses and parent width that determine a decay matrix,
+# with the canonicalizing invariants enforced by the constructor
 # ---------------------------------------------------------------------------
 
 struct ChannelKey
@@ -236,7 +238,8 @@ function decayfor(k::ChannelKey; nq, nθ, nµ, nσ, nma)
 end
 
 # Parallel build of the listed keys (independent work; :greedy balances the
-# ~8x cost gap between 3- and 2-body). Results land in a preallocated vector,
+# ~11x per-key cost spread, driven by the broad/nma-averaged keys). Results
+# land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     (; nq, nθ, nµ, nσ, nma) = t.orders
