@@ -45,6 +45,7 @@ The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
 | `ParticleList.jl`   | Particle / decay-list parsing |
 | `cascade.jl`        | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) → `cascade.png` |
 | `cascade_simple.jl` | Minimal single-mode cascade — the regression reference for `cascade.jl` |
+| `physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
 | `demo.jl`           | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
 | `demo_filter.jl`    | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
 | `runtests.jl`       | Test suite (see below) |
