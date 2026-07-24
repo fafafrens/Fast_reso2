@@ -350,6 +350,31 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     println("   PASS")
 end
 
+# ---------------------------------------------------------------- test 7d
+println("== 7d. Reopened channel feeding a heavier daughter (sweep ordering) ==")
+# Broad P (pole 1.0, Γ=0.1 → tail to 1.4) → D(1.1) x(0.15): closed at the pole
+# (Σm=1.25), reopened by the tail. D(1.1) is HEAVIER than P, so a pole-mass sweep
+# processes D first and drops the P→D→(a,b) feed-down. cascadeorder must place P
+# before D (feeder first).
+let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8)
+    parts = Dict(1 => ParticleInfo(1, "P", 1.0, 0.1, 1.0, 0, 0),
+                 2 => ParticleInfo(2, "D", 1.1, 0.0, 1.0, 0, 0),
+                 3 => ParticleInfo(3, "x", 0.15, 0.0, 1.0, 0, 0),
+                 4 => ParticleInfo(4, "a", 0.5, 0.0, 1.0, 0, 0),
+                 5 => ParticleInfo(5, "b", 0.5, 0.0, 1.0, 0, 0))
+    byp = Dict(1 => [DecayChannel(1, 1.0, [2, 3])], 2 => [DecayChannel(2, 1.0, [4, 5])])
+    dl = DecayList(parts, byp, "syn", "h0")
+    ord_ = CascadeTables.cascadeorder(dl)
+    @assert findfirst(==(1), ord_) < findfirst(==(2), ord_)   # P processed before D
+    tab = CascadeTable(dl; grid = g, orders = ord, modes = [0], cache = nothing)
+    prim(p, n, gr) = (n == 0 && p.id == 1) ? [exp(-hypot(p.mass, q) / 0.15) for q in gr] : zeros(length(gr))
+    res = runcascade(tab, dl; primary = prim)
+    fda = sum(res.F[4][1] .- res.Fprim[4][1])                 # P→D→a downstream feed-down
+    @assert fda > 0                                           # was exactly 0.0 under mass-order
+    @printf("   P before D; downstream P→D→a feed-down = %.2e (was 0)\n", fda)
+    println("   PASS")
+end
+
 # ---------------------------------------------------------------- test 8
 println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
 # Pins the boost-invariant public interface so refactors (and the planned

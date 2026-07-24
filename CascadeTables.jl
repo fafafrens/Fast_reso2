@@ -180,15 +180,15 @@ end
 # tail), and the photon-slot filter — this invokes `f(pid, ch, did, key)` once
 # per observed-daughter slot, with the `ChannelKey` the matrix is stored under.
 # Both the table build (`neededkeys`) and the apply (`runcascade`) walk this, so
-# they can never disagree on which keys exist or how they are keyed. Pass
-# `ordered = true` to visit parents mass-descending (the apply needs each parent
-# spectrum complete before it decays). Returns the skip statistics.
-function eachchannelkey(f, dl::DecayList; ordered::Bool = false)
+# they can never disagree on which keys exist or how they are keyed. `order` is
+# the parent visitation order (the apply needs each parent spectrum complete
+# before it decays — see `cascadeorder`); the default suffices for the build,
+# which only enumerates keys. Returns the skip statistics.
+function eachchannelkey(f, dl::DecayList; order = keys(dl.byparent))
     stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
                  :γdaughter => 0, :unknown => 0)
-    pids = collect(keys(dl.byparent))
-    ordered && sort!(pids; by = pid -> dl.parts[pid].mass, rev = true)
-    for pid in pids
+    for pid in order
+        haskey(dl.byparent, pid) || continue
         ma = dl.parts[pid].mass
         Γa = dl.parts[pid].width
         broad = Γa > WIDTHCUT
@@ -222,6 +222,46 @@ function neededkeys(dl::DecayList)
     need = Set{ChannelKey}()
     stats = eachchannelkey((_pid, _ch, _did, key) -> push!(need, key), dl)
     return need, stats
+end
+
+# Parent visitation order for the cascade sweep: every species must be processed
+# after all its feeders, so F[species] is complete before it decays. Pole-mass
+# descending guarantees this only while daughters are lighter than parents — true
+# for every channel open at the pole. A *reopened* channel (open only through a
+# broad parent's spectral tail) can feed a daughter HEAVIER than the parent,
+# inverting the mass order and, under a pole-mass sweep, silently dropping that
+# daughter's downstream feed-down (it was already processed). A topological sort
+# of the feed-down graph (feeders before fed) handles the inversion; on a
+# pole-downhill DAG it reduces to mass-descending, so standard data is unchanged.
+#
+# Kahn with a heaviest-ready tie-break. A cycle (mutually reopening broad
+# parents — none in standard data) has no valid order; its members are appended
+# mass-descending with a warning, their cross feed-down then approximate (a
+# tail×tail higher-order effect).
+function cascadeorder(dl::DecayList)
+    parents = collect(keys(dl.byparent))
+    indeg = Dict(p => 0 for p in parents)
+    succ = Dict(p => Int[] for p in parents)
+    eachchannelkey(dl) do pid, _ch, did, _key
+        (did != pid && haskey(dl.byparent, did)) || return   # edge feeder → fed
+        push!(succ[pid], did); indeg[did] += 1
+    end
+    order = Int[]
+    remaining = Set(parents)
+    while !isempty(remaining)
+        ready = [p for p in remaining if indeg[p] == 0]
+        if isempty(ready)                                    # cycle: break by mass
+            rest = sort!(collect(remaining); by = p -> dl.parts[p].mass, rev = true)
+            @warn "cascade feed-down graph has a cycle (mutually reopening broad \
+                   parents); $(length(rest)) species ordered by mass, cross \
+                   feed-down approximate" maxlog = 1
+            append!(order, rest); break
+        end
+        p = argmax(q -> dl.parts[q].mass, ready)             # heaviest ready (= mass-desc on a DAG)
+        push!(order, p); delete!(remaining, p)
+        for q in succ[p]; indeg[q] -= 1; end
+    end
+    return order
 end
 
 # The decay map for one key. `k.nbody` is a runtime value, so this must branch
@@ -354,10 +394,11 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
     F = Dict(id => [Vector{Float64}(primary(p, n, t.grid)) for n in t.modes]
              for (id, p) in dl.parts)
     Fprim = Dict(id => [copy(v) for v in vs] for (id, vs) in F)
-    # walk the enrolled channels parent-mass-descending: F[pid] is complete
-    # (primary + all feed-down) by the time pid decays. Enrollment and key layout
-    # are the shared eachchannelkey, identical to the build — no drift possible.
-    eachchannelkey(dl; ordered = true) do pid, ch, did, key
+    # walk the enrolled channels feeder-before-fed (cascadeorder): F[pid] is
+    # complete (primary + all feed-down) by the time pid decays, even when a
+    # reopened channel feeds a heavier daughter. Enrollment and key layout are the
+    # shared eachchannelkey, identical to the build — no drift possible.
+    eachchannelkey(dl; order = cascadeorder(dl)) do pid, ch, did, key
         Ws = t.W[key]
         Fp = F[pid]
         for m in eachindex(t.modes)
