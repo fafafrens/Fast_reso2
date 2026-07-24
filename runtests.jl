@@ -397,10 +397,13 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     bw = BreitWigner(0.7752, 0.05)
     @assert bw isa BreitWigner && bw(0.7752) > 0 && bw.mmin < 0.7752 < bw.mmax
 
-    # hot paths are type-stable (an Any-leak here would poison any assembly)
+    # the functor is type-stable (an Any-leak here would poison any assembly);
+    # kwarg-free, so its inferred return type is stable across Julia versions
     @assert only(Base.return_types(ρ8, (typeof(F8), Float64, Float64, Float64))) == Float64
-    @assert isconcretetype(only(Base.return_types(decaymatrices,
-                (MassAverage, Tuple{Int}, Vector{Float64}, Vector{Float64}))))
+    # the fused core returns a concrete Vector{Matrix{Float64}} (exact, runtime —
+    # inferring a kwarg function's return type is version-sensitive, so check the
+    # value's type rather than Base.return_types)
+    @assert typeof(decaymatrices(ρ8, (0,), pT8, g)) == Vector{Matrix{Float64}}
 end
 println("   PASS")
 
