@@ -37,10 +37,13 @@ export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate,
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
        parentstrangeness, strangeparent, charmparent, parentisospin
 
-const FORMAT = 5                       # bump on any layout OR matrix-value change
+const FORMAT = 6                       # bump on any layout OR matrix-value change
                                        # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral;
                                        #  4: parent-width key Γ + nma order;
-                                       #  5: ChannelKey field reorder — Γ before mc/md/me)
+                                       #  5: ChannelKey field reorder — Γ before mc/md/me;
+                                       #  6: parent-mass quadrature split at the channel
+                                       #     threshold — affects every broad key whose BW
+                                       #     window dips below it, ~70% of them)
 
 # Finite parent width (BroadParent): parents broader than WIDTHCUT get the
 # spectral-function mass average, truncated to ±WIDTHK·Γ; narrower ones stay

@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# cancel superseded runs on the same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -15,7 +20,11 @@ jobs:
         with:
           version: '1.11'      # minimum supported (Threads.@threads :greedy)
       - uses: julia-actions/cache@v2
-      - name: Instantiate
-        run: julia --project -e 'using Pkg; Pkg.instantiate()'
+      # The suite needs only FastGaussQuadrature (core) + QuadGK (reference
+      # integrals) + the standard library — NOT Plots/GR, which the repo pulls in
+      # only for the figure scripts. Test against a lean named env so CI stays
+      # fast and carries no headless-graphics failure surface.
       - name: Run tests
-        run: julia --project -t auto runtests.jl
+        run: |
+          julia --project=@fastreso-ci -e 'using Pkg; Pkg.add(["FastGaussQuadrature", "QuadGK"])'
+          julia --project=@fastreso-ci -t auto runtests.jl

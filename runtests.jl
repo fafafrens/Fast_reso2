@@ -109,6 +109,20 @@ let mρ = 0.7752, mπ = 0.1396, mp = 0.938, g = collect(range(0, 6, length = 300
     clsd = maximum(abs.(decaymatrices(BroadParent(mπ, mp, BreitWigner(1.0, 1e-3); nma = 32), [0], g, g)[1]))
     opnd = maximum(abs.(decaymatrices(BroadParent(mπ, mp, BreitWigner(1.0, 0.2);  nma = 32), [0], g, g)[1]))
     @assert clsd == 0.0 && opnd > 0.0
+    # threshold-cut window: the parent-mass quadrature must sample the OPEN part.
+    # Sampling the full window and discarding closed nodes left a narrowly-open
+    # channel under-sampled — or with no node at all: nma=8 against a threshold at
+    # 1.3 GeV with support to 1.4 GeV caught zero nodes and returned a zero matrix.
+    let bwc = BreitWigner(1.0, 0.1)                    # window [0.6, 1.4]
+        W8  = decaymatrices(BroadParent(0.65, 0.65, bwc; nma = 8),  [0], g, g)[1]
+        W32 = decaymatrices(BroadParent(0.65, 0.65, bwc; nma = 32), [0], g, g)[1]
+        ref = decaymatrices(BroadParent(0.65, 0.65, bwc; nma = 96), [0], g, g)[1]
+        @assert maximum(abs.(W8)) > 0                  # was exactly 0.0 (silent zero)
+        r8  = sum(abs.(W8  .- ref)) / sum(abs.(ref))   # narrow open sliver [1.3, 1.4]:
+        r32 = sum(abs.(W32 .- ref)) / sum(abs.(ref))   # converges, just not fast
+        @assert r32 < r8 && r32 < 0.1
+        @printf("   threshold-cut window: nma=8 non-zero, rel dev %.2f→%.2f (nma 8→32)\n", r8, r32)
+    end
     @printf("   nma=1==sharp, narrow→sharp %.1e, reopening (closed=0, open≠0): OK\n", dn)
     println("   PASS")
 end

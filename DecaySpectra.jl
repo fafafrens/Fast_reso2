@@ -308,20 +308,53 @@ BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
 # s = mR² + mR·Γ·tanψ flattens the Breit–Wigner Lorentzian (∫ϱ(m)·f dm ∝
 # ∫√s·f dψ, smooth in ψ), so plain Gauss–Legendre in ψ resolves the central
 # peak for any Γ — a cosine map would starve it (nodes cluster at the endpoints,
-# not the peak). Node weight ∝ √s = m_a; `norm` sums over the full support
-# (incl. closed nodes) so a channel closed at the pole keeps only its open-tail
-# fraction. Returns all nodes, weights, and the full-support norm.
-function parentmassnodes(bw::BreitWigner, nma)
+# not the peak). Node weight ∝ √s = m_a.
+#
+# The quadrature is *split at the channel threshold* `mlo`: nodes are placed only
+# where the channel is open, [max(mmin, mlo), mmax], while `norm` still spans the
+# full window [mmin, mmax] — the sub-threshold fraction of the spectral function
+# carries no decay, and suppressing the result by exactly that fraction is what
+# the normalization must do. Sampling the full window and discarding the closed
+# nodes instead leaves a narrowly-reopened channel under-sampled, or with no node
+# at all (a silent zero matrix): with nma = 8, a threshold at 1.3 GeV against
+# support to 1.4 GeV caught zero nodes.
+#
+# When the threshold does cut in, the lower endpoint is a real threshold where
+# coef ∝ 1/p_b has an integrable 1/√ singularity, so the open part uses the
+# cosine map that absorbs it (as the qT and µ integrals do). Uncut, that endpoint
+# is regular and plain Gauss is kept — bit-identical to before.
+function parentmassnodes(bw::BreitWigner, nma, mlo = bw.mmin)
     x, u = gausslegendre(nma)
-    ψlo = atan((bw.mmin^2 - bw.mR^2) / (bw.mR * bw.Γ))
-    ψhi = atan((bw.mmax^2 - bw.mR^2) / (bw.mR * bw.Γ))
+    ψof(m) = atan((m^2 - bw.mR^2) / (bw.mR * bw.Γ))
+    sof(ψ) = bw.mR^2 + bw.mR * bw.Γ * tan(ψ)
+    ψlo, ψhi = ψof(bw.mmin), ψof(bw.mmax)
     hψ, mψ = (ψhi - ψlo) / 2, (ψhi + ψlo) / 2
-    mas, ws, norm = Float64[], Float64[], 0.0
+
+    norm = 0.0                                   # full window: kernel-free, regular
     for i in 1:nma
-        s = bw.mR^2 + bw.mR * bw.Γ * tan(mψ + hψ * x[i])
-        s > 0 || continue
-        ma, w = sqrt(s), u[i] * sqrt(s)
-        push!(mas, ma); push!(ws, w); norm += w
+        s = sof(mψ + hψ * x[i])
+        s > 0 && (norm += u[i] * sqrt(s))
+    end
+
+    mas, ws = Float64[], Float64[]
+    mo = max(bw.mmin, mlo)
+    mo < bw.mmax || return mas, ws, norm         # closed across the whole window
+    if mo > bw.mmin                              # threshold cuts in
+        ψa = ψof(mo)
+        h, mid = (ψhi - ψa) / 2, (ψhi + ψa) / 2
+        scale = h / hψ                           # both weights share the ψ measure
+        c, v = cosnodes(nma)                     # absorbs the threshold 1/√
+        for i in 1:nma
+            s = sof(mid - h * c[i])
+            s > 0 || continue
+            push!(mas, sqrt(s)); push!(ws, scale * v[i] * sqrt(s))
+        end
+    else                                         # fully open: unchanged
+        for i in 1:nma
+            s = sof(mψ + hψ * x[i])
+            s > 0 || continue
+            push!(mas, sqrt(s)); push!(ws, u[i] * sqrt(s))
+        end
     end
     return mas, ws, norm
 end
@@ -339,19 +372,22 @@ normalization, so a channel closed at the pole keeps its open-tail fraction
 (channel reopening). `kw...` pass through to the underlying decay (nµ, nσ, nq, nθ).
 """
 function BroadParent(build, bw::BreitWigner, opensum; nma = 16)
-    mas, wall, norm = parentmassnodes(bw, nma)
+    # nodes come back already restricted to where the channel is open; `norm`
+    # still spans the full spectral window, so a channel closed at the pole keeps
+    # exactly its open-tail fraction (channel reopening).
+    mas, wall, norm = parentmassnodes(bw, nma, opensum)
     ma_all, Eb_all, coef_all = Float64[], Float64[], Float64[]
     local sub                                     # a sample sub-decay (shared cq…vθ, mb)
     got = false
     for i in eachindex(mas)
-        mas[i] > opensum || continue              # closed node: enters only `norm`
         s = build(mas[i])::MassAverage
+        all(isfinite, s.coef) || continue         # node pinned to the threshold: p_b → 0
         append!(ma_all, s.ma)
         append!(Eb_all, s.Eb)
         append!(coef_all, (wall[i] / norm) .* s.coef)   # fold ϱ weight into coef
         sub, got = s, true
     end
-    got || (sub = build(opensum + 0.05))          # degenerate: no open node ⇒ zero matrix
+    got || (sub = build(opensum + 0.05))          # degenerate: fully closed ⇒ zero matrix
     MassAverage(ma_all, sub.mb, Eb_all, coef_all, sub.cq, sub.vq, sub.cθ, sub.vθ)
 end
 
