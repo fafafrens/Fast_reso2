@@ -29,6 +29,7 @@ module CascadeTables
 include("DecaySpectra.jl");  using .DecaySpectra
 include("ParticleList.jl");  using .ParticleList
 using Serialization, SHA, Dates, Printf
+using LinearAlgebra: mul!
 
 export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate,
        savetables, loadtables, ParticleInfo, DecayChannel,
@@ -209,6 +210,9 @@ function eachchannelkey(f, dl::DecayList; order = keys(dl.byparent))
             for (slot, did) in enumerate(ds)
                 mb = ms[slot]
                 mb > 0 || (stats[:γdaughter] += 1; continue)  # photon not observable
+                did == pid && continue                        # a particle is not its own
+                                                              # decay product; keeps the apply's
+                                                              # in-place mul! free of aliasing
                 key = ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot], Γk)
                 f(pid, ch, did, key)
             end
@@ -400,9 +404,12 @@ function runcascade(t::CascadeTable, dl::DecayList; primary)
     # shared eachchannelkey, identical to the build — no drift possible.
     eachchannelkey(dl; order = cascadeorder(dl)) do pid, ch, did, key
         Ws = t.W[key]
-        Fp = F[pid]
+        Fp, Fd = F[pid], F[did]
         for m in eachindex(t.modes)
-            F[did][m] .+= ch.br .* (Ws[m] * Fp[m])
+            # F[did] += br · Ws · F[pid], in place: 5-arg mul!(C, A, B, α, β) is
+            # C ← α·A·B + β·C, so no per-channel GEMV temporary. did ≠ pid
+            # (enforced in eachchannelkey), so C never aliases B.
+            mul!(Fd[m], Ws[m], Fp[m], ch.br, 1.0)
         end
     end
     return (F = F, Fprim = Fprim)
