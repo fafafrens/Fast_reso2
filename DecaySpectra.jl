@@ -474,7 +474,8 @@ end
 # the inner and outer `@threads` don't oversubscribe the pool.
 function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
                        P = Val(4), threaded = true, T::Type = Float64)
-    pTv = collect(Float64, pTs)
+    mt = map(Int, mt)                              # the assembly is Int-typed
+    pTv = collect(Float64, pTs)                    # (chebT, scatterrows!); accept any Integer mode
     nq = length(qgrid)
     Ws = map(_ -> zeros(T, length(pTv), nq), mt)   # output eltype T (Float32 to store)
     nθ = length(d.cθ)
@@ -528,7 +529,10 @@ end
 
 # Tₙ(Z) = cos(n·acos Z) by the Chebyshev recurrence (Eq. 40): the assembly
 # needs only this polynomial, never the angle itself, so no acos/cos here.
+# Even in n (T₋ₙ = Tₙ, since cos is even), so a negative Fourier mode reuses the
+# |n| polynomial — without the abs, n < 0 skips the recurrence and returns Z.
 @inline function chebT(n::Int, Z::Float64)
+    n = abs(n)
     n == 0 && return 1.0
     Tm1, Tm = 1.0, Z
     for _ in 2:n

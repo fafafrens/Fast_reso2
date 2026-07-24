@@ -388,6 +388,13 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     @assert decaymatrices(ω8, [0, 2], pT8, g; threaded = true) ==
             decaymatrices(ω8, [0, 2], pT8, g; threaded = false)
 
+    # mode argument is robust: any Integer eltype is accepted (was a MethodError
+    # deep in the assembly for non-Int), and a negative Fourier mode reuses the
+    # |n| Chebyshev factor (T is even in n; a negative n used to return T = Z)
+    @assert decaymatrices(ρ8, Int32[0, 2], pT8, g) == W        # was: throws
+    @assert decaymatrices(ρ8, Int8[0, 2],  pT8, g) == W
+    @assert decaymatrices(ρ8, [-2], pT8, g)[1] == decaymatrices(ρ8, [2], pT8, g)[1]
+
     # functor apply contract: M(F) == M.W * F.(q)  (the reference the rapidity
     # collapse w[k,j,0]+2Σ_{d≥1}w[k,j,d] must reproduce for an η-independent source)
     F8(q) = exp(-hypot(0.7752, q) / T)
