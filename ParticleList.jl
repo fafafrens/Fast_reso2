@@ -90,8 +90,15 @@ function read_decaylist(path::AbstractString)
             # d1 = id, BR = 1) — kept as-is; the cascade skips them by nd == 1.
             parent = parse(Int, s[1])
             nd = parse(Int, s[2])
+            1 ≤ nd ≤ 5 || error("channel n_daughters=$nd out of range 1–5: $ln")
             br = parse(Float64, s[3])
             ds = [parse(Int, s[3 + k]) for k in 1:nd]
+            # the unused slots MUST be 0-padded: a nonzero slot past nd means the
+            # declared count is wrong and daughters would be silently dropped
+            # (an under-declared multiplicity or a lost radiative photon). Fail
+            # loudly rather than parse a corrupt channel.
+            all(k -> parse(Int, s[3 + k]) == 0, nd+1:5) ||
+                error("channel declares $nd daughters but has nonzero padding: $ln")
             push!(get!(byparent, parent, DecayChannel[]), DecayChannel(parent, br, ds))
         else
             # fail loudly: a silently mis-split line would corrupt the cascade

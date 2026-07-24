@@ -256,6 +256,19 @@ using .CascadeTables
 @assert ChannelKey(1.0, 0.2, [0.5]).md == 0.0
 @assert ChannelKey(1.0, 0.2, [0.5]) != ChannelKey(1.0, 0.5, [0.2])
 
+# parser rejects padding violations: a nonzero daughter slot past the declared
+# count means daughters would be silently dropped (an under-declared 4-body mode,
+# a lost radiative photon). Must fail loudly, not parse a corrupt channel.
+let read = CascadeTables.ParticleList.read_decaylist, hdr = "1 x 1.0 0.14 0 1 0 0 0 0 0 12\n"
+    good = tempname(); write(good, hdr * "1 2 1.0 211 -211 0 0 0\n")
+    @assert read(good) isa Tuple                                # 0-padded: fine
+    bad = tempname(); write(bad, hdr * "1 2 1.0 211 -211 211 0 0\n")   # slot 3 nonzero
+    threw = false
+    try; read(bad); catch; threw = true; end
+    @assert threw
+    rm.((good, bad); force = true)
+end
+
 # synthetic decay list: ρ → ππ (BR 0.6) and ω → ππϖ (BR 1.0)
 mρ, mπ, mω, mϖ = 0.7752, 0.1396, 0.7827, 0.135
 parts7 = Dict(1 => ParticleInfo(1, "rho", mρ, 0.0, 1.0, 0, 0),   # width 0 ⇒ sharp cascade
