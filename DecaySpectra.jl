@@ -41,7 +41,7 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, BreitWigner, BroadParent, warmnodes!
+       DecayMatrix, decaymatrices, BreitWigner, BroadParent
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -49,25 +49,18 @@ kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
 # Cosine-mapped Gauss–Legendre rule for ∫ₐᵇ f dx with x = mid − half·cosθ:
 # returns (cosθᵢ, (π/2)·wᵢ·sinθᵢ) so that ∫ₐᵇ f ≈ half·Σᵢ vᵢ f(mid − half·cᵢ).
 # The sinθ Jacobian (inside vᵢ) absorbs 1/√ endpoint singularities of f.
-# Memoized per order and shared across all decay objects — the vectors are
-# never mutated after creation, so sharing is safe (also under the threaded
-# assemblies); the lock covers concurrent first-time construction.
-const _COSNODES = Dict{Int,Tuple{Vector{Float64},Vector{Float64}}}()
-const _COSNODES_LOCK = ReentrantLock()
-# Double-checked: a lock-free read on the (append-only, warmed) cache hits >99.9%
-# of the time in a threaded build; only first-time construction takes the lock.
-# Reads are safe against the locked writes because sizes are warmed up front
-# (warmnodes!) so no write races a read during the threaded assembly.
+#
+# Pure — computed fresh per call, stored in the decay object that asked. This
+# replaced a memoized global cache whose lock-free reads required all sizes to
+# be pre-warmed before any threaded build (a latent data race when a size was
+# missed, e.g. nma ∉ {nq, nθ, nµ, nσ}). Measured at 8 threads on the full table
+# build, fresh computation costs ~2% (gausslegendre is 0.5–7 µs and runs once
+# per construction, never in the assembly's hot loops) — not worth any
+# concurrency machinery.
 function cosnodes(n::Int)
-    v = get(_COSNODES, n, nothing)
-    v === nothing || return v
-    lock(_COSNODES_LOCK) do
-        get!(_COSNODES, n) do
-            x, w = gausslegendre(n)
-            θ = @. π * (x + 1) / 2
-            (cos.(θ), @. π / 2 * w * sin(θ))
-        end
-    end
+    x, w = gausslegendre(n)
+    θ = @. π * (x + 1) / 2
+    (cos.(θ), @. π / 2 * w * sin(θ))
 end
 
 # ---------------------------------------------------------------------------
@@ -193,7 +186,7 @@ Isotropic two-body decay a → b + c (Eq. 32), as a one-node [`MassAverage`].
 Callable: `d(Fa, pT, ηp, ϕp)` is the daughter spectrum of b.
 """
 function TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32)
-    ma ≥ mb + mc || throw(ArgumentError("decay closed: ma < mb + mc"))
+    ma > mb + mc || throw(ArgumentError("decay not open: ma ≤ mb + mc (equality ⇒ p_b = 0, coef = Inf)"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     Eb = (ma^2 + mb^2 - mc^2) / (2ma)                          # Eq. (5)
     pb = sqrt(max(kallen(ma^2, mb^2, mc^2), 0.0)) / (2ma)      # Eq. (6)
@@ -241,7 +234,7 @@ over the (cd) effective mass µ ∈ [mc+md, ma−mb] with weight ∝ q(µ;mc,md)
 Returns a [`MassAverage`].
 """
 function ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
-    ma ≥ mb + mc + md || throw(ArgumentError("decay closed: ma < mb + mc + md"))
+    ma > mb + mc + md || throw(ArgumentError("decay not open: ma ≤ mb + mc + md"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     pair(µ) = sqrt(max(kallen(µ^2, mc^2, md^2), 0.0)) / (2µ)   # ρ₂ = p_c̃(µ), Eq. (47)
     muaverage(ma, mb, mc + md, pair; B, nµ, nq, nθ)
@@ -273,7 +266,7 @@ kernel averaged over the (cde) cluster mass µ with weight ∝ ρ₃(µ), the ne
 Dalitz-area density (an inner `nσ`-point σ-integral). Returns a [`MassAverage`].
 """
 function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
-    ma ≥ mb + mc + md + me || throw(ArgumentError("decay closed: ma < mb + mc + md + me"))
+    ma > mb + mc + md + me || throw(ArgumentError("decay not open: ma ≤ mb + mc + md + me"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     cσ, vσ = cosnodes(nσ)
     ρ3(µ) = clusterdensity3(µ, mc, md, me, cσ, vσ)            # ρ₃(µ), inner σ-integral
@@ -298,8 +291,13 @@ struct BreitWigner
     mmin::Float64
     mmax::Float64
 end
+# mmin is clamped to m ≥ 0: for very broad states (14 in the QM2016 list, e.g.
+# a1(1260), Γ = 0.425) the default mR − kΓ goes negative, and a negative mmin
+# *squares* inside the ψ map — the window silently inverts into the far upper
+# tail (an f0(500)-like state put every node ABOVE 1.7 GeV). m = 0 is exact:
+# ψof(0) = atan(−mR/Γ) is the correct lower edge of the physical support.
 BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
-    BreitWigner(mR, Γ, mmin, mmax)
+    BreitWigner(mR, Γ, max(mmin, 0.0), mmax)
 @inline (bw::BreitWigner)(m) =
     bw.mmin ≤ m ≤ bw.mmax ?
     m^2 * bw.Γ / ((m^2 - bw.mR^2)^2 + bw.mR^2 * bw.Γ^2) : 0.0
@@ -377,8 +375,9 @@ function BroadParent(build, bw::BreitWigner, opensum; nma = 16)
     local sub                                     # a sample sub-decay (shared cq…vθ, mb)
     got = false
     for i in eachindex(mas)
+        mas[i] > opensum || continue              # roundoff pinned a node to the threshold
         s = build(mas[i])::MassAverage
-        all(isfinite, s.coef) || continue         # node pinned to the threshold: p_b → 0
+        all(isfinite, s.coef) || continue         # near-threshold: p_b rounds to 0
         append!(ma_all, s.ma)
         append!(Eb_all, s.Eb)
         append!(coef_all, (wall[i] / norm) .* s.coef)   # fold ϱ weight into coef
@@ -506,23 +505,9 @@ DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P = Val(4)) =
     DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
                 decaymatrices(d, (n,), pTs, qgrid; P)[1])
 
-# Chebyshev–Gauss nodes Z_k = cos((2k−1)π/(2n)), memoized like cosnodes.
-const _CHEBNODES = Dict{Int,Vector{Float64}}()
-function chebnodes(n::Int)
-    v = get(_CHEBNODES, n, nothing)         # lock-free hot path (see cosnodes)
-    v === nothing || return v
-    lock(_COSNODES_LOCK) do
-        get!(() -> [cos((2k - 1) * π / (2n)) for k in 1:n], _CHEBNODES, n)
-    end
-end
-
-# Warm the node caches for all sizes a build will request, single-threaded, so
-# the threaded assembly only ever reads them (no write races the lock-free path).
-function warmnodes!(nq, nθ, nµ, nσ)
-    for n in (nq, nθ, nµ, nσ); cosnodes(n); end
-    chebnodes(nθ); chebnodes(4nθ)
-    return nothing
-end
+# Chebyshev–Gauss nodes Z_k = cos((2k−1)π/(2n)). Pure like cosnodes — computed
+# once per decaymatrices call (~100 ns) and passed down to the row scatter.
+chebnodes(n::Int) = [cos((2k - 1) * π / (2n)) for k in 1:n]
 
 # Tₙ(Z) = cos(n·acos Z) by the Chebyshev recurrence (Eq. 40): the assembly
 # needs only this polynomial, never the angle itself, so no acos/cos here.

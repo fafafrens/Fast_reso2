@@ -53,7 +53,7 @@ const WIDTHCUT = 0.001                 # GeV
 const WIDTHK   = 4.0
 
 "Default quadrature orders. `CascadeTable` accepts any subset and fills in the rest."
-const DEFAULT_ORDERS = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8)
+const DEFAULT_ORDERS = (nq=32, nθ=8, nµ=16, nσ=8, nma=16)
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
@@ -293,7 +293,6 @@ end
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     (; nq, nθ, nµ, nσ, nma) = t.orders
-    warmnodes!(nq, nθ, nµ, nσ)              # populate the node caches before threading
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ, nma)
