@@ -443,21 +443,28 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # so the assembly threads over daughter pT and is bitwise identical to serial.
 # ---------------------------------------------------------------------------
 
-# fill row k of every mode matrix — the node sum for one daughter pT. The row is
-# accumulated in the contiguous Float64 buffers `buf` (one per mode) rather than
-# straight into a strided matrix row: a P-point stencil then hits consecutive
-# memory (same cache line) instead of P rows npT apart. The finished Float64 row
-# is rounded once into `Ws` — whose eltype may be Float32 for storage, folding
-# the buildkeys! downcast in here and dropping the throwaway Float64 matrix.
-@inline function fillrow!(Ws, k, d::MassAverage, mt, pTv, zc, zc4, qgrid, P, buf)
-    for r in buf; fill!(r, 0.0); end
-    for i in eachindex(d.coef)
-        scatterrows!(buf, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
-                     d.cq, d.vq, zc, zc4, qgrid, P, d.coef[i])
-    end
-    for (W, r) in zip(Ws, buf)
-        @inbounds for j in eachindex(r)
-            W[k, j] = eltype(W)(r[j])          # exact when Float64; the one Float32 round
+# Fill rows `ks` of every mode matrix — the node sum for each daughter pT.
+#
+# A row accumulates in the contiguous Float64 buffers `buf` (one per mode)
+# rather than straight into a strided matrix row: a P-point stencil then hits
+# consecutive memory (same cache line) instead of P rows npT apart. The finished
+# Float64 row is rounded once into `Ws`, whose eltype may be Float32 for storage
+# — folding the buildkeys! downcast in here, so no throwaway Float64 matrix.
+#
+# `buf` is allocated here, so every caller — the serial sweep or one spawned
+# chunk — owns its own set for the call's whole lifetime.
+function fillrows!(Ws, ks, d::MassAverage, mt, pTv, zc, zc4, qgrid, P)
+    buf = map(_ -> zeros(length(qgrid)), mt)
+    for k in ks
+        for r in buf; fill!(r, 0.0); end
+        for i in eachindex(d.coef)
+            scatterrows!(buf, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
+                         d.cq, d.vq, zc, zc4, qgrid, P, d.coef[i])
+        end
+        for (W, r) in zip(Ws, buf)
+            @inbounds for j in eachindex(r)
+                W[k, j] = eltype(W)(r[j])      # exact when Float64; the one Float32 round
+            end
         end
     end
 end
@@ -488,21 +495,12 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
         # bitwise identical to the serial sweep however the chunks land.
         nt = min(Threads.nthreads(), length(pTv))
         @sync for ks in Iterators.partition(eachindex(pTv), cld(length(pTv), nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, P, nq)
+            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, P)
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, P, nq)
+        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, P)
     end
     return collect(Ws)
-end
-
-# fill the rows `ks` on one set of scratch buffers (allocated here, so each
-# caller — serial sweep or spawned chunk — owns its own).
-function fillrows!(Ws, ks, d::MassAverage, mt, pTv, zc, zc4, qgrid, P, nq)
-    buf = map(_ -> zeros(nq), mt)
-    for k in ks
-        fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, buf)
-    end
 end
 
 # Entry from a modes vector, with a fallback for many modes (tuple ops stop
