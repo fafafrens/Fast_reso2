@@ -477,16 +477,28 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
     nθ = length(d.cθ)
     zc, zc4 = chebnodes(nθ), chebnodes(4nθ)   # compute once; threaded down to the scatter
     if threaded
-        Threads.@threads for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, map(_ -> zeros(nq), mt))
+        # One task per chunk of rows, each owning its buffers for the task's whole
+        # lifetime — so nothing is shared and task migration cannot alias them
+        # (unlike a threadid()-indexed pool or OncePerThread). Buffers drop from
+        # one set per row to one per task. Rows are independent, so this is
+        # bitwise identical to the serial sweep however the chunks land.
+        nt = min(Threads.nthreads(), length(pTv))
+        @sync for ks in Iterators.partition(eachindex(pTv), cld(length(pTv), nt))
+            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, P, nq)
         end
     else
-        buf = map(_ -> zeros(nq), mt)         # one Float64 row buffer set, reused per row
-        for k in eachindex(pTv)
-            fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, buf)
-        end
+        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, P, nq)
     end
     return collect(Ws)
+end
+
+# fill the rows `ks` on one set of scratch buffers (allocated here, so each
+# caller — serial sweep or spawned chunk — owns its own).
+function fillrows!(Ws, ks, d::MassAverage, mt, pTv, zc, zc4, qgrid, P, nq)
+    buf = map(_ -> zeros(nq), mt)
+    for k in ks
+        fillrow!(Ws, k, d, mt, pTv, zc, zc4, qgrid, P, buf)
+    end
 end
 
 # Entry from a modes vector, with a fallback for many modes (tuple ops stop
