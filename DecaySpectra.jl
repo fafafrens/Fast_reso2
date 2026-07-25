@@ -339,22 +339,19 @@ function parentmassnodes(bw::BreitWigner, nma, mlo = bw.mmin)
     mas, ws = Float64[], Float64[]
     mo = max(bw.mmin, mlo)
     mo < bw.mmax || return mas, ws, norm         # closed across the whole window
-    if mo > bw.mmin                              # threshold cuts in
-        ψa = ψof(mo)
-        h, mid = (ψhi - ψa) / 2, (ψhi + ψa) / 2
-        scale = h / hψ                           # both weights share the ψ measure
-        c, v = cosnodes(nma)                     # absorbs the threshold 1/√
-        for i in 1:nma
-            s = sof(mid - h * c[i])
-            s > 0 || continue
-            push!(mas, sqrt(s)); push!(ws, scale * v[i] * sqrt(s))
-        end
-    else                                         # fully open: unchanged
-        for i in 1:nma
-            s = sof(mψ + hψ * x[i])
-            s > 0 || continue
-            push!(mas, sqrt(s)); push!(ws, u[i] * sqrt(s))
-        end
+    # Integrate the open part [ψ(mo), ψhi]. Only the rule differs: a threshold
+    # that cuts in puts coef ∝ 1/p_b ~ 1/√ at the lower endpoint, which the
+    # cosine map absorbs (nodes mid − h·c); an uncut endpoint is regular, so
+    # plain Gauss is kept (mid + h·x) and the result is bit-identical to the
+    # pre-split code. `scale` restates both on the shared ψ measure.
+    cut = mo > bw.mmin
+    z, w, sgn = cut ? (cosnodes(nma)..., -1.0) : (x, u, 1.0)
+    h, mid = cut ? ((ψhi - ψof(mo)) / 2, (ψhi + ψof(mo)) / 2) : (hψ, mψ)
+    scale = h / hψ
+    for i in 1:nma
+        s = sof(mid + sgn * h * z[i])
+        s > 0 || continue
+        push!(mas, sqrt(s)); push!(ws, scale * w[i] * sqrt(s))
     end
     return mas, ws, norm
 end

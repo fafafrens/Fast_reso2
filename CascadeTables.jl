@@ -31,7 +31,7 @@ include("ParticleList.jl");  using .ParticleList
 using Serialization, SHA, Dates, Printf
 using LinearAlgebra: mul!
 
-export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate,
+export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate, DEFAULT_ORDERS,
        savetables, loadtables, ParticleInfo, DecayChannel,
        isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
@@ -51,6 +51,9 @@ const FORMAT = 6                       # bump on any layout OR matrix-value chan
 # sharp (identical to before).
 const WIDTHCUT = 0.001                 # GeV
 const WIDTHK   = 4.0
+
+"Default quadrature orders. `CascadeTable` accepts any subset and fills in the rest."
+const DEFAULT_ORDERS = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8)
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
@@ -329,21 +332,22 @@ metafor(dl::DecayList) = Dict{Symbol,Any}(
 
 """
     CascadeTable(dl; grid = range(0, 4.0, length = 134),
-                 orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8), modes = [0, 2],
+                 orders = DEFAULT_ORDERS, modes = [0, 2],
                  cache = nothing, rebuild = false)
 
 Load the tables from `cache` if present and compatible (same format, grid,
-orders, modes), else build and save. A decay-list hash mismatch keeps the
-tables (lenient policy — keys self-invalidate through their masses) but
-warns and builds any missing keys on demand.
+orders, modes), else build and save. `orders` may be any subset of
+[`DEFAULT_ORDERS`](@ref) — the rest are filled in. A decay-list hash mismatch
+keeps the tables (lenient policy — keys self-invalidate through their masses)
+but warns and builds any missing keys on demand.
 """
 function CascadeTable(dl::DecayList;
-                      grid = range(0.0, 4.0, length = 134),
-                      orders = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8),
+                      grid = range(0.0, 4.0, length = 134), orders = DEFAULT_ORDERS,
                       modes = [0, 2], cache = nothing, rebuild = false)
     gridv = collect(Float64, grid)
-    ordersnt = NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma)}(    # get(): tolerate callers omitting nσ/nma
-        (orders.nq, orders.nθ, orders.nµ, get(orders, :nσ, 8), get(orders, :nma, 8)))
+    # any subset is accepted; an unknown key makes the NamedTuple the wrong shape
+    # for CascadeTable.orders and fails loudly rather than being silently ignored
+    ordersnt = merge(DEFAULT_ORDERS, orders)
     modesv = collect(Int, modes)
     if cache !== nothing && !rebuild
         t = loadtables(cache)
