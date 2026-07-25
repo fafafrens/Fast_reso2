@@ -426,6 +426,13 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     @assert decaymatrices(ω8, [0, 2], pT8, g; threaded = true) ==
             decaymatrices(ω8, [0, 2], pT8, g; threaded = false)
 
+    # stencil order: an Integer P must behave exactly like the Val form. It used
+    # to reach lagrangeweights unconverted, whose NTuple{P,Float64} width is then
+    # not inferable — the innermost loop went dynamic and ran 129x slower for an
+    # identical answer. decaymatrices now normalizes P to a Val at the entry.
+    @assert decaymatrices(ρ8, [0, 2], pT8, g; P = 4) == decaymatrices(ρ8, [0, 2], pT8, g; P = Val(4))
+    @assert size(decaymatrices(ρ8, [0], pT8, g; P = Val(6))[1]) == (length(pT8), length(g))
+
     # mode argument is robust: any Integer eltype is accepted (was a MethodError
     # deep in the assembly for non-Int), and a negative Fourier mode reuses the
     # |n| Chebyshev factor (T is even in n; a negative n used to return T = Z)

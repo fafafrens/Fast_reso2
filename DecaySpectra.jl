@@ -477,6 +477,12 @@ end
 # the inner and outer `@threads` don't oversubscribe the pool.
 function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
                        P = Val(4), threaded = true, T::Type = Float64)
+    # The stencil order must reach `_stencil` as a Val: with a plain Integer,
+    # lagrangeweights converts per call and its NTuple{P,Float64} width is not
+    # inferable, so the innermost loop goes dynamic — measured 129x slower, with
+    # identical output. Normalize once here; `fillrows!` is the function barrier
+    # that re-specializes on it. The Val default folds this away at compile time.
+    Pv = P isa Val ? P : Val(Int(P))
     mt = map(Int, mt)                              # the assembly is Int-typed (chebT,
                                                    # scatterrows!); accept any Integer mode
     # used read-only (pTv[k], eachindex) and never copied, so any AbstractVector
@@ -495,10 +501,10 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
         # bitwise identical to the serial sweep however the chunks land.
         nt = min(Threads.nthreads(), length(pTv))
         @sync for ks in Iterators.partition(eachindex(pTv), cld(length(pTv), nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, P)
+            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, Pv)
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, P)
+        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, Pv)
     end
     return collect(Ws)
 end
