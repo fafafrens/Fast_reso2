@@ -470,8 +470,12 @@ end
 # the inner and outer `@threads` don't oversubscribe the pool.
 function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
                        P = Val(4), threaded = true, T::Type = Float64)
-    mt = map(Int, mt)                              # the assembly is Int-typed
-    pTv = collect(Float64, pTs)                    # (chebT, scatterrows!); accept any Integer mode
+    mt = map(Int, mt)                              # the assembly is Int-typed (chebT,
+                                                   # scatterrows!); accept any Integer mode
+    # used read-only (pTv[k], eachindex) and never copied, so any AbstractVector
+    # serves — a Vector is aliased, a range is indexed in place. Same convention
+    # `qgrid` already follows; callers must not mutate either during the build.
+    pTv = pTs
     nq = length(qgrid)
     Ws = map(_ -> zeros(T, length(pTv), nq), mt)   # output eltype T (Float32 to store)
     nθ = length(d.cθ)
