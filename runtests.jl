@@ -442,6 +442,24 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     bw = BreitWigner(0.7752, 0.05)
     @assert bw isa BreitWigner && bw(0.7752) > 0 && bw.mmin < 0.7752 < bw.mmax
 
+    # very broad state: the default mmin = mR − kΓ would go negative, and a
+    # negative mmin squares inside the ψ map — the parent-mass window silently
+    # inverted into the far upper tail (all nodes ABOVE the pole). Clamped to 0.
+    bwv = BreitWigner(0.475, 0.55)                 # f0(500)-like, mR − 4Γ < 0
+    @assert bwv.mmin == 0.0
+    masv, wsv, _ = DecaySpectra.parentmassnodes(bwv, 16)
+    @assert sum(masv .* wsv) / sum(wsv) < bwv.mR + bwv.Γ   # mean near pole, not tail
+
+    # constructors reject non-open decays: at exact threshold p_b = 0 makes
+    # coef = Inf (the functor then returns NaN) — must fail loud instead
+    for bad in (() -> TwoBodyDecay(0.14 + 0.14, 0.14, 0.14),
+                () -> ThreeBodyDecay(0.14 + 0.14 + 0.14, 0.14, 0.14, 0.14),
+                () -> FourBodyDecay(4 * 0.14, 0.14, 0.14, 0.14, 0.14))
+        threw = false
+        try; bad(); catch; threw = true; end
+        @assert threw
+    end
+
     # the functor is type-stable (an Any-leak here would poison any assembly);
     # kwarg-free, so its inferred return type is stable across Julia versions
     @assert only(Base.return_types(ρ8, (typeof(F8), Float64, Float64, Float64))) == Float64

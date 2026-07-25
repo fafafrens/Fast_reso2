@@ -75,8 +75,9 @@ julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs th
 `-t auto` (threads) matters for the table build, which parallelizes over
 channels and fuses all Fourier modes into a single quadrature sweep. The
 `Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
-builds it (~10 s on 8 threads, incl. finite parent widths) and saves it (~2.5 GB
-Float32); later runs load it (~7 s), and the cascade sweep itself takes ~2 s.
+builds it (~16 s on 8 threads at the default orders, nµ = nma = 16, incl.
+finite parent widths) and saves it (~2.5 GB Float32); later runs load it
+(~7 s), and the cascade sweep itself takes ~2 s.
 
 The test suite covers number conservation (2-/3-/4-body), Fourier-mode
 reconstruction, quadrature and Lagrange-weight convergence (incl. 1st/2nd
