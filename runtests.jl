@@ -465,7 +465,7 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     # inverted into the far upper tail (all nodes ABOVE the pole). Clamped to 0.
     bwv = BreitWigner(0.475, 0.55)                 # f0(500)-like, mR − 4Γ < 0
     @assert bwv.mmin == 0.0
-    masv, wsv, _ = DecaySpectra.parentmassnodes(bwv, 16)
+    masv, wsv, _ = DecaySpectra.parentmassnodes(bwv, DecaySpectra.MassRule(16))
     @assert sum(masv .* wsv) / sum(wsv) < bwv.mR + bwv.Γ   # mean near pole, not tail
 
     # constructors reject non-open decays: at exact threshold p_b = 0 makes

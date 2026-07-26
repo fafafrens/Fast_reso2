@@ -274,17 +274,17 @@ end
 # The decay map for one key. `k.nbody` is a runtime value, so this must branch
 # (the result is a small Union that the DecayMatrix call then splits on) — a
 # branch is cheaper than Val-dispatch, and this is cold build-time code.
-function decayfor(k::ChannelKey; nq, nθ, nµ, nσ, nma)
+function decayfor(k::ChannelKey, r::Rules)
     if k.Γ > 0                                    # broad parent → BroadParent mass average
         bw = BreitWigner(k.ma, k.Γ; mmin = max(k.ma - WIDTHK * k.Γ, 0.05),
                                     mmax = k.ma + WIDTHK * k.Γ)
-        return k.nbody == 2 ? BroadParent(k.mb, k.mc, bw; nma, nq, nθ) :
-               k.nbody == 3 ? BroadParent(k.mb, k.mc, k.md, bw; nma, nµ, nq, nθ) :
-                              BroadParent(k.mb, k.mc, k.md, k.me, bw; nma, nσ, nµ, nq, nθ)
+        return k.nbody == 2 ? BroadParent(k.mb, k.mc, bw, r) :
+               k.nbody == 3 ? BroadParent(k.mb, k.mc, k.md, bw, r) :
+                              BroadParent(k.mb, k.mc, k.md, k.me, bw, r)
     end
-    k.nbody == 2 ? TwoBodyDecay(k.ma, k.mb, k.mc; nq, nθ) :
-    k.nbody == 3 ? ThreeBodyDecay(k.ma, k.mb, k.mc, k.md; nµ, nq, nθ) :
-                   FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me; nµ, nσ, nq, nθ)
+    k.nbody == 2 ? TwoBodyDecay(k.ma, k.mb, k.mc, r) :
+    k.nbody == 3 ? ThreeBodyDecay(k.ma, k.mb, k.mc, k.md, r) :
+                   FourBodyDecay(k.ma, k.mb, k.mc, k.md, k.me, r)
 end
 
 # Parallel build of the listed keys (independent work; :greedy balances the
@@ -292,10 +292,14 @@ end
 # land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
-    (; nq, nθ, nµ, nσ, nma) = t.orders
+    # One rule set for the whole build, constructed *before* any task starts:
+    # rules are immutable and read-only, so every key shares these safely with
+    # no synchronization — and nothing can observe a half-built one. At the
+    # default orders this replaces ~173k per-channel copies of five rules.
+    rules = Rules(; t.orders...)
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
-        dec = decayfor(keyvec[i]; nq, nθ, nµ, nσ, nma)
+        dec = decayfor(keyvec[i], rules)
         # threaded=false: the key loop above already saturates the pool; a nested
         # @threads over pT rows would only oversubscribe it (much slower at 8+ threads).
         # T=Float32: the matrix is built straight into Float32 storage (accumulation

@@ -41,10 +41,92 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, BreitWigner, BroadParent
+       DecayMatrix, decaymatrices, BreitWigner, BroadParent, Rules
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
+
+# ---------------------------------------------------------------------------
+# Quadrature rules
+# ---------------------------------------------------------------------------
+# A rule is nodes + weights, and nothing here ever mutates one — so a single
+# rule per order is built once, before any thread starts, and read by all of
+# them. That is what `Rules` below is for. (An earlier design memoized rules in
+# a global dict, whose lock-free reads required every size to be pre-warmed
+# before a threaded build; a missed size was a latent data race. Sharing an
+# eagerly-built immutable value cannot go wrong that way.)
+
+"""
+A quadrature rule on [−1, 1]: nodes `x`, ascending, applied as `mid + half*x[i]`.
+The weight parameter is the rule's *shape*:
+
+  * `QuadRule{Vector{Float64}}` — per-node weights (Gauss–Legendre, and the
+    cosine map built on it);
+  * `QuadRule{Float64}` — one weight for every node (Chebyshev–Gauss, where
+    removing the inverse-√ weight analytically leaves π/n at each node). Kept
+    scalar rather than as n copies: the sum factors it out, so one multiply at
+    the end replaces n inside the innermost loop — and factoring it out is also
+    what keeps the result bit-for-bit what the unfactored form gave.
+"""
+struct QuadRule{W}
+    x::Vector{Float64}
+    w::W
+end
+QuadRule(xw::Tuple{Vector{Float64},Vector{Float64}}) = QuadRule(xw...)
+Base.length(q::QuadRule) = length(q.x)
+Base.eachindex(q::QuadRule) = eachindex(q.x)
+
+# Chebyshev–Gauss rule of the first kind, order n: Zₖ = cos((2k−1)π/2n), w = π/n.
+chebnodes(n::Int) = [cos((2k - 1) * π / (2n)) for k in 1:n]
+chebrule(n::Int) = QuadRule(chebnodes(n), π / n)
+
+"""
+The two rules the parent-mass average needs, both at order `nma`: plain
+Gauss–Legendre for the normalization sweep and the regular lower endpoint, and
+the cosine map for when a channel threshold cuts in and puts coef ∝ 1/p_b ~ 1/√
+there. Both ascend −1 → 1, so `parentmassnodes` swaps one for the other and
+changes nothing else.
+"""
+struct MassRule
+    gl::QuadRule{Vector{Float64}}
+    cos::QuadRule{Vector{Float64}}
+end
+MassRule(nma::Int) = MassRule(QuadRule(gausslegendre(nma)), QuadRule(cosnodes(nma)))
+
+"""
+The rules applied at *evaluation* — the subset a [`MassAverage`] carries. The
+qT rule serves both the functor and the matrix path; the Δη rule only the
+functor (`decaykernel`); the two Chebyshev rules only the matrix path
+(`scatterrows!`, which picks the dense one near a window transition).
+"""
+struct KernelRules
+    q::QuadRule{Vector{Float64}}   # cosnodes(nq)
+    θ::QuadRule{Vector{Float64}}   # cosnodes(nθ)
+    zc::QuadRule{Float64}          # Chebyshev, nθ  nodes
+    zc4::QuadRule{Float64}         # Chebyshev, 4nθ nodes
+end
+KernelRules(nq::Int, nθ::Int) =
+    KernelRules(QuadRule(cosnodes(nq)), QuadRule(cosnodes(nθ)), chebrule(nθ), chebrule(4nθ))
+
+"""
+    Rules(; nq = 128, nθ = 32, nµ = 32, nσ = 16, nma = 16)
+
+Every quadrature rule implied by a set of orders, built once. `kern` is applied
+at evaluation and is stored in each [`MassAverage`]; `µ`, `σ` and `ma` are
+consumed during construction — folded into the node energies and weights — and
+are not kept afterwards.
+
+Build one per table and hand it to every channel: at the default orders a full
+cascade build calls for ~173k rules that are all copies of five distinct ones.
+"""
+struct Rules
+    kern::KernelRules
+    µ::QuadRule                  # cosnodes(nµ)   — cluster-mass average
+    σ::QuadRule                  # cosnodes(nσ)   — inner sub-mass integral (4-body)
+    ma::MassRule                 # order nma      — parent spectral average
+end
+Rules(; nq = 128, nθ = 32, nµ = 32, nσ = 16, nma = 16) =
+    Rules(KernelRules(nq, nθ), QuadRule(cosnodes(nµ)), QuadRule(cosnodes(nσ)), MassRule(nma))
 
 # Cosine-mapped Gauss–Legendre rule for ∫ₐᵇ f dx with x = mid + half·xᵢ:
 # returns (−cosθᵢ, (π/2)·wᵢ·sinθᵢ) so that ∫ₐᵇ f ≈ half·Σᵢ vᵢ f(mid + half·xᵢ).
@@ -83,7 +165,7 @@ end
 # The qT integrand has an integrable ln|qT − qT*| singularity where the Δη
 # domain splits; the interval is divided there, leaving a mild θ·lnθ endpoint
 # behavior that converges at ~nq⁻⁴ (nq = 128 gives ≲1e-7).
-function decaykernel(Fa::F, pT, ηp, ϕp, ma, mb, Eb, cq, vq, cθ, vθ) where {F}
+function decaykernel(Fa::F, pT, ηp, ϕp, ma, mb, Eb, q::QuadRule, θ::QuadRule) where {F}
     pb = sqrt(max(Eb^2 - mb^2, 0.0))
     C = ma * Eb
     mbT = hypot(mb, pT)
@@ -100,13 +182,13 @@ function decaykernel(Fa::F, pT, ηp, ϕp, ma, mb, Eb, cq, vq, cθ, vθ) where {F
     for (a, b) in segments
         a < b || continue
         hq, mq = (b - a) / 2, (a + b) / 2
-        n = length(cq)
+        n = length(q)
         nt = min(Threads.nthreads(), n)
         if nt == 1
-            K += qnodes(Fa, pT, ηp, ϕp, ma, C, mbT, hq, mq, cq, vq, cθ, vθ, 1:n)
+            K += qnodes(Fa, pT, ηp, ϕp, ma, C, mbT, hq, mq, q, θ, 1:n)
         else   # qT nodes are independent: strided chunks on nt tasks
             tasks = [Threads.@spawn qnodes(Fa, pT, ηp, ϕp, ma, C, mbT,
-                                           hq, mq, cq, vq, cθ, vθ, k:nt:n)
+                                           hq, mq, q, θ, k:nt:n)
                      for k in 1:nt]
             for t in tasks
                 K += fetch(t)::Float64
@@ -120,8 +202,9 @@ end
 # strided chunk of a threaded split). Body of the tensor-product sum;
 # @inline matters: it lets the serial call site specialize on the unit-stride
 # range (~1.4× on the single-thread path).
-@inline function qnodes(Fa::F, pT, ηp, ϕp, ma, C, mbT, hq, mq, cq, vq, cθ, vθ,
-                        is::AbstractRange{Int}) where {F}
+@inline function qnodes(Fa::F, pT, ηp, ϕp, ma, C, mbT, hq, mq, q::QuadRule,
+                        θ::QuadRule, is::AbstractRange{Int}) where {F}
+    cq, vq, cθ, vθ = q.x, q.w, θ.x, θ.w
     K = 0.0
     @inbounds for i in is
         qT = mq + hq * cq[i]
@@ -166,17 +249,14 @@ end
 #   • broad parent          — the above with ma_i varying over the parent
 #                              spectral function ϱ_a (matrix_notes §4).
 # Nothing downstream needs to know which decay it was: the functor and the
-# matrix assembly read only (ma, mb, Eb, coef, cq…vθ).
+# matrix assembly read only (ma, mb, Eb, coef, kern).
 
 struct MassAverage
     ma::Vector{Float64}          # per-node parent mass
     mb::Float64                  # observed daughter (fixed)
     Eb::Vector{Float64}          # per-node E_b(node)
     coef::Vector{Float64}        # per-node weight: B·ma·[1/p_b or ρ/N]/(4π)
-    cq::Vector{Float64}          # cosine-mapped qT nodes/weights (cosnodes)
-    vq::Vector{Float64}
-    cθ::Vector{Float64}          # Δη nodes/weights (cosnodes; length sets nθ)
-    vθ::Vector{Float64}
+    kern::KernelRules            # shared, immutable; the rules not yet spent
 end
 
 # functor:  Σᵢ coefᵢ · K(Fa; ma_i, mb, Eb_i)
@@ -189,24 +269,31 @@ end
 # all-zero but the functor throws on the empty reduction.
 (d::MassAverage)(Fa::F, pT, ηp, ϕp) where {F} =
     sum((d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma[i], d.mb, d.Eb[i],
-                                 d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef));
+                                 d.kern.q, d.kern.θ) for i in eachindex(d.coef));
         init = 0.0)
 
 # --- constructors: each builds the (ma, Eb, coef) arrays -------------------
 
 """
     TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32)
+    TwoBodyDecay(ma, mb, mc, rules::Rules; B = 1.0)
 
 Isotropic two-body decay a → b + c (Eq. 32), as a one-node [`MassAverage`].
 Callable: `d(Fa, pT, ηp, ϕp)` is the daughter spectrum of b.
+
+The second form takes prebuilt [`Rules`] instead of orders — use it when
+constructing many decays, so they share one set of quadrature rules.
 """
-function TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32)
+function TwoBodyDecay(ma, mb, mc, rules::Rules; B = 1.0)
     ma > mb + mc || throw(ArgumentError("decay not open: ma ≤ mb + mc (equality ⇒ p_b = 0, coef = Inf)"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     Eb = (ma^2 + mb^2 - mc^2) / (2ma)                          # Eq. (5)
     pb = sqrt(max(kallen(ma^2, mb^2, mc^2), 0.0)) / (2ma)      # Eq. (6)
-    MassAverage([float(ma)], mb, [Eb], [B * ma / (4π * pb)], cosnodes(nq)..., cosnodes(nθ)...)
+    MassAverage([float(ma)], mb, [Eb], [B * ma / (4π * pb)], rules.kern)
 end
+
+TwoBodyDecay(ma, mb, mc; B = 1.0, nq = 128, nθ = 32) =
+    TwoBodyDecay(ma, mb, mc, Rules(; nq, nθ); B)
 
 # Shared µ-average build (Eqs. 45–48): node energies E_b(µᵢ) and normalized
 # weights coefᵢ = vᵢ ρ(µᵢ)/N, N = Σᵢ vᵢ p_b(µᵢ) ρ(µᵢ), on nµ cosine-mapped
@@ -214,8 +301,9 @@ end
 # the pair density q(µ;mc,md) for three-body, ρ₃(µ) for four-body — the only
 # thing that differs. `where {D}`: specialize on the density closure so its
 # call inlines (construction runs ~13k times per table build).
-function muweights(ma, mb, lo, density::D, nµ) where {D}
-    cµ, vµ = cosnodes(nµ)                # cosine map absorbs the √ endpoint zeros
+function muweights(ma, mb, lo, density::D, µr::QuadRule) where {D}
+    cµ, vµ = µr.x, µr.w                  # cosine map absorbs the √ endpoint zeros
+    nµ = length(µr)
     hi = ma - mb
     h, m = (hi - lo) / 2, (hi + lo) / 2
     Eb = Vector{Float64}(undef, nµ)
@@ -235,31 +323,35 @@ end
 
 # a µ-averaged decay: nµ nodes at fixed parent mass ma, Eb over the cluster µ,
 # coef = B·ma/(4π)·(ρ/N). Shared by three- and four-body.
-function muaverage(ma, mb, lo, density; B, nµ, nq, nθ)
-    Eb, coef = muweights(ma, mb, lo, density, nµ)
-    MassAverage(fill(float(ma), length(Eb)), mb, Eb, (B * ma / (4π)) .* coef,
-                cosnodes(nq)..., cosnodes(nθ)...)
+function muaverage(ma, mb, lo, density, rules::Rules; B)
+    Eb, coef = muweights(ma, mb, lo, density, rules.µ)
+    MassAverage(fill(float(ma), length(Eb)), mb, Eb, (B * ma / (4π)) .* coef, rules.kern)
 end
 
 """
     ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
+    ThreeBodyDecay(ma, mb, mc, md, rules::Rules; B = 1.0)
 
 Isotropic three-body decay a → b + c + d (Eq. 59): the two-body kernel averaged
 over the (cd) effective mass µ ∈ [mc+md, ma−mb] with weight ∝ q(µ;mc,md).
 Returns a [`MassAverage`].
 """
-function ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32)
+function ThreeBodyDecay(ma, mb, mc, md, rules::Rules; B = 1.0)
     ma > mb + mc + md || throw(ArgumentError("decay not open: ma ≤ mb + mc + md"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
     pair(µ) = sqrt(max(kallen(µ^2, mc^2, md^2), 0.0)) / (2µ)   # ρ₂ = p_c̃(µ), Eq. (47)
-    muaverage(ma, mb, mc + md, pair; B, nµ, nq, nθ)
+    muaverage(ma, mb, mc + md, pair, rules; B)
 end
+
+ThreeBodyDecay(ma, mb, mc, md; B = 1.0, nµ = 32, nq = 128, nθ = 32) =
+    ThreeBodyDecay(ma, mb, mc, md, Rules(; nq, nθ, nµ); B)
 
 # Cluster invariant-mass density ρ₃(µ) = ∫_{md+me}^{µ−mc} dσ q(µ;mc,σ) q(σ;md,me),
 # the three-particle (cde) phase-space volume (Dalitz area) at cluster mass µ.
 # One cosine-mapped Gauss sweep over the sub-mass σ; the map absorbs the √
 # endpoint zeros of q at σ = md+me and σ = µ−mc. Kernel-free, hence cheap.
-@inline function clusterdensity3(µ, mc, md, me, cσ, vσ)
+@inline function clusterdensity3(µ, mc, md, me, σr::QuadRule)
+    cσ, vσ = σr.x, σr.w
     lo, hi = md + me, µ - mc
     hi > lo || return 0.0
     h, m = (hi - lo) / 2, (hi + lo) / 2
@@ -275,18 +367,21 @@ end
 
 """
     FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
+    FourBodyDecay(ma, mb, mc, md, me, rules::Rules; B = 1.0)
 
 Isotropic four-body decay a → b + c + d + e (matrix_notes §3.1): the two-body
 kernel averaged over the (cde) cluster mass µ with weight ∝ ρ₃(µ), the nested
 Dalitz-area density (an inner `nσ`-point σ-integral). Returns a [`MassAverage`].
 """
-function FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32)
+function FourBodyDecay(ma, mb, mc, md, me, rules::Rules; B = 1.0)
     ma > mb + mc + md + me || throw(ArgumentError("decay not open: ma ≤ mb + mc + md + me"))
     mb > 0 || throw(ArgumentError("massless daughter b not supported"))
-    cσ, vσ = cosnodes(nσ)
-    ρ3(µ) = clusterdensity3(µ, mc, md, me, cσ, vσ)            # ρ₃(µ), inner σ-integral
-    muaverage(ma, mb, mc + md + me, ρ3; B, nµ, nq, nθ)
+    ρ3(µ) = clusterdensity3(µ, mc, md, me, rules.σ)           # ρ₃(µ), inner σ-integral
+    muaverage(ma, mb, mc + md + me, ρ3, rules; B)
 end
+
+FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 32) =
+    FourBodyDecay(ma, mb, mc, md, me, Rules(; nq, nθ, nµ, nσ); B)
 
 # ---------------------------------------------------------------------------
 # Finite parent width: average the decay matrix over the parent spectral function
@@ -336,8 +431,9 @@ BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
 # coef ∝ 1/p_b has an integrable 1/√ singularity, so the open part uses the
 # cosine map that absorbs it (as the qT and µ integrals do). Uncut, that endpoint
 # is regular and plain Gauss is kept — bit-identical to before.
-function parentmassnodes(bw::BreitWigner, nma, mlo = bw.mmin)
-    x, u = gausslegendre(nma)
+function parentmassnodes(bw::BreitWigner, mr::MassRule, mlo = bw.mmin)
+    x, u = mr.gl.x, mr.gl.w
+    nma = length(mr.gl)
     ψof(m) = atan((m^2 - bw.mR^2) / (bw.mR * bw.Γ))
     sof(ψ) = bw.mR^2 + bw.mR * bw.Γ * tan(ψ)
     ψlo, ψhi = ψof(bw.mmin), ψof(bw.mmax)
@@ -359,7 +455,7 @@ function parentmassnodes(bw::BreitWigner, nma, mlo = bw.mmin)
     # the other is the whole difference. `scale` restates both on the shared ψ
     # measure.
     cut = mo > bw.mmin
-    z, w = cut ? cosnodes(nma) : (x, u)
+    z, w = cut ? (mr.cos.x, mr.cos.w) : (x, u)
     h, mid = cut ? ((ψhi - ψof(mo)) / 2, (ψhi + ψof(mo)) / 2) : (hψ, mψ)
     scale = h / hψ
     for i in 1:nma
@@ -382,33 +478,47 @@ one. Nodes below the daughter threshold are dropped and enter only the
 normalization, so a channel closed at the pole keeps its open-tail fraction
 (channel reopening). `kw...` pass through to the underlying decay (nµ, nσ, nq, nθ).
 """
-function BroadParent(build, bw::BreitWigner, opensum; nma = 16)
+function BroadParent(build, bw::BreitWigner, opensum, mb, rules::Rules)
     # nodes come back already restricted to where the channel is open; `norm`
     # still spans the full spectral window, so a channel closed at the pole keeps
     # exactly its open-tail fraction (channel reopening).
-    mas, wall, norm = parentmassnodes(bw, nma, opensum)
+    mas, wall, norm = parentmassnodes(bw, rules.ma, opensum)
     ma_all, Eb_all, coef_all = Float64[], Float64[], Float64[]
-    local sub                                     # a sample sub-decay (shared cq…vθ, mb)
-    got = false
     for i in eachindex(mas)
         mas[i] > opensum || continue              # roundoff pinned a node to the threshold
         s = build(mas[i])::MassAverage
         all(isfinite, s.coef) || continue         # near-threshold: p_b rounds to 0
+        if isempty(coef_all)
+            # sub-decays all have the same node count (1 for two-body, nµ
+            # otherwise), so the first survivor fixes the total: reserve it once
+            # instead of letting three vectors grow geometrically.
+            n = length(mas) * length(s.coef)
+            sizehint!(ma_all, n); sizehint!(Eb_all, n); sizehint!(coef_all, n)
+        end
         append!(ma_all, s.ma)
         append!(Eb_all, s.Eb)
         append!(coef_all, (wall[i] / norm) .* s.coef)   # fold ϱ weight into coef
-        sub, got = s, true
     end
-    got || (sub = build(opensum + 0.05))          # degenerate: fully closed ⇒ zero matrix
-    MassAverage(ma_all, sub.mb, Eb_all, coef_all, sub.cq, sub.vq, sub.cθ, sub.vθ)
+    # No node at all means the channel is closed across the whole spectral
+    # window: the empty node list is the answer (zero matrix, zero functor), and
+    # `mb` and the rules come from the caller, so nothing has to be recovered
+    # from a sample sub-decay.
+    MassAverage(ma_all, float(mb), Eb_all, coef_all, rules.kern)
 end
 
+BroadParent(mb, mc, bw::BreitWigner, r::Rules; B = 1.0) =
+    BroadParent(ma -> TwoBodyDecay(ma, mb, mc, r; B), bw, mb + mc, mb, r)
+BroadParent(mb, mc, md, bw::BreitWigner, r::Rules; B = 1.0) =
+    BroadParent(ma -> ThreeBodyDecay(ma, mb, mc, md, r; B), bw, mb + mc + md, mb, r)
+BroadParent(mb, mc, md, me, bw::BreitWigner, r::Rules; B = 1.0) =
+    BroadParent(ma -> FourBodyDecay(ma, mb, mc, md, me, r; B), bw, mb + mc + md + me, mb, r)
+
 BroadParent(mb, mc, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
-    BroadParent(ma -> TwoBodyDecay(ma, mb, mc; B, kw...), bw, mb + mc; nma)
+    BroadParent(mb, mc, bw, Rules(; nma, kw...); B)
 BroadParent(mb, mc, md, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
-    BroadParent(ma -> ThreeBodyDecay(ma, mb, mc, md; B, kw...), bw, mb + mc + md; nma)
+    BroadParent(mb, mc, md, bw, Rules(; nma, kw...); B)
 BroadParent(mb, mc, md, me, bw::BreitWigner; B = 1.0, nma = 16, kw...) =
-    BroadParent(ma -> FourBodyDecay(ma, mb, mc, md, me; B, kw...), bw, mb + mc + md + me; nma)
+    BroadParent(mb, mc, md, me, bw, Rules(; nma, kw...); B)
 
 # ---------------------------------------------------------------------------
 # Matrix representation on a fixed parent grid (η-independent sources)
@@ -469,13 +579,13 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 #
 # `buf` is allocated here, so every caller — the serial sweep or one spawned
 # chunk — owns its own set for the call's whole lifetime.
-function fillrows!(Ws, ks, d::MassAverage, mt, pTv, zc, zc4, qgrid, P)
+function fillrows!(Ws, ks, d::MassAverage, mt, pTv, qgrid, P)
     buf = map(_ -> zeros(length(qgrid)), mt)
     for k in ks
         for r in buf; fill!(r, 0.0); end
         for i in eachindex(d.coef)
             scatterrows!(buf, mt, d.ma[i], d.mb, d.Eb[i], pTv[k],
-                         d.cq, d.vq, zc, zc4, qgrid, P, d.coef[i])
+                         d.kern, qgrid, P, d.coef[i])
         end
         for (W, r) in zip(Ws, buf)
             @inbounds for j in eachindex(r)
@@ -507,8 +617,6 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
     pTv = pTs
     nq = length(qgrid)
     Ws = map(_ -> zeros(T, length(pTv), nq), mt)   # output eltype T (Float32 to store)
-    nθ = length(d.cθ)
-    zc, zc4 = chebnodes(nθ), chebnodes(4nθ)   # compute once; threaded down to the scatter
     if threaded
         # One task per chunk of rows, each owning its buffers for the task's whole
         # lifetime — so nothing is shared and task migration cannot alias them
@@ -517,10 +625,10 @@ function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
         # bitwise identical to the serial sweep however the chunks land.
         nt = min(Threads.nthreads(), length(pTv))
         @sync for ks in Iterators.partition(eachindex(pTv), cld(length(pTv), nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, zc, zc4, qgrid, Pv)
+            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, qgrid, Pv)
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mt, pTv, zc, zc4, qgrid, Pv)
+        fillrows!(Ws, eachindex(pTv), d, mt, pTv, qgrid, Pv)
     end
     return collect(Ws)
 end
@@ -540,10 +648,6 @@ end
 DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P = Val(4)) =
     DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
                 decaymatrices(d, (n,), pTs, qgrid; P)[1])
-
-# Chebyshev–Gauss nodes Z_k = cos((2k−1)π/(2n)). Pure like cosnodes — computed
-# once per decaymatrices call (~100 ns) and passed down to the row scatter.
-chebnodes(n::Int) = [cos((2k - 1) * π / (2n)) for k in 1:n]
 
 # Tₙ(Z) = cos(n·acos Z) by the Chebyshev recurrence (Eq. 40): the assembly
 # needs only this polynomial, never the angle itself, so no acos/cos here.
@@ -575,8 +679,10 @@ end
 # varies. So K modes accumulate together in the stack tuple `s` and scatter onto
 # their K rows through the one shared stencil — each row bit-identical to a
 # single-mode build.
-function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, zc, zc4,
+function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, kern::KernelRules,
                       qgrid, P, pref) where {K}
+    cq, vq = kern.q.x, kern.q.w
+    zc, zc4 = kern.zc, kern.zc4
     pb = sqrt(max(Eb^2 - mb^2, 0.0))
     C = ma * Eb
     mbT = hypot(mb, pT)
@@ -600,22 +706,22 @@ function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, zc, zc
             s = zero_s
             if Zlo ≤ -1                            # full window: Chebyshev–Gauss
                 z = Zlo > -1.5 ? zc4 : zc   # densify near the transition
-                for Z in z
+                for Z in z.x
                     c = (C + Q * Z) / M
                     s = s .+ chebvals(modes, Z) ./ sqrt((c - 1) * (c + 1))
                 end
-                s = s .* (π / length(z))
+                s = s .* z.w                       # uniform Chebyshev weight π/n
             else                                   # partial window: shifted Chebyshev–Gauss
                 # analytic cancellation (matrix_notes §8.2): endpoint weight removed,
                 # regular R² = (Q/M)(1+Z)(c+1) > 0, no guard; densify near Zlo→−1.
                 zp = Zlo < -0.5 ? zc4 : zc
                 hz, mz = (1 - Zlo) / 2, (1 + Zlo) / 2
-                for ζ in zp
+                for ζ in zp.x
                     Z = mz + hz * ζ
                     c = (C + Q * Z) / M
                     s = s .+ chebvals(modes, Z) ./ sqrt((Q / M) * (1 + Z) * (c + 1))
                 end
-                s = s .* (π / length(zp))
+                s = s .* zp.w
             end
             fac0 = pref * vq[i] * hq * qT * (4 / M)
             j0, w = _stencil(qT, qgrid, P)
