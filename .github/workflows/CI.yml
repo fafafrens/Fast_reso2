@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1.11'      # minimum supported (Threads.@threads :greedy)
+          version: '1.12'      # minimum supported (OncePerTask in buildkeys!)
       - uses: julia-actions/cache@v2
       # The suite needs only FastGaussQuadrature (core) + QuadGK (reference
       # integrals) + the standard library — NOT Plots/GR, which the repo pulls in

@@ -22,7 +22,8 @@ the cluster / observed-daughter width cases — see the note.
 
 ## Requirements
 
-**Julia ≥ 1.11** — the table build uses `Threads.@threads :greedy`, added in 1.11.
+**Julia ≥ 1.12** — the table build uses `Threads.@threads :greedy` (1.11) and
+`OncePerTask` (1.12), which gives each of that loop's tasks its own row buffers.
 
 Dependencies are declared in `Project.toml`; instantiate once, then run
 everything with `--project`:

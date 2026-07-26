@@ -680,14 +680,14 @@ function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
 end
 
 function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
-                       P = Val(4), threaded = true, T::Type = Float64)
+                       P = Val(4), threaded = true, T::Type = Float64, scratch = nothing)
     # `zeros`, not `undef`, even though decaymatrices! writes every entry: the
     # memset measures 1.12 µs per matrix, 0.04 s over a full cascade build (0.03%),
     # which does not pay for making full coverage load-bearing here. Zeroed
     # output degrades to zeros if a future path ever fills only some rows;
     # `undef` would degrade to garbage.
     Ws = map(_ -> zeros(T, length(pTs), length(qgrid)), mt)
-    decaymatrices!(Ws, d, mt, pTs, qgrid; P, threaded)
+    decaymatrices!(Ws, d, mt, pTs, qgrid; P, threaded, scratch)
     return collect(Ws)
 end
 
@@ -696,9 +696,13 @@ end
 # `Tuple(modes)` is a runtime tuple, so the dispatch to the core is dynamic (once
 # per call, cold); the ::return annotation keeps the boundary type-stable for the
 # caller (e.g. the Float32 conversion in buildkeys!) instead of leaking `Any`.
+# The >16 fallback builds one mode at a time, so it takes neither `scratch` nor
+# `threaded` — as with `threaded`, a `scratch` is simply unused there.
 function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid;
-                       P = Val(4), threaded = true, T::Type = Float64)::Vector{Matrix{T}}
-    length(modes) ≤ 16 && return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded, T)
+                       P = Val(4), threaded = true, T::Type = Float64,
+                       scratch = nothing)::Vector{Matrix{T}}
+    length(modes) ≤ 16 &&
+        return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded, T, scratch)
     return [Matrix{T}(DecayMatrix(d, n, pTs, qgrid; P).W) for n in modes]
 end
 

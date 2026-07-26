@@ -22,5 +22,7 @@ Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 FastGaussQuadrature = "1"
 Plots = "1"
 QuadGK = "2"
-# `Threads.@threads :greedy` (CascadeTables.buildkeys!) requires Julia 1.11+
-julia = "1.11"
+# CascadeTables.buildkeys! needs `Threads.@threads :greedy` (Julia 1.11+) and
+# `OncePerTask` (1.12+), which gives each of that loop's tasks its own row
+# buffers — the loop exposes no task index, so there is no earlier equivalent.
+julia = "1.12"

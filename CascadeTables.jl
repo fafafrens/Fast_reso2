@@ -297,6 +297,14 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     # no synchronization — and nothing can observe a half-built one. At the
     # default orders this replaces ~173k per-channel copies of five rules.
     rules = Rules(; t.orders...)
+    # Row accumulators, one set per *task* instead of one per key. `:greedy`
+    # spawns nthreads() tasks that pull from a shared queue and exposes no task
+    # index, so OncePerTask is what ties a buffer set to the task that will reuse
+    # it for every key it draws — nthreads() allocations instead of one per key.
+    # Per-task, not per-thread, is the safe granularity: a task keeps its own set
+    # even if it migrates between threads, so no two tasks can ever alias.
+    mtup, nq = Tuple(t.modes), length(t.grid)
+    scratch = OncePerTask{NTuple{length(mtup),Vector{Float64}}}(() -> rowscratch(mtup, nq))
     out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i], rules)
@@ -304,7 +312,8 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
         # @threads over pT rows would only oversubscribe it (much slower at 8+ threads).
         # T=Float32: the matrix is built straight into Float32 storage (accumulation
         # stays Float64 per row, rounded once), skipping a throwaway Float64 matrix.
-        out[i] = decaymatrices(dec, t.modes, t.grid, t.grid; threaded = false, T = Float32)
+        out[i] = decaymatrices(dec, t.modes, t.grid, t.grid;
+                               threaded = false, T = Float32, scratch = scratch())
     end
     for (k, w) in zip(keyvec, out)
         t.W[k] = w
