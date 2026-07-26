@@ -502,14 +502,34 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
         Wz = (fill(NaN, np, nq),)
         decaymatrices!(Wz, dcl, (0,), pT8, g)
         @assert all(iszero, Wz[1])
-        # shape is checked, not assumed
-        for bad in ((fill(NaN, np, nq),),                       # 1 matrix, 2 modes
-                    (fill(NaN, np + 1, nq), fill(NaN, np + 1, nq)))
+        # shape is checked, not assumed — of the output and of the scratch
+        for bad in (() -> decaymatrices!((fill(NaN, np, nq),), ρ8, (0, 2), pT8, g),
+                    () -> decaymatrices!((fill(NaN, np + 1, nq), fill(NaN, np + 1, nq)),
+                                         ρ8, (0, 2), pT8, g),
+                    () -> decaymatrices!(Wz, ρ8, (0,), pT8, g;             # buffers too short
+                                         scratch = rowscratch((0,), nq - 1)),
+                    () -> decaymatrices!(Wz, ρ8, (0,), pT8, g;             # wrong buffer count
+                                         scratch = rowscratch((0, 2), nq)))
             threw = false
-            try; decaymatrices!(bad, ρ8, (0, 2), pT8, g); catch e
-                threw = e isa DimensionMismatch
-            end
+            try; bad(); catch e; threw = e isa DimensionMismatch; end
             @assert threw
+        end
+
+        # a caller-supplied scratch removes the last allocation: the row buffers.
+        # Reused across calls (each row zeroes its buffer first), so the result must
+        # not depend on what the scratch held on entry.
+        pin(Ws, d, mt, pT, gr, sc) =
+            decaymatrices!(Ws, d, mt, pT, gr; threaded = false, scratch = sc)
+        let Ws = (zeros(np, nq), zeros(np, nq)), sc = rowscratch((0, 2), nq)
+            ref = decaymatrices(ρ8, [0, 2], pT8, g)
+            pin(Ws, ρ8, (0, 2), pT8, g, sc)                 # compile
+            @assert collect(Ws) == ref
+            fill!(sc[1], NaN); fill!(sc[2], NaN)            # dirty it
+            pin(Ws, ρ8, (0, 2), pT8, g, sc)
+            @assert collect(Ws) == ref                      # reuse is exact
+            # measured 0 B here; a small bound absorbs kwarg-lowering differences
+            # across Julia versions while still proving the buffers are gone
+            @assert (@allocated pin(Ws, ρ8, (0, 2), pT8, g, sc)) < 128
         end
     end
 end

@@ -41,7 +41,8 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, decaymatrices!, BreitWigner, BroadParent, Rules
+       DecayMatrix, decaymatrices, decaymatrices!, rowscratch, BreitWigner,
+       BroadParent, Rules
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -577,10 +578,11 @@ _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 # Float64 row is rounded once into `Ws`, whose eltype may be Float32 for storage
 # — folding the buildkeys! downcast in here, so no throwaway Float64 matrix.
 #
-# `buf` is allocated here, so every caller — the serial sweep or one spawned
-# chunk — owns its own set for the call's whole lifetime.
-function fillrows!(Ws, ks, d::MassAverage, mt, pTv, qgrid, P)
-    buf = map(_ -> zeros(length(qgrid)), mt)
+# `buf` belongs to the caller — the serial sweep, or one spawned chunk — which
+# owns it for this call's whole lifetime, so nothing is shared and task migration
+# cannot alias it. Its incoming contents are irrelevant: each row starts by
+# zeroing it, which is what lets a scratch set be reused across calls.
+function fillrows!(Ws, ks, d::MassAverage, mt, pTv, qgrid, P, buf)
     for k in ks
         for r in buf; fill!(r, 0.0); end
         for i in eachindex(d.coef)
@@ -602,25 +604,51 @@ end
 # it false when already inside a threaded loop (e.g. the cascade key build), so
 # the inner and outer `@threads` don't oversubscribe the pool.
 """
-    decaymatrices!(Ws, decay, modes::Tuple, pTs, qgrid; P = Val(4), threaded = true)
+    rowscratch(modes::Tuple, nq::Integer)
+
+The row accumulators [`decaymatrices!`](@ref) works in: one `nq`-long Float64
+buffer per mode. One set serves one task.
+
+Pass it as `scratch` to make the serial path allocate nothing. Build it once and
+reuse it across as many calls as you like — each row zeroes its buffer before
+use, so what it holds on entry never matters.
+
+The threaded path always allocates a set per task rather than taking this one:
+it allocates a `Task` per chunk regardless, which costs more than the buffers,
+so there is nothing to win and an aliasing bug to avoid. A caller that wants
+per-task reuse under its *own* `Threads.@threads` loop should hold a set per
+task there (on Julia ≥ 1.12, `OncePerTask` does exactly that) and pass it in
+with `threaded = false`.
+"""
+rowscratch(mt::Tuple, nq::Integer) = map(_ -> zeros(Float64, nq), mt)
+
+"""
+    decaymatrices!(Ws, decay, modes::Tuple, pTs, qgrid; P = Val(4), threaded = true,
+                   scratch = nothing)
 
 Fill caller-owned matrices `Ws` — one per entry of `modes`, each
 `length(pTs) × length(qgrid)` — with the decay map, and return `Ws`.
 
 Every entry is written, so the destination need not be zeroed and its contents
-on entry are irrelevant. Apart from one row buffer per task this allocates
-nothing, so `Ws` may be a reused staging buffer or an `Mmap`-backed matrix —
-anything supporting `setindex!`.
+on entry are irrelevant; `Ws` may be a reused staging buffer or an `Mmap`-backed
+matrix — anything supporting `setindex!`.
+
+With a `scratch` from [`rowscratch`](@ref) the serial path (`threaded = false`)
+allocates nothing at all. `scratch` is ignored when `threaded`, which allocates
+one set per task — and a `Task` per chunk besides, so it can never reach zero.
 
 [`decaymatrices`](@ref) is this with freshly allocated output.
 """
 function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
-                        P = Val(4), threaded = true)
+                        P = Val(4), threaded = true, scratch = nothing)
     npT, nq = length(pTs), length(qgrid)
     length(Ws) == length(mt) ||
         throw(DimensionMismatch("got $(length(Ws)) output matrices for $(length(mt)) modes"))
     all(W -> size(W) == (npT, nq), Ws) ||
         throw(DimensionMismatch("each output must be $npT×$nq (length(pTs) × length(qgrid))"))
+    scratch === nothing ||
+        (length(scratch) == length(mt) && all(r -> length(r) == nq, scratch)) ||
+        throw(DimensionMismatch("scratch needs $(length(mt)) buffers of length $nq"))
     # The stencil order must reach `_stencil` as a Val: with a plain Integer,
     # lagrangeweights converts per call and its NTuple{P,Float64} width is not
     # inferable, so the innermost loop goes dynamic — measured 129x slower, with
@@ -634,19 +662,19 @@ function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
     # `qgrid` already follows; callers must not mutate either during the build.
     pTv = pTs
     npT == 0 && return Ws                          # no rows to write (and cld(0, 0) throws)
+    # One task per chunk of rows, each with its own buffer set for the task's
+    # whole lifetime — so nothing is shared and task migration cannot alias one
+    # (unlike a threadid()-indexed pool or OncePerThread). Rows are independent,
+    # so this is bitwise identical to the serial sweep however the chunks land —
+    # and the chunks partition eachindex(pTv), so together they cover every row.
     if threaded
-        # One task per chunk of rows, each owning its buffers for the task's whole
-        # lifetime — so nothing is shared and task migration cannot alias them
-        # (unlike a threadid()-indexed pool or OncePerThread). Buffers drop from
-        # one set per row to one per task. Rows are independent, so this is
-        # bitwise identical to the serial sweep however the chunks land — and the
-        # chunks partition eachindex(pTv), so together they cover every row.
         nt = min(Threads.nthreads(), npT)
         @sync for ks in Iterators.partition(eachindex(pTv), cld(npT, nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mtv, pTv, qgrid, Pv)
+            Threads.@spawn fillrows!(Ws, ks, d, mtv, pTv, qgrid, Pv, rowscratch(mt, nq))
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mtv, pTv, qgrid, Pv)
+        fillrows!(Ws, eachindex(pTv), d, mtv, pTv, qgrid, Pv,
+                  scratch === nothing ? rowscratch(mt, nq) : scratch)
     end
     return Ws
 end
