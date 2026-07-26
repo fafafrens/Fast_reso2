@@ -123,6 +123,17 @@ let mρ = 0.7752, mπ = 0.1396, mp = 0.938, g = collect(range(0, 6, length = 300
         @assert r32 < r8 && r32 < 0.1
         @printf("   threshold-cut window: nma=8 non-zero, rel dev %.2f→%.2f (nma 8→32)\n", r8, r32)
     end
+    # fully closed: the channel threshold sits above the whole spectral window, so
+    # parentmassnodes returns no node and the MassAverage carries empty arrays.
+    # Both evaluation paths must agree on zero — the functor used to throw on the
+    # empty reduction while the matrix path returned all-zero.
+    let dclosed = BroadParent(0.60, 0.60, BreitWigner(1.0, 0.05; mmin = 0.85, mmax = 1.15))
+        @assert isempty(dclosed.coef)                  # threshold 1.20 > mmax 1.15
+        Wc = decaymatrices(dclosed, [0, 2], g, g)
+        @assert all(all(iszero, W) for W in Wc)
+        @assert dclosed(thermal(1.0), 0.9, 0.2, 0.3) === 0.0    # was: ArgumentError
+        @printf("   fully-closed channel: matrix all-zero and functor 0.0 (agree)\n")
+    end
     @printf("   nma=1==sharp, narrow→sharp %.1e, reopening (closed=0, open≠0): OK\n", dn)
     println("   PASS")
 end

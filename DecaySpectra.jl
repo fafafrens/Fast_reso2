@@ -173,9 +173,17 @@ struct MassAverage
 end
 
 # functor:  Σᵢ coefᵢ · K(Fa; ma_i, mb, Eb_i)
+#
+# `init = 0.0`: the node list is empty for a channel closed across its parent's
+# whole spectral window (parentmassnodes returns no node, BroadParent keeps the
+# empty arrays). Zero is the right answer there — such a channel feeds nothing —
+# and it is what the matrix path already gives, since its `for i in eachindex`
+# simply does not execute. Without `init` the two paths disagree: the matrix is
+# all-zero but the functor throws on the empty reduction.
 (d::MassAverage)(Fa::F, pT, ηp, ϕp) where {F} =
-    sum(d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma[i], d.mb, d.Eb[i],
-                                d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef))
+    sum((d.coef[i] * decaykernel(Fa, pT, ηp, ϕp, d.ma[i], d.mb, d.Eb[i],
+                                 d.cq, d.vq, d.cθ, d.vθ) for i in eachindex(d.coef));
+        init = 0.0)
 
 # --- constructors: each builds the (ma, Eb, coef) arrays -------------------
 
