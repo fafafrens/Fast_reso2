@@ -46,9 +46,16 @@ export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
 
-# Cosine-mapped Gauss–Legendre rule for ∫ₐᵇ f dx with x = mid − half·cosθ:
-# returns (cosθᵢ, (π/2)·wᵢ·sinθᵢ) so that ∫ₐᵇ f ≈ half·Σᵢ vᵢ f(mid − half·cᵢ).
+# Cosine-mapped Gauss–Legendre rule for ∫ₐᵇ f dx with x = mid + half·xᵢ:
+# returns (−cosθᵢ, (π/2)·wᵢ·sinθᵢ) so that ∫ₐᵇ f ≈ half·Σᵢ vᵢ f(mid + half·xᵢ).
 # The sinθ Jacobian (inside vᵢ) absorbs 1/√ endpoint singularities of f.
+#
+# The leading minus is what makes the nodes ascend −1 → 1, matching
+# gausslegendre's own convention, so *every* rule in this file is applied the
+# same way (`mid + half·xᵢ`) and the two kinds are freely substitutable — see
+# parentmassnodes, which picks between them at run time. Negating here rather
+# than at each of the five use sites is exact and preserves the node order, so
+# both the values and the summation order are unchanged.
 #
 # Pure — computed fresh per call, stored in the decay object that asked. This
 # replaced a memoized global cache whose lock-free reads required all sizes to
@@ -60,7 +67,7 @@ kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
 function cosnodes(n::Int)
     x, w = gausslegendre(n)
     θ = @. π * (x + 1) / 2
-    (cos.(θ), @. π / 2 * w * sin(θ))
+    (-cos.(θ), @. π / 2 * w * sin(θ))
 end
 
 # ---------------------------------------------------------------------------
@@ -117,7 +124,7 @@ end
                         is::AbstractRange{Int}) where {F}
     K = 0.0
     @inbounds for i in is
-        qT = mq - hq * cq[i]
+        qT = mq + hq * cq[i]
         M = hypot(ma, qT) * mbT
         Q = qT * pT
         # Δη support: cosh(Δη) ∈ [max(1, (C−Q)/M), (C+Q)/M] (Eq. 21)
@@ -129,7 +136,7 @@ end
         hη, mη = (ηhi - ηlo) / 2, (ηlo + ηhi) / 2
         s = 0.0
         @inbounds for j in eachindex(cθ)
-            Δη = mη - hη * cθ[j]
+            Δη = mη + hη * cθ[j]
             D = M * cosh(Δη) - C                     # Eq. (29)
             S2 = (Q - D) * (Q + D)                   # = Q²(1−Z²), Eq. (31)
             S2 > 0 || continue
@@ -215,7 +222,7 @@ function muweights(ma, mb, lo, density::D, nµ) where {D}
     coef = Vector{Float64}(undef, nµ)
     norm = 0.0
     for i in 1:nµ
-        µ = m - h * cµ[i]
+        µ = m + h * cµ[i]
         Eb[i] = (ma^2 + mb^2 - µ^2) / (2ma)                    # Eq. (45)
         pb = sqrt(max(kallen(ma^2, mb^2, µ^2), 0.0)) / (2ma)   # Eq. (46)
         ρ = density(µ)                                         # Eq. (47) / ρ₃
@@ -258,7 +265,7 @@ end
     h, m = (hi - lo) / 2, (hi + lo) / 2
     s = 0.0
     @inbounds for k in eachindex(cσ)
-        σ = m - h * cσ[k]
+        σ = m + h * cσ[k]
         qµ = sqrt(max(kallen(µ^2, mc^2, σ^2), 0.0)) / (2µ)   # q(µ; mc, σ)
         qσ = sqrt(max(kallen(σ^2, md^2, me^2), 0.0)) / (2σ)  # q(σ; md, me)
         s += vσ[k] * qµ * qσ
@@ -347,15 +354,16 @@ function parentmassnodes(bw::BreitWigner, nma, mlo = bw.mmin)
     mo < bw.mmax || return mas, ws, norm         # closed across the whole window
     # Integrate the open part [ψ(mo), ψhi]. Only the rule differs: a threshold
     # that cuts in puts coef ∝ 1/p_b ~ 1/√ at the lower endpoint, which the
-    # cosine map absorbs (nodes mid − h·c); an uncut endpoint is regular, so
-    # plain Gauss is kept (mid + h·x) and the result is bit-identical to the
-    # pre-split code. `scale` restates both on the shared ψ measure.
+    # cosine map absorbs; an uncut endpoint is regular, so plain Gauss is kept.
+    # Both rules ascend −1 → 1 and are applied as mid + h·z, so swapping one for
+    # the other is the whole difference. `scale` restates both on the shared ψ
+    # measure.
     cut = mo > bw.mmin
-    z, w, sgn = cut ? (cosnodes(nma)..., -1.0) : (x, u, 1.0)
+    z, w = cut ? cosnodes(nma) : (x, u)
     h, mid = cut ? ((ψhi - ψof(mo)) / 2, (ψhi + ψof(mo)) / 2) : (hψ, mψ)
     scale = h / hψ
     for i in 1:nma
-        s = sof(mid + sgn * h * z[i])
+        s = sof(mid + h * z[i])
         s > 0 || continue
         push!(mas, sqrt(s)); push!(ws, scale * w[i] * sqrt(s))
     end
@@ -583,7 +591,7 @@ function scatterrows!(rows, modes::NTuple{K,Int}, ma, mb, Eb, pT, cq, vq, zc, zc
         a < b || continue
         hq, mq = (b - a) / 2, (a + b) / 2
         @inbounds for i in eachindex(cq)
-            qT = mq - hq * cq[i]
+            qT = mq + hq * cq[i]
             qmin ≤ qT ≤ qmax || continue           # F_a ≡ 0 off the grid
             M = hypot(ma, qT) * mbT
             Q = qT * pT
