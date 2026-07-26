@@ -485,6 +485,33 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     # inferring a kwarg function's return type is version-sensitive, so check the
     # value's type rather than Base.return_types)
     @assert typeof(decaymatrices(ρ8, (0,), pT8, g)) == Vector{Matrix{Float64}}
+
+    # decaymatrices! promises to write EVERY entry, so callers may hand it a
+    # dirty destination (a reused staging buffer, an Mmap-backed matrix). Pre-fill
+    # with NaN, not 0: a gap in the row partition would read back as 0 and hide,
+    # whereas a NaN survives and fails loudly.
+    let np = length(pT8), nq = length(g)
+        for thr in (false, true)
+            Ws = (fill(NaN, np, nq), fill(NaN, np, nq))
+            decaymatrices!(Ws, ρ8, (0, 2), pT8, g; threaded = thr)
+            @assert !any(isnan, Ws[1]) && !any(isnan, Ws[2])   # full coverage
+            @assert collect(Ws) == decaymatrices(ρ8, [0, 2], pT8, g; threaded = thr)
+        end
+        # a channel with no nodes must still overwrite the destination with zeros
+        dcl = BroadParent(0.60, 0.60, BreitWigner(1.0, 0.05; mmin = 0.85, mmax = 1.15))
+        Wz = (fill(NaN, np, nq),)
+        decaymatrices!(Wz, dcl, (0,), pT8, g)
+        @assert all(iszero, Wz[1])
+        # shape is checked, not assumed
+        for bad in ((fill(NaN, np, nq),),                       # 1 matrix, 2 modes
+                    (fill(NaN, np + 1, nq), fill(NaN, np + 1, nq)))
+            threw = false
+            try; decaymatrices!(bad, ρ8, (0, 2), pT8, g); catch e
+                threw = e isa DimensionMismatch
+            end
+            @assert threw
+        end
+    end
 end
 println("   PASS")
 

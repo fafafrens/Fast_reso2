@@ -41,7 +41,7 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, BreitWigner, BroadParent, Rules
+       DecayMatrix, decaymatrices, decaymatrices!, BreitWigner, BroadParent, Rules
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -601,35 +601,65 @@ end
 # own (ma_i, Eb_i, coef_i). `threaded` parallelizes over daughter pT rows; set
 # it false when already inside a threaded loop (e.g. the cascade key build), so
 # the inner and outer `@threads` don't oversubscribe the pool.
-function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
-                       P = Val(4), threaded = true, T::Type = Float64)
+"""
+    decaymatrices!(Ws, decay, modes::Tuple, pTs, qgrid; P = Val(4), threaded = true)
+
+Fill caller-owned matrices `Ws` — one per entry of `modes`, each
+`length(pTs) × length(qgrid)` — with the decay map, and return `Ws`.
+
+Every entry is written, so the destination need not be zeroed and its contents
+on entry are irrelevant. Apart from one row buffer per task this allocates
+nothing, so `Ws` may be a reused staging buffer or an `Mmap`-backed matrix —
+anything supporting `setindex!`.
+
+[`decaymatrices`](@ref) is this with freshly allocated output.
+"""
+function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
+                        P = Val(4), threaded = true)
+    npT, nq = length(pTs), length(qgrid)
+    length(Ws) == length(mt) ||
+        throw(DimensionMismatch("got $(length(Ws)) output matrices for $(length(mt)) modes"))
+    all(W -> size(W) == (npT, nq), Ws) ||
+        throw(DimensionMismatch("each output must be $npT×$nq (length(pTs) × length(qgrid))"))
     # The stencil order must reach `_stencil` as a Val: with a plain Integer,
     # lagrangeweights converts per call and its NTuple{P,Float64} width is not
     # inferable, so the innermost loop goes dynamic — measured 129x slower, with
     # identical output. Normalize once here; `fillrows!` is the function barrier
     # that re-specializes on it. The Val default folds this away at compile time.
     Pv = P isa Val ? P : Val(Int(P))
-    mt = map(Int, mt)                              # the assembly is Int-typed (chebT,
+    mtv = map(Int, mt)                             # the assembly is Int-typed (chebT,
                                                    # scatterrows!); accept any Integer mode
     # used read-only (pTv[k], eachindex) and never copied, so any AbstractVector
     # serves — a Vector is aliased, a range is indexed in place. Same convention
     # `qgrid` already follows; callers must not mutate either during the build.
     pTv = pTs
-    nq = length(qgrid)
-    Ws = map(_ -> zeros(T, length(pTv), nq), mt)   # output eltype T (Float32 to store)
+    npT == 0 && return Ws                          # no rows to write (and cld(0, 0) throws)
     if threaded
         # One task per chunk of rows, each owning its buffers for the task's whole
         # lifetime — so nothing is shared and task migration cannot alias them
         # (unlike a threadid()-indexed pool or OncePerThread). Buffers drop from
         # one set per row to one per task. Rows are independent, so this is
-        # bitwise identical to the serial sweep however the chunks land.
-        nt = min(Threads.nthreads(), length(pTv))
-        @sync for ks in Iterators.partition(eachindex(pTv), cld(length(pTv), nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mt, pTv, qgrid, Pv)
+        # bitwise identical to the serial sweep however the chunks land — and the
+        # chunks partition eachindex(pTv), so together they cover every row.
+        nt = min(Threads.nthreads(), npT)
+        @sync for ks in Iterators.partition(eachindex(pTv), cld(npT, nt))
+            Threads.@spawn fillrows!(Ws, ks, d, mtv, pTv, qgrid, Pv)
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mt, pTv, qgrid, Pv)
+        fillrows!(Ws, eachindex(pTv), d, mtv, pTv, qgrid, Pv)
     end
+    return Ws
+end
+
+function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
+                       P = Val(4), threaded = true, T::Type = Float64)
+    # `zeros`, not `undef`, even though decaymatrices! writes every entry: the
+    # memset measures 1.12 µs per matrix, 0.04 s over a full cascade build (0.03%),
+    # which does not pay for making full coverage load-bearing here. Zeroed
+    # output degrades to zeros if a future path ever fills only some rows;
+    # `undef` would degrade to garbage.
+    Ws = map(_ -> zeros(T, length(pTs), length(qgrid)), mt)
+    decaymatrices!(Ws, d, mt, pTs, qgrid; P, threaded)
     return collect(Ws)
 end
 
