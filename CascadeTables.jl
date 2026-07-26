@@ -292,42 +292,44 @@ end
 # land in a preallocated vector,
 # the Dict is filled serially afterward — no lock needed.
 function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
-    # One rule set for the whole build, constructed *before* any task starts:
-    # rules are immutable and read-only, so every key shares these safely with
-    # no synchronization — and nothing can observe a half-built one. At the
-    # default orders this replaces ~173k per-channel copies of five rules.
-    rules = Rules(; t.orders...)
-    # Row accumulators, one set per *task* instead of one per key. `:greedy`
+    # `Tuple(t.modes)` has a *runtime* length, so every type derived from it —
+    # the output element type, the scratch type, `w` in the store loop — infers
+    # abstractly (out::Vector, w::Any) even though all of them are concrete at
+    # run time. Split here: the barrier below is specialized on N, which makes
+    # them inferrable and removes a dynamic dispatch per key. The values are
+    # unchanged; this is purely where inference gets to see the width.
+    _buildkeys!(t, keyvec, Tuple(t.modes), Rules(; t.orders...))
+end
+
+# `rules`: one set for the whole build, constructed *before* any task starts.
+# Rules are immutable and read-only, so every key shares them with no
+# synchronization and nothing can observe a half-built one. At the default
+# orders this replaces ~173k per-channel copies of five distinct rules.
+function _buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey},
+                     mtup::NTuple{N,Int}, rules::Rules) where {N}
+    nq = length(t.grid)
+    # Row accumulators, one set per *task* rather than one per key. `:greedy`
     # spawns nthreads() tasks that pull from a shared queue and exposes no task
     # index, so OncePerTask is what ties a buffer set to the task that will reuse
     # it for every key it draws — nthreads() allocations instead of one per key.
     # Per-task, not per-thread, is the safe granularity: a task keeps its own set
     # even if it migrates between threads, so no two tasks can ever alias.
-    mtup, nq = Tuple(t.modes), length(t.grid)
-    scratch = OncePerTask{NTuple{length(mtup),Vector{Float64}}}(() -> rowscratch(mtup, nq))
-    #out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
-    out =map(1:length(keyvec)) do i
-        map(mtup) do m 
-            zeros(Float32, nq, nq)
-        end 
-    end
+    scratch = OncePerTask{NTuple{N,Vector{Float64}}}(() -> rowscratch(mtup, nq))
+    # The outputs are allocated per key, up front, and filled in place. They
+    # cannot be pooled the way the row buffers are: `buf` is dead once a row is
+    # written, but these matrices are *retained* in t.W, so each key needs its
+    # own. A pooled set would have to be copied out — which allocates exactly
+    # this much and adds a memcpy (measured: 668 MB either way, no faster).
+    out = [map(_ -> zeros(Float32, nq, nq), mtup) for _ in eachindex(keyvec)]
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i], rules)
-        # The output is allocated per key and filled in place. It cannot be pooled
-        # the way the row buffers are: `buf` is dead once a row is written, but
-        # these matrices are *retained* in t.W, so each key needs its own. A pooled
-        # set would have to be copied out — which allocates exactly this much and
-        # adds a memcpy (measured: 668 MB either way, no faster).
-        #
         # threaded=false: the key loop above already saturates the pool; a nested
-        # @threads over pT rows would only oversubscribe it (much slower at 8+ threads).
-        # Float32 storage: accumulation stays Float64 per row and is rounded once,
-        # so no throwaway Float64 matrix. `mtup` rather than t.modes skips the
-        # vector entry point's per-key runtime Tuple(modes) conversion.
-        #Ws = map(_ -> zeros(Float32, nq, nq), mtup)
+        # @threads over pT rows would only oversubscribe it (much slower at 8+
+        # threads). Float32 storage: accumulation stays Float64 per row and is
+        # rounded once, so no throwaway Float64 matrix. Passing `mtup` rather than
+        # t.modes skips the vector entry point's per-key Tuple(modes) conversion.
         decaymatrices!(out[i], dec, mtup, t.grid, t.grid;
                        threaded = false, scratch = scratch())
-        #out[i] = collect(Ws)
     end
     # Dict writes stay out of the threaded loop: Dict is not concurrent, and
     # writing it from tasks silently drops entries (measured 199034 of 200000).
