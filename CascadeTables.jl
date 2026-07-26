@@ -305,18 +305,34 @@ function buildkeys!(t::CascadeTable, keyvec::Vector{ChannelKey})
     # even if it migrates between threads, so no two tasks can ever alias.
     mtup, nq = Tuple(t.modes), length(t.grid)
     scratch = OncePerTask{NTuple{length(mtup),Vector{Float64}}}(() -> rowscratch(mtup, nq))
-    out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
+    #out = Vector{Vector{Matrix{Float32}}}(undef, length(keyvec))
+    out =map(1:length(keyvec)) do i
+        map(mtup) do m 
+            zeros(Float32, nq, nq)
+        end 
+    end
     Threads.@threads :greedy for i in eachindex(keyvec)
         dec = decayfor(keyvec[i], rules)
+        # The output is allocated per key and filled in place. It cannot be pooled
+        # the way the row buffers are: `buf` is dead once a row is written, but
+        # these matrices are *retained* in t.W, so each key needs its own. A pooled
+        # set would have to be copied out — which allocates exactly this much and
+        # adds a memcpy (measured: 668 MB either way, no faster).
+        #
         # threaded=false: the key loop above already saturates the pool; a nested
         # @threads over pT rows would only oversubscribe it (much slower at 8+ threads).
-        # T=Float32: the matrix is built straight into Float32 storage (accumulation
-        # stays Float64 per row, rounded once), skipping a throwaway Float64 matrix.
-        out[i] = decaymatrices(dec, t.modes, t.grid, t.grid;
-                               threaded = false, T = Float32, scratch = scratch())
+        # Float32 storage: accumulation stays Float64 per row and is rounded once,
+        # so no throwaway Float64 matrix. `mtup` rather than t.modes skips the
+        # vector entry point's per-key runtime Tuple(modes) conversion.
+        #Ws = map(_ -> zeros(Float32, nq, nq), mtup)
+        decaymatrices!(out[i], dec, mtup, t.grid, t.grid;
+                       threaded = false, scratch = scratch())
+        #out[i] = collect(Ws)
     end
+    # Dict writes stay out of the threaded loop: Dict is not concurrent, and
+    # writing it from tasks silently drops entries (measured 199034 of 200000).
     for (k, w) in zip(keyvec, out)
-        t.W[k] = w
+        t.W[k] = collect(w)
     end
     return length(keyvec)
 end

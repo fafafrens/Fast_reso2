@@ -559,6 +559,14 @@ end
 _stencil(x, g::AbstractRange, P) = lagrangeweights(x, first(g), step(g), length(g), P)
 _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 
+# The stencil order must reach `_stencil` as a Val. With a plain Integer,
+# lagrangeweights converts per call and its NTuple{P,Float64} width is not
+# inferable, so the innermost loop goes dynamic — measured 310 ms against
+# 2.38 ms, with identical output. Normalized once at the entry point, where
+# `fillrows!` is the function barrier that re-specializes on the result.
+valorder(P::Val) = P
+valorder(P::Integer) = Val(Int(P))
+
 # ---------------------------------------------------------------------------
 # Fused multi-mode assembly: every Fourier mode in one quadrature sweep. The
 # qT/Z geometry, the R(Z) factors and the Lagrange stencil are mode-independent
@@ -649,12 +657,7 @@ function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
     scratch === nothing ||
         (length(scratch) == length(mt) && all(r -> length(r) == nq, scratch)) ||
         throw(DimensionMismatch("scratch needs $(length(mt)) buffers of length $nq"))
-    # The stencil order must reach `_stencil` as a Val: with a plain Integer,
-    # lagrangeweights converts per call and its NTuple{P,Float64} width is not
-    # inferable, so the innermost loop goes dynamic — measured 129x slower, with
-    # identical output. Normalize once here; `fillrows!` is the function barrier
-    # that re-specializes on it. The Val default folds this away at compile time.
-    Pv = P isa Val ? P : Val(Int(P))
+    Pv = valorder(P)          # Integer -> Val; see valorder (129x if skipped)
     mtv = map(Int, mt)                             # the assembly is Int-typed (chebT,
                                                    # scatterrows!); accept any Integer mode
     # used read-only (pTv[k], eachindex) and never copied, so any AbstractVector
