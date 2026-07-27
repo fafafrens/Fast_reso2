@@ -469,19 +469,28 @@ function CascadePlan(
     table::CascadeTable{G,N},
     decay_list::DecayList,
 ) where {G,N}
+    # Particle IDs remain the public API, while the numerical loop uses these
+    # stable dense indices for direct vector access.
     ids = sort!(collect(keys(decay_list.parts)))
     particles = [decay_list.parts[particle_id] for particle_id in ids]
     dense_index = Dict(
         particle_id => index for (index, particle_id) in pairs(ids)
     )
 
+    # These dictionaries exist only while compiling the topology. Builders
+    # preserve first-seen group/target order; the finalized plan below contains
+    # only flat vectors, ranges, and dense indices.
     group_builders =
         Dict{Int,Vector{_CascadeGroupBuilder{N}}}()
     group_positions = Dict{Int,Dict{ChannelKey,Int}}()
+    # Equal keys share one tuple of references to table matrices. ntuple in
+    # _planmatrices copies references, never the matrix payload.
     matrix_cache =
         Dict{ChannelKey,NTuple{N,Matrix{Float32}}}()
     dependencies = Set{Tuple{Int,Int}}()
 
+    # A deterministic traversal makes group order and construction failures
+    # independent of Dict insertion order.
     compile_order = sort!(collect(keys(decay_list.byparent)))
     eachchannelkey(decay_list; order = compile_order) do parent_id, channel, daughter_id, key
         builders = get!(group_builders, parent_id) do
@@ -508,6 +517,8 @@ function CascadePlan(
             positions[key] = group_index
         end
 
+        # Sum the branching weight for every matching daughter slot. This
+        # folds repeated daughters and equivalent channels into one target.
         daughter = dense_index[daughter_id]
         builder = builders[group_index]
         if haskey(builder.weights, daughter)
@@ -517,12 +528,17 @@ function CascadePlan(
             builder.weights[daughter] = channel.br
         end
 
+        # Only daughters that also decay constrain the feeder-before-fed
+        # parent order. The Set removes duplicate edges from repeated slots.
         if daughter_id != parent_id && haskey(decay_list.byparent, daughter_id)
             push!(dependencies, (parent_id, daughter_id))
         end
     end
 
     parent_order = _cascadeorder(decay_list, dependencies)
+
+    # Flatten the temporary parent/group/target hierarchy in cascade order.
+    # UnitRanges retain the hierarchy without allocating nested vectors.
     steps = CascadeStep[]
     groups = CascadeGroup{N}[]
     targets = CascadeTarget[]
