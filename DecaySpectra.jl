@@ -114,8 +114,8 @@ Build one per table and share it across channels.
 """
 struct Rules
     kern::KernelRules
-    µ::QuadRule                  # cosnodes(nµ)   — cluster-mass average
-    σ::QuadRule                  # cosnodes(nσ)   — inner sub-mass integral (4-body)
+    µ::QuadRule{Vector{Float64}} # cosnodes(nµ)   — cluster-mass average
+    σ::QuadRule{Vector{Float64}} # cosnodes(nσ)   — inner sub-mass integral (4-body)
     ma::MassRule                 # order nma      — parent spectral average
 end
 _checkorder(order_name, order) =

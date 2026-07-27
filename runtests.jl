@@ -305,6 +305,7 @@ tabfile = tempname()
 tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
 @assert length(tab7.W) == 3            # ρ→π|π, ω→π|(πϖ), ω→ϖ|(ππ)
 @assert tab7.grid === g7 && tab7.grid isa AbstractRange{Float64}
+@assert tab7.modes === (0, 2)
 
 prim7(p, n, grid) = (n == 0 ? 1.0 : 0.05) * [exp(-hypot(p.mass, q) / T) for q in grid]
 res7 = runcascade(tab7, dl7; primary = prim7)
@@ -327,6 +328,7 @@ end
 # round trip: loading must reproduce exactly
 tab7native = loadtables(tabfile)
 @assert typeof(tab7native.grid) === typeof(tab7.grid)
+@assert tab7native.modes === (0, 2)
 @assert tab7native.grid == tab7.grid && tab7native.W == tab7.W
 tab7b = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
 res7b = runcascade(tab7b, dl7; primary = prim7)
@@ -439,6 +441,10 @@ println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
 # rapidity-tensor extension) cannot silently drift it. The math is covered
 # above; this asserts the *contract* every extension must preserve.
 let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
+    rules8 = Rules(; nq = 8, nθ = 4, nµ = 4, nσ = 4, nma = 4)
+    @assert fieldtype(typeof(rules8), :µ) === typeof(rules8.µ)
+    @assert fieldtype(typeof(rules8), :σ) === typeof(rules8.σ)
+
     ρ8  = TwoBodyDecay(0.7752, 0.1396, 0.1396)
     ω8  = ThreeBodyDecay(0.7827, 0.1396, 0.1396, 0.1350)
     d48 = FourBodyDecay(1.3, 0.1396, 0.1396, 0.1396, 0.1350)

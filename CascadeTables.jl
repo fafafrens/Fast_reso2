@@ -225,10 +225,10 @@ end
 # Tables
 # ---------------------------------------------------------------------------
 
-struct CascadeTable{G<:AbstractRange{Float64}}
+struct CascadeTable{G<:AbstractRange{Float64},N}
     grid::G
     orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma),Tuple{Int,Int,Int,Int,Int}}
-    modes::Vector{Int}
+    modes::NTuple{N,Int}
     meta::Dict{Symbol,Any}
     W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
 end
@@ -419,35 +419,27 @@ function decayfor(key::ChannelKey, rules::Rules)
     end
 end
 
-# Convert the runtime mode vector to a tuple before entering the threaded build,
-# allowing `_buildkeys!` to specialize on the number of modes.
-function buildkeys!(table::CascadeTable, keys_to_build::Vector{ChannelKey})
-    mode_tuple = Tuple(table.modes)
-    rules = Rules(; table.orders...)
-    return _buildkeys!(table, keys_to_build, mode_tuple, rules)
-end
-
-function _buildkeys!(
-    table::CascadeTable,
+function buildkeys!(
+    table::CascadeTable{G,N},
     keys_to_build::Vector{ChannelKey},
-    mode_tuple::NTuple{N,Int},
-    rules::Rules,
-) where {N}
+) where {G,N}
+    modes = table.modes
+    rules = Rules(; table.orders...)
     grid_length = length(table.grid)
 
     # Tasks can migrate between threads, so scratch storage belongs to each task.
     scratch_for_task = OncePerTask{NTuple{N,Vector{Float64}}}(
-        () -> rowscratch(mode_tuple, grid_length),
+        () -> rowscratch(modes, grid_length),
     )
     matrices_per_key = [
-        map(_mode -> zeros(Float32, grid_length, grid_length), mode_tuple)
+        map(_mode -> zeros(Float32, grid_length, grid_length), modes)
         for _ in eachindex(keys_to_build)
     ]
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
         decay = decayfor(keys_to_build[key_index], rules)
         # The outer key loop already uses the thread pool.
-        decaymatrices!(matrices_per_key[key_index], decay, mode_tuple,
+        decaymatrices!(matrices_per_key[key_index], decay, modes,
                        table.grid, table.grid; threaded = false,
                        scratch = scratch_for_task())
     end
@@ -500,6 +492,9 @@ orders, modes), else build and save. `orders` may be any subset of
 keeps the tables (lenient policy — keys self-invalidate through their masses)
 but warns and builds any missing keys on demand.
 
+`modes` accepts any iterable of integers and is stored as an immutable tuple,
+so its length specializes the fused matrix build.
+
 `grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
 uses the uniform-grid interpolation kernel without validation scans.
 """
@@ -508,7 +503,7 @@ function CascadeTable(decay_list::DecayList;
                       orders = DEFAULT_ORDERS,
                       modes = [0, 2], cache = nothing, rebuild = false)
     resolved_orders = merge(DEFAULT_ORDERS, orders)
-    selected_modes = collect(Int, modes)
+    selected_modes = Tuple(collect(Int, modes))
 
     if cache !== nothing && !rebuild
         cached_table = loadtables(cache)
@@ -549,7 +544,8 @@ end
 # ---------------------------------------------------------------------------
 
 function savetables(table::CascadeTable, path::AbstractString)
-    stored_data = (FORMAT, table.grid, table.orders, table.modes,
+    # Keep modes as a vector on disk so FORMAT-7 caches remain compatible.
+    stored_data = (FORMAT, table.grid, table.orders, collect(table.modes),
                    table.meta, table.W)
     return open(path, "w") do io
         serialize(io, stored_data)
@@ -572,7 +568,15 @@ function loadtables(path::AbstractString)
 
     _, grid, orders, modes, metadata, matrices = stored_data
     grid isa AbstractRange{Float64} || return nothing
-    return CascadeTable(grid, orders, modes, metadata, matrices)
+    modes isa Union{AbstractVector,Tuple} || return nothing
+    all(mode -> mode isa Integer, modes) || return nothing
+    return CascadeTable(
+        grid,
+        orders,
+        Tuple(collect(Int, modes)),
+        metadata,
+        matrices,
+    )
 end
 
 # ---------------------------------------------------------------------------
