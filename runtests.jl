@@ -11,6 +11,7 @@
 include("DecaySpectra.jl")
 using .DecaySpectra
 using Logging
+using LinearAlgebra
 using QuadGK   # test harness only: outer adaptive integrals
 using Printf
 
@@ -465,6 +466,108 @@ function assert_plan_matches(candidate, reference)
         end
     end
     return nothing
+end
+
+# The cascade kernels retain Float64 accumulation while reading compact
+# Float32 matrices. Exercise overwrite, accumulation, scaling, and scatter
+# paths directly before checking them through the complete executors.
+let
+    matrix = Float32[
+        0.25 -0.50 0.75 1.00
+        -1.25 0.125 0.50 -0.75
+        0.375 1.50 -0.25 0.625
+        2.00 -0.875 0.0625 0.25
+        -0.125 0.50 1.25 -1.50
+    ]
+    source = [0.75, -1.25, 0.5, 1.75]
+    initial = [-0.2, 0.4, 1.1, -0.7, 0.3]
+
+    for (α, β) in (
+        (1.0, 0.0),
+        (0.37, 1.0),
+        (-0.4, 0.25),
+        (0.0, 1.0),
+        (0.0, 0.0),
+    )
+        expected = copy(initial)
+        mul!(expected, matrix, source, α, β)
+        actual = copy(initial)
+        returned =
+            CascadeTables._cascade_mul!(actual, matrix, source, α, β)
+        @assert returned === actual
+        @assert isapprox(actual, expected; rtol = 2e-15, atol = 2e-15)
+    end
+
+    expected = similar(initial)
+    mul!(expected, matrix, source)
+    actual = similar(initial)
+    @assert CascadeTables._cascade_mul!(actual, matrix, source) === actual
+    @assert isapprox(actual, expected; rtol = 2e-15, atol = 2e-15)
+
+    scatter_source = [0.5, -0.75, 1.25, -1.5, 0.125]
+    expected_scatter = copy(initial)
+    axpy!(-0.35, scatter_source, expected_scatter)
+    actual_scatter = copy(initial)
+    @assert CascadeTables._cascade_axpy!(
+        -0.35,
+        scatter_source,
+        actual_scatter,
+    ) === actual_scatter
+    @assert isapprox(
+        actual_scatter,
+        expected_scatter;
+        rtol = 2e-15,
+        atol = 2e-15,
+    )
+
+    empty_matrix = zeros(Float32, length(initial), 0)
+    empty_destination = fill(NaN, length(initial))
+    CascadeTables._cascade_mul!(
+        empty_destination,
+        empty_matrix,
+        Float64[],
+    )
+    @assert all(iszero, empty_destination)
+
+    for invalid_call in (
+        () -> CascadeTables._cascade_mul!(
+            zeros(length(initial) - 1),
+            matrix,
+            source,
+        ),
+        () -> CascadeTables._cascade_mul!(
+            zeros(length(initial)),
+            matrix,
+            source[1:(end - 1)],
+        ),
+        () -> CascadeTables._cascade_axpy!(
+            1.0,
+            scatter_source,
+            zeros(length(initial) - 1),
+        ),
+    )
+        threw = false
+        try
+            invalid_call()
+        catch error
+            threw = error isa DimensionMismatch
+        end
+        @assert threw
+    end
+
+    # Warm the exact production methods before checking the steady-state path.
+    CascadeTables._cascade_mul!(actual, matrix, source, 0.37, 1.0)
+    CascadeTables._cascade_mul!(actual, matrix, source)
+    CascadeTables._cascade_axpy!(-0.35, scatter_source, actual_scatter)
+    @assert @allocated(
+        CascadeTables._cascade_mul!(actual, matrix, source, 0.37, 1.0)
+    ) == 0
+    @assert @allocated(
+        CascadeTables._cascade_mul!(actual, matrix, source)
+    ) == 0
+    @assert @allocated(
+        CascadeTables._cascade_axpy!(-0.35, scatter_source, actual_scatter)
+    ) == 0
 end
 
 # The ordinary two-mode topology covers repeated daughter slots (rho → pi pi)

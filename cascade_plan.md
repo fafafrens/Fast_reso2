@@ -194,23 +194,25 @@ for step in plan.steps
         if length(group.targets) == 1
             target = plan.targets[first(group.targets)]
             Fd = denseF[target.daughter][mode_index]
-            mul!(Fd, W, Fp, target.weight, 1.0)
+            _cascade_mul!(Fd, W, Fp, target.weight, 1.0)
         else
-            mul!(scratch, W, Fp)
+            _cascade_mul!(scratch, W, Fp)
 
             for target_index in group.targets
                 target = plan.targets[target_index]
                 Fd = denseF[target.daughter][mode_index]
-                axpy!(target.weight, scratch, Fd)
+                _cascade_axpy!(target.weight, scratch, Fd)
             end
         end
     end
 end
 ```
 
-The singleton path retains the current allocation-free, five-argument
-`mul!`.  A multi-target group computes `W * Fp` once and scatters the result
-with `axpy!`.
+The singleton path uses an allocation-free, five-argument `_cascade_mul!`.
+A multi-target group computes `W * Fp` once and scatters the result with
+`_cascade_axpy!`.  Both private functions specialize the production
+`Float32`-matrix/`Float64`-spectrum case and retain generic fallbacks to
+`mul!` and `axpy!`.
 
 The parent spectrum is read-only during all of its outgoing groups.
 `eachchannelkey` already excludes `daughter == parent`, so the input cannot
@@ -231,7 +233,7 @@ For modes `0` and `2`, the count falls from 89,286 to 78,150.
 
 Of the 39,075 groups:
 
-- 35,798 have one destination and use direct `mul!`;
+- 35,798 have one destination and use direct `_cascade_mul!`;
 - 3,129 have two destinations;
 - 75 have three destinations;
 - 73 have four destinations.
@@ -396,9 +398,10 @@ experiment, not part of the first `CascadePlan`.
 
 ## 8. Threading and BLAS policy
 
-The current `Matrix{Float32} * Vector{Float64}` operation is mixed precision
-and does not use the same-type SGEMV/DGEMV fast path.  Nevertheless benchmarks
-should set
+The `Matrix{Float32} * Vector{Float64}` operation is mixed precision and does
+not use the same-type SGEMV/DGEMV fast path.  The private cascade kernel uses
+a column-major SIMD loop and converts matrix entries to `Float64` while
+accumulating.  Nevertheless benchmarks should set
 
 ```julia
 BLAS.set_num_threads(1)
@@ -548,7 +551,8 @@ are not claims about the multi-gigabyte production cache.
 
 - coalesce identical `(parent, key, daughter)` transfers;
 - group all destinations of one `(parent, key)`;
-- use direct `mul!` for singleton groups and scratch/scatter otherwise.
+- use direct `_cascade_mul!` for singleton groups and
+  `_cascade_mul!`/`_cascade_axpy!` scratch/scatter otherwise.
 
 ### Stage 3: mode-level threading — complete
 

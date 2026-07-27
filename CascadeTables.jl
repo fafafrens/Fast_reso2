@@ -773,6 +773,98 @@ end
 # The cascade
 # ---------------------------------------------------------------------------
 
+# Julia's mixed Float32-matrix/Float64-vector multiply uses a generic path.
+# Keep the production specialization private and preserve ordinary fallbacks.
+@inline _cascade_mul!(destination, matrix, source) =
+    mul!(destination, matrix, source)
+
+@inline _cascade_mul!(destination, matrix, source, α, β) =
+    mul!(destination, matrix, source, α, β)
+
+@inline _cascade_mul!(
+    destination::Vector{Float64},
+    matrix::Matrix{Float32},
+    source::Vector{Float64},
+) = _cascade_mul!(destination, matrix, source, 1.0, 0.0)
+
+function _cascade_mul!(
+    destination::Vector{Float64},
+    matrix::Matrix{Float32},
+    source::Vector{Float64},
+    α::Float64,
+    β::Float64,
+)
+    row_count, column_count = size(matrix)
+    length(destination) == row_count ||
+        throw(DimensionMismatch(
+            "matrix has $row_count rows but destination has " *
+            "length $(length(destination))",
+        ))
+    length(source) == column_count ||
+        throw(DimensionMismatch(
+            "matrix has $column_count columns but source has " *
+            "length $(length(source))",
+        ))
+
+    first_column = 1
+    if iszero(β)
+        if iszero(α) || iszero(column_count)
+            fill!(destination, 0.0)
+            return destination
+        end
+
+        # Initialize from the first column instead of clearing in a separate pass.
+        scaled_source = α * source[1]
+        @inbounds @simd for row in 1:row_count
+            destination[row] = Float64(matrix[row]) * scaled_source
+        end
+        first_column = 2
+    else
+        if !isone(β)
+            @inbounds @simd for row in eachindex(destination)
+                destination[row] *= β
+            end
+        end
+        iszero(α) && return destination
+    end
+
+    for column in first_column:column_count
+        matrix_offset = (column - 1) * row_count
+        scaled_source = α * source[column]
+        @inbounds @simd for row in 1:row_count
+            destination[row] = muladd(
+                Float64(matrix[matrix_offset + row]),
+                scaled_source,
+                destination[row],
+            )
+        end
+    end
+    return destination
+end
+
+# Avoid fixed BLAS call overhead for the plan's short Float64 scatters.
+@inline _cascade_axpy!(α, source, destination) =
+    axpy!(α, source, destination)
+
+function _cascade_axpy!(
+    α::Float64,
+    source::Vector{Float64},
+    destination::Vector{Float64},
+)
+    length(source) == length(destination) ||
+        throw(DimensionMismatch(
+            "source has length $(length(source)) but destination has " *
+            "length $(length(destination))",
+        ))
+    iszero(α) && return destination
+
+    @inbounds @simd for index in eachindex(source, destination)
+        destination[index] =
+            muladd(α, source[index], destination[index])
+    end
+    return destination
+end
+
 """
     runcascade(t, dl; primary) -> (F, Fprim)
 
@@ -803,9 +895,13 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
         daughter_spectra = spectra[daughter_id]
 
         for mode_index in eachindex(table.modes)
-            # Five-argument mul! accumulates without a temporary product.
-            mul!(daughter_spectra[mode_index], decay_matrices[mode_index],
-                 parent_spectra[mode_index], channel.br, 1.0)
+            _cascade_mul!(
+                daughter_spectra[mode_index],
+                decay_matrices[mode_index],
+                parent_spectra[mode_index],
+                channel.br,
+                1.0,
+            )
         end
     end
 
@@ -872,7 +968,7 @@ function _apply_plan_mode!(
             if length(group.targets) == 1
                 target = plan.targets[first(group.targets)]
                 daughter_spectrum = mode_spectra[target.daughter]
-                mul!(
+                _cascade_mul!(
                     daughter_spectrum,
                     matrix,
                     parent_spectrum,
@@ -880,11 +976,15 @@ function _apply_plan_mode!(
                     1.0,
                 )
             else
-                mul!(scratch, matrix, parent_spectrum)
+                _cascade_mul!(scratch, matrix, parent_spectrum)
                 for target_index in group.targets
                     target = plan.targets[target_index]
                     daughter_spectrum = mode_spectra[target.daughter]
-                    axpy!(target.weight, scratch, daughter_spectrum)
+                    _cascade_axpy!(
+                        target.weight,
+                        scratch,
+                        daughter_spectrum,
+                    )
                 end
             end
         end

@@ -1278,7 +1278,7 @@ they are not consulted inside the $p_T$ element loop.  Each enrolled slot
 performs a few dictionary lookups and then, for every mode, the five-argument
 operation
 \begin{equation}
-\texttt{mul!(Fd, W, Fp, Bc, 1.0)}
+\texttt{\_cascade\_mul!(Fd, W, Fp, Bc, 1.0)}
 \quad\Longleftrightarrow\quad
 F_d\leftarrow B_cWF_p+F_d .
 \end{equation}
@@ -1289,12 +1289,22 @@ The multiply is deliberately mixed precision: a \texttt{Float32} matrix
 times a \texttt{Float64} vector accumulates into a \texttt{Float64} vector.
 This halves the table relative to \texttt{Float64} matrices while preserving
 double-precision accumulation through a long decay chain, but it cannot use a
-same-type BLAS GEMV.  Two
-alternatives should be benchmarked rather than assumed faster:
-all-\texttt{Float32} enables SGEMV but reduces accumulation precision, while
-all-\texttt{Float64} enables DGEMV but doubles the matrix payload to about
-$4.90$\,GiB at the current size.  A custom mixed-precision row-band kernel is
-a third possibility.
+same-type BLAS GEMV.  The exact production types therefore dispatch to a
+private column-major kernel.  It computes $B_cF_p[j]$ once per column,
+converts each matrix entry to \texttt{Float64}, and uses a SIMD
+\texttt{muladd} loop over contiguous daughter rows.  The overwrite form
+initializes the destination from the first column, avoiding a separate
+zero-fill pass.  Other element and array types fall back to
+\texttt{LinearAlgebra.mul!}.
+
+The grouped plan also uses a private \texttt{\_cascade\_axpy!} SIMD kernel to
+scatter a shared \texttt{Float64} scratch product to several daughters;
+other types fall back to \texttt{LinearAlgebra.axpy!}.  This keeps the
+optimization local and avoids adding methods to Julia functions for types
+owned by Julia.  All-\texttt{Float32} SGEMV was faster in a cache-hot test but
+introduced errors of order $3\times10^{-7}$ per multiply.  All-\texttt{Float64}
+DGEMV did not improve the tested kernel and doubles the matrix payload to
+about $4.90$\,GiB.  Neither is used by the cascade.
 
 For the bundled list there are only $44{,}643$ slot-level operation records
 but about $1.60\times10^9$ matrix-element multiply--adds in a two-mode sweep.
@@ -1336,9 +1346,31 @@ matrices.  Its warmed median was $29.06$\,ms (minimum $27.28$\,ms) with
 $28.44$\,MiB allocated.  Thus replacing dictionaries cannot explain the gap
 between the approximately $0.48$\,s resident projection and the repository's
 roughly $2$\,s historical full sweep; matrix access remains dominant.  The
-current in-place \texttt{mul!} change reduced historical whole-apply
+earlier in-place \texttt{mul!} change reduced historical whole-apply
 allocations from roughly $152$ to $45$\,MB and improved time by about $4\%$,
 while changing results only at the $4\times10^{-14}$ level.
+
+\paragraph{Specialized-kernel benchmark.}
+On 28 July 2026, the same Apple M2 and Julia~1.12.6 were used with one BLAS
+thread.  Streaming $256$ distinct $134\times134$ matrices through the
+five-argument mixed multiply took $1.475$\,ms with Julia's generic
+\texttt{mul!} and $1.158$\,ms with \texttt{\_cascade\_mul!}, a factor
+$1.274$ improvement.  The maximum absolute difference was
+$5.33\times10^{-15}$.  For a length-$134$ scatter, the corresponding
+\texttt{axpy!} and \texttt{\_cascade\_axpy!} costs were $56.3$ and
+$42.9$\,ns per call, a factor $1.314$ improvement, with identical sampled
+output.  Both specialized operations allocated zero bytes after compilation.
+
+The full $G=134$, two-mode, $1{,}518$-particle deterministic workload contains
+all $18{,}299$ keys and a $2.448$\,GiB raw matrix payload.  A same-process
+serial-plan comparison using seven alternating samples took $1.414$\,s with
+the former \texttt{mul!}/\texttt{axpy!} loop and $1.326$\,s with the private
+kernels, a factor $1.067$ improvement.  The maximum absolute output change
+was $1.08\times10^{-19}$.  In a separate three-sample public benchmark, the
+specialized plan took $1.440$\,s serially and $1.024$\,s with the two Fourier
+modes assigned to separate Julia tasks.  The keyed/plan normalized difference
+was $1.85\times10^{-13}$, and serial and threaded plan results were bitwise
+equal.
 
 A separate build estimate sampled $24$ keys from each of the six combinations
 of multiplicity (two, three, or four bodies) and parent treatment (sharp or
@@ -1349,17 +1381,17 @@ sampled matrix-construction estimate (roughly $7$\,s, before serialization),
 while the $10$\,s recorded full build below remains the stronger end-to-end
 reference.
 
-For many cascades with the same table and topology, a useful
-\emph{not-yet-implemented} optimization is a compiled execution plan.  It
-would map particle identifiers to dense integer indices once and store each
-operation as
-\[
-(\text{parent index},\ \text{daughter index},\ B_c,\ \text{matrix offset}),
-\]
-with spectra in a dense three-dimensional array.  This removes repeated graph
-construction, topological sorting, and key hashing.  It should be viewed as a
-constant-factor orchestration improvement; the matrix stream remains the
-dominant work.
+For repeated cascades with the same table and topology, \texttt{CascadePlan}
+maps particle identifiers to dense integer indices once, retains direct
+matrix references, and stores flat ordered step, group, and target arrays.
+Equivalent daughter multiplicities are summed into one target weight, and
+groups sharing one parent and matrix compute the matrix product only once.
+Singleton groups accumulate directly into their daughter; multi-target groups
+compute into one run-local scratch vector and scatter it.  The table's keyed
+dictionary remains the construction, persistence, and filtering
+representation, while the plan removes key hashing and topology work from
+repeated numerical runs.  This is a constant-factor orchestration improvement;
+the matrix stream remains the dominant work.
 
 A metadata-only full-list benchmark makes the distinction precise.  The
 \texttt{W} hash lookup contributed roughly $7$--$8$\,ms over all
@@ -1369,9 +1401,9 @@ a key-to-index dictionary lookup for every slot was neutral or slightly
 slower: it retains hashing and adds a vector dereference.  Even eliminating
 all measured topology and initialization overhead gives only a roughly
 $30$--$38$\,ms end-to-end ceiling, about $6$--$8\%$ of the resident
-projection or $2\%$ of the historical full sweep.  The recommended design is
-therefore to keep the keyed dictionary for building, invalidation, and
-filtering, then cache a separate compiled plan for repeated applies.
+projection or $2\%$ of the historical full sweep.  The implementation
+therefore keeps the keyed dictionary for building, invalidation, and
+filtering, and compiles a separate plan for repeated applies.
 
 The production sparsity sample above suggests a potentially larger
 speed/memory experiment: pack only each row's contiguous support band and
@@ -1421,9 +1453,11 @@ At $G=134$ and $M=2$, the raw matrix payload is therefore
 \end{equation}
 Both \texttt{F} and \texttt{Fprim} together contain only
 $6{,}509{,}184$ bytes ($6.21$\,MiB) of spectrum values.  The full apply
-executes $89{,}286$ mode-specific dense matrix--vector products.  Doubling
-the grid to $G=268$ would quadruple the matrix payload to about
-$9.79$\,GiB; adding modes grows it linearly.
+executes $89{,}286$ mode-specific dense matrix--vector products in the keyed
+slot sweep.  Grouping in \texttt{CascadePlan} reduces this to $78{,}150$,
+corresponding to $5.23$\,GiB of logical dense matrix traffic before cache
+reuse.  Doubling the grid to $G=268$ would quadruple the matrix payload to
+about $9.79$\,GiB; adding modes grows it linearly.
 
 The repository's recorded full-list timings are roughly $10$\,s to build on
 eight threads, $7$\,s to load the approximately $2.5$\,GB cache, and $2$\,s
