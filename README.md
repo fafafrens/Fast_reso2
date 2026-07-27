@@ -37,6 +37,72 @@ The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
 `FastGaussQuadrature` plus the standard library (`Serialization`, `SHA`,
 `Dates`, `Printf`); the tests add `QuadGK`; the figure scripts add `Plots`.
 
+## Quick start
+
+Save this at the repository root as `quickstart.jl` and run
+`julia --project -t auto quickstart.jl`. It goes from a single decay to the
+full 18299-channel cascade and takes about 25 s from a cold start.
+
+```julia
+## 1. One decay, on its own
+include("DecaySpectra.jl"); using .DecaySpectra
+using Printf
+
+ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396)          # ρ → π + π  (parent, observed, partner)
+Fa(qT, η, ϕ) = exp(-hypot(0.7752, qT) * cosh(η) / 0.155)     # any parent spectrum
+@printf("pion from ρ at pT = 0.5: %.4e\n", ρ(Fa, 0.5, 0.0, 0.0))
+
+grid = range(0.0, 4.0, length = 134)              # parent and daughter share the grid
+W = decaymatrices(ρ, [0, 2], grid, grid)          # one matrix per Fourier mode
+@printf("W[n=0] is %s — daughter = W * parent\n", size(W[1]))
+
+## 2. The whole cascade
+include("CascadeTables.jl"); using .CascadeTables
+
+dl = DecayList("decays_QM2016Plus_massorder.dat")
+T  = 0.155
+primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
+    (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
+
+qs    = range(0.0, 4.0, length = 61)
+table = CascadeTable(dl; grid = qs)               # build every channel matrix (~10 s)
+plan  = CascadePlan(table, dl)                    # compile the topology once
+res   = runcascade(plan; primary, parallel = :modes)
+
+## 3. Read it out
+π⁺ = 211
+@printf("\n  pT    primary       +feed-down   ratio     v₂\n")
+for i in (1, 16, 31)
+    prim, tot = res.Fprim[π⁺][1][i], res.F[π⁺][1][i]
+    @printf("%5.2f  %.4e   %.4e   %5.2f   %+.3f\n",
+            qs[i], prim, tot, tot / prim, res.F[π⁺][2][i] / tot)
+end
+```
+
+```
+pion from ρ at pT = 0.5: 1.7614e-03
+W[n=0] is (134, 134) — daughter = W * parent
+
+  pT    primary       +feed-down   ratio     v₂
+ 0.00  4.0526e-01   9.4037e-01    2.32   +0.017
+ 1.00  1.4817e-03   3.0861e-03    2.08   +0.035
+ 2.00  2.4126e-06   4.7619e-06    1.97   +0.038
+```
+
+Roughly two of every three final pions come from a decay, and the 4% v₂ put
+into the source is diluted to 1.7% at pT = 0 — soft feed-down pions are
+emitted off-axis — recovering to 3.8% by 2 GeV.
+
+`res.F[id]` is the spectrum per Fourier mode after feed-down and `res.Fprim[id]`
+the primary part alone, both on `qs`, keyed by PDG id. The `primary` callback
+is where the physics goes: return `zero(qs)` for a species to exclude it.
+
+Two things to change for production. Pass `cache = "Wtables.jls"` to
+`CascadeTable`, so the matrices are built once and reloaded afterwards — at
+this grid that turns a 13 s build into a 0.8 s load of a 0.55 GB file. And drop
+`grid = qs` for the default 134-point grid, which costs ~18 s to build and
+~2.5 GB to store (~7 s to reload).
+
 ## Files
 
 Core modules, the test suite and the data live at the root; everything that
