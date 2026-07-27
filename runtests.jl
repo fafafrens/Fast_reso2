@@ -468,6 +468,22 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     masv, wsv, _ = DecaySpectra.parentmassnodes(bwv, DecaySpectra.MassRule(16))
     @assert sum(masv .* wsv) / sum(wsv) < bwv.mR + bwv.Γ   # mean near pole, not tail
 
+    # BreitWigner validates its domain. Each of these used to be accepted and to
+    # yield an *empty* parent-mass average — a channel whose matrix is all zeros,
+    # feeding nothing downstream with nothing to indicate why.
+    for bad in (() -> BreitWigner(1.0,  0.0),                        # Γ = 0: ψ map divides by 0
+                () -> BreitWigner(1.0, -0.1),                        # Γ < 0: inverts the window
+                () -> BreitWigner(-1.0, 0.1),                        # pole outside the support
+                () -> BreitWigner(NaN,  0.1),                        # non-finite
+                () -> BreitWigner(Inf,  0.1),
+                () -> BreitWigner(1.0, 0.1; mmin = 1.5, mmax = 0.5), # reversed
+                () -> BreitWigner(1.0, 0.1; mmin = 1.0, mmax = 1.0), # empty
+                () -> Rules(; nq = 0), () -> Rules(; nµ = -1))       # orders
+        threw = false
+        try; bad(); catch e; threw = e isa ArgumentError; end
+        @assert threw
+    end
+
     # constructors reject non-open decays: at exact threshold p_b = 0 makes
     # coef = Inf (the functor then returns NaN) — must fail loud instead
     for bad in (() -> TwoBodyDecay(0.14 + 0.14, 0.14, 0.14),

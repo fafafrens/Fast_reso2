@@ -126,8 +126,17 @@ struct Rules
     σ::QuadRule                  # cosnodes(nσ)   — inner sub-mass integral (4-body)
     ma::MassRule                 # order nma      — parent spectral average
 end
-Rules(; nq = 128, nθ = 32, nµ = 32, nσ = 16, nma = 16) =
+_checkorder(name, n) =
+    n ≥ 1 || throw(ArgumentError("quadrature order $name must be ≥ 1, got $n"))
+
+function Rules(; nq = 128, nθ = 32, nµ = 32, nσ = 16, nma = 16)
+    # Orders are validated here because this is where they enter: a zero or
+    # negative order reaches gausslegendre or π/n and fails obscurely, or (for
+    # the Chebyshev rule) silently yields an Inf weight.
+    _checkorder(:nq, nq);  _checkorder(:nθ, nθ);  _checkorder(:nµ, nµ)
+    _checkorder(:nσ, nσ);  _checkorder(:nma, nma)
     Rules(KernelRules(nq, nθ), QuadRule(cosnodes(nµ)), QuadRule(cosnodes(nσ)), MassRule(nma))
+end
 
 # Cosine-mapped Gauss–Legendre rule for ∫ₐᵇ f dx with x = mid + half·xᵢ:
 # returns (−cosθᵢ, (π/2)·wᵢ·sinθᵢ) so that ∫ₐᵇ f ≈ half·Σᵢ vᵢ f(mid + half·xᵢ).
@@ -395,12 +404,31 @@ Relativistic (constant-width) Breit–Wigner spectral function of a resonance,
 `ϱ(m) ∝ m²Γ / ((m²−mR²)² + mR²Γ²)`, truncated to `[mmin, mmax]` and zero
 outside. Unnormalized: callers that average over it (`widthaverage`) divide by
 the integrated weight, so only the shape matters.
+
+Requires `mR > 0`, `Γ > 0` and `0 ≤ mmin < mmax`, all finite.
 """
 struct BreitWigner
     mR::Float64
     Γ::Float64
     mmin::Float64
     mmax::Float64
+
+    # Validated at construction, because every one of these otherwise produces a
+    # silently *empty* parent-mass average rather than an error: Γ ≤ 0 divides by
+    # zero in the ψ map (and Γ < 0 inverts the window on its own), mR ≤ 0 puts the
+    # pole outside the physical support, and a reversed interval places no node.
+    # The result in each case is a channel whose matrix is all zeros — it feeds
+    # nothing downstream and nothing complains.
+    function BreitWigner(mR, Γ, mmin, mmax)
+        all(isfinite, (mR, Γ, mmin, mmax)) ||
+            throw(ArgumentError("BreitWigner: non-finite (mR, Γ, mmin, mmax) = $((mR, Γ, mmin, mmax))"))
+        mR > 0 || throw(ArgumentError("BreitWigner: pole mass must be positive, got mR = $mR"))
+        Γ > 0 || throw(ArgumentError("BreitWigner: width must be positive, got Γ = $Γ; " *
+                                     "a state too narrow to average should stay sharp"))
+        0 ≤ mmin < mmax ||
+            throw(ArgumentError("BreitWigner: support must satisfy 0 ≤ mmin < mmax, got [$mmin, $mmax]"))
+        new(mR, Γ, mmin, mmax)
+    end
 end
 # mmin is clamped to m ≥ 0: for very broad states (14 in the QM2016 list, e.g.
 # a1(1260), Γ = 0.425) the default mR − kΓ goes negative, and a negative mmin
