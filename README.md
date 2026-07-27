@@ -2,7 +2,7 @@
 
 Resonance **feed-down** for particle spectra in heavy-ion collisions: given a
 thermal source of primary resonances, propagate every decay (2-, 3-, and
-4-body) through the full mass-ordered cascade to obtain the final-state
+4-body) through the full feeder-before-fed cascade to obtain the final-state
 spectra, including azimuthal (elliptic-flow) modulation.
 
 The decay map is represented as a **matrix** in transverse momentum and
@@ -13,10 +13,11 @@ average, and the (documented, not-yet-coded) rapidity-Toeplitz extension — is
 derived in [`matrix_notes.tex`](matrix_notes.tex).
 
 **Implemented:** 2-/3-/4-body decays, boost-invariant (η-independent) sources,
-Fourier modes `n = 0, 2`, the full mass-ordered cascade, channel filtering, and
-**finite parent widths** (broad resonances averaged over a Breit–Wigner spectral
-function, with channel reopening — applied automatically from each species'
-width in the decay list).
+Fourier modes `n = 0, 2`, the full feeder-before-fed cascade, channel
+filtering, and **finite parent widths** (broad resonances averaged over a
+Breit–Wigner spectral function, with channel reopening — applied automatically
+from each species' width in the decay list), plus a compiled, grouped
+`CascadePlan` with optional mode-level threading for repeated cascade runs.
 **Documented but not yet coded:** rapidity-dependent (η-resolved) sources, and
 the cluster / observed-daughter width cases — see the note.
 
@@ -44,11 +45,12 @@ produces a figure (script **and** its output) lives in `figures/`.
 | File | Role |
 |------|------|
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
-| `CascadeTables.jl`  | Persistent per-channel decay matrices, channel filtering, mass-descending cascade |
+| `CascadeTables.jl`  | Persistent per-channel matrices, filtering, feeder-first cascade, compiled flat plans |
+| `benchmarks/cascade_plan.jl` | Reproducible legacy-vs-plan deterministic full-apply benchmark |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
 | `runtests.jl`       | Test suite (see below) |
-| `cascade_plan.md`   | Design for compiled, grouped, and partially threaded cascade execution |
+| `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 | `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
@@ -72,11 +74,16 @@ julia --project -t auto figures/demo_filter.jl       # feed-down by decay topolo
 julia --project -t auto figures/cascade.jl           # full cascade + figure
 julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
 julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
+CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
+  julia --project -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
 ```
 
 `-t auto` (threads) matters for the table build, which parallelizes over
-channels and fuses all Fourier modes into a single quadrature sweep. The
-`Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
+channels and fuses all Fourier modes into a single quadrature sweep. It is
+also required for `runcascade(plan; parallel = :modes)` to execute modes
+concurrently.
+
+The `Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
 builds it (~16 s on 8 threads at the default orders, nµ = nma = 16, incl.
 finite parent widths) and saves it (~2.5 GB Float32); later runs load it
 (~7 s), and the cascade sweep itself takes ~2 s.
@@ -118,6 +125,10 @@ res = runcascade(t, hadronic; primary)
 res = runcascade(t, selected; primary)
 
 tlean = CascadeTable(two_body; cache = "W2.jls")         # or build only 2-body matrices
+
+plan = CascadePlan(t, selected)                           # compile once
+res = runcascade(plan; primary)                           # serial flat execution
+res = runcascade(plan; primary, parallel = :modes)        # one task per mode
 ```
 
 Ready-made filters (all return a `ChannelFilter`):

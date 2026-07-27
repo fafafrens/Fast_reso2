@@ -5,7 +5,8 @@ Structured, persistent decay-matrix tables for the full resonance cascade.
 
     dl = DecayList("decays_QM2016Plus_massorder.dat")
     t  = CascadeTable(dl; cache = "Wtables.jls")     # load, or build + save
-    res = runcascade(t, dl; primary = myprimaries)   # per-species, per-mode
+    plan = CascadePlan(t, dl)                        # compile topology once
+    res = runcascade(plan; primary = myprimaries)    # per-species, per-mode
 
 Design (see matrix_notes.pdf for details):
   * decay matrices are serialized; source identity and bytes remain in the
@@ -15,7 +16,9 @@ Design (see matrix_notes.pdf for details):
     equivalent channels to share an entry;
   * missing keys are built on demand and `prune!` removes unreferenced keys;
   * matrices are stored as Float32 while spectra accumulate in Float64;
-  * table construction parallelizes over independent channel keys.
+  * table construction parallelizes over independent channel keys;
+  * `CascadePlan` resolves keys and topology to flat, dense arrays and can run
+    independent Fourier modes on separate Julia tasks.
 """
 module CascadeTables
 
@@ -24,9 +27,10 @@ include("ParticleList.jl")
 using .DecaySpectra
 using .ParticleList
 using Serialization, SHA, Dates, Printf
-using LinearAlgebra: mul!
+using LinearAlgebra: axpy!, mul!
 
-export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate, DEFAULT_ORDERS,
+export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
+       prune!, validate, DEFAULT_ORDERS,
        savetables, loadtables, ParticleInfo, DecayChannel,
        isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
        ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
@@ -233,6 +237,44 @@ struct CascadeTable{G<:AbstractRange{Float64},N}
     W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
 end
 
+struct CascadeTarget
+    daughter::Int
+    weight::Float64
+end
+
+struct CascadeGroup{N}
+    matrices::NTuple{N,Matrix{Float32}}
+    targets::UnitRange{Int}
+end
+
+struct CascadeStep
+    parent::Int
+    groups::UnitRange{Int}
+end
+
+"""
+    CascadePlan(table, decay_list)
+
+Compile a filtered or complete decay topology into dense particle indices,
+direct matrix references, and flat step/group/target arrays. The table remains
+the keyed construction and cache representation; a plan is an in-memory
+snapshot for repeated [`runcascade`](@ref) calls.
+"""
+struct CascadePlan{T<:CascadeTable,N}
+    table::T
+    ids::Vector{Int}
+    particles::Vector{ParticleInfo}
+    steps::Vector{CascadeStep}
+    groups::Vector{CascadeGroup{N}}
+    targets::Vector{CascadeTarget}
+end
+
+mutable struct _CascadeGroupBuilder{N}
+    matrices::NTuple{N,Matrix{Float32}}
+    daughters::Vector{Int}
+    weights::Dict{Int,Float64}
+end
+
 """
     eachchannelkey(visit, dl; order = keys(dl.byparent))
 
@@ -334,7 +376,8 @@ end
 
 Order decaying parents feeder-before-fed, so every parent spectrum is complete
 before that parent decays. This is a topological sort of the enrolled feed-down
-graph. Among parents whose inputs are ready, process the heaviest first.
+graph. Among parents whose inputs are ready, process the heaviest first and use
+particle ID as a deterministic tie-break.
 
 A mass-only ordering is insufficient because a broad parent's spectral tail
 can reopen a channel to a heavier daughter. If the graph contains a cycle, no
@@ -342,18 +385,26 @@ exact single-sweep order exists; append all parents blocked by that cycle in
 descending mass order and warn that their cross feed-down is approximate.
 """
 function cascadeorder(dl::DecayList)
+    dependencies = Tuple{Int,Int}[]
+
+    # An enrolled parent → daughter slot is a dependency only when the daughter
+    # has a parent block in the cascade sweep.
+    eachchannelkey(dl) do parent_id, _channel, daughter_id, _key
+        if daughter_id != parent_id && haskey(dl.byparent, daughter_id)
+            push!(dependencies, (parent_id, daughter_id))
+        end
+    end
+    return _cascadeorder(dl, dependencies)
+end
+
+function _cascadeorder(dl::DecayList, dependencies)
     decaying_parents = collect(keys(dl.byparent))
     incoming_count = Dict(parent_id => 0 for parent_id in decaying_parents)
     downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
 
-    # An enrolled parent → daughter slot is a dependency only when the daughter
-    # also decays. Stable daughters are outputs, not steps in the cascade sweep.
-    eachchannelkey(dl) do parent_id, _channel, daughter_id, _key
-        daughter_decays = haskey(dl.byparent, daughter_id)
-        if daughter_id != parent_id && daughter_decays
-            push!(downstream[parent_id], daughter_id)
-            incoming_count[daughter_id] += 1
-        end
+    for (parent_id, daughter_id) in dependencies
+        push!(downstream[parent_id], daughter_id)
+        incoming_count[daughter_id] += 1
     end
 
     order = Int[]
@@ -368,8 +419,7 @@ function cascadeorder(dl::DecayList)
         if isempty(ready_parents)
             blocked_parents = sort!(
                 collect(unprocessed);
-                by = parent_id -> dl.parts[parent_id].mass,
-                rev = true,
+                by = parent_id -> (-dl.parts[parent_id].mass, parent_id),
             )
             @warn "cascade feed-down graph has a cycle (mutually reopening broad \
                    parents); $(length(blocked_parents)) species ordered by mass, cross \
@@ -379,7 +429,7 @@ function cascadeorder(dl::DecayList)
         end
 
         parent_id = argmax(
-            candidate -> dl.parts[candidate].mass,
+            candidate -> (dl.parts[candidate].mass, -candidate),
             ready_parents,
         )
         push!(order, parent_id)
@@ -391,6 +441,130 @@ function cascadeorder(dl::DecayList)
     end
 
     return order
+end
+
+function _planmatrices(
+    table::CascadeTable{G,N},
+    key::ChannelKey,
+) where {G,N}
+    matrices = table.W[key]
+    length(matrices) == N ||
+        throw(DimensionMismatch(
+            "table key $key has $(length(matrices)) matrices for $N modes",
+        ))
+
+    grid_length = length(table.grid)
+    expected_size = (grid_length, grid_length)
+    for (mode_index, matrix) in pairs(matrices)
+        size(matrix) == expected_size ||
+            throw(DimensionMismatch(
+                "table key $key mode index $mode_index has size $(size(matrix)); " *
+                "expected $expected_size",
+            ))
+    end
+    return ntuple(mode_index -> matrices[mode_index], Val(N))
+end
+
+function CascadePlan(
+    table::CascadeTable{G,N},
+    decay_list::DecayList,
+) where {G,N}
+    ids = sort!(collect(keys(decay_list.parts)))
+    particles = [decay_list.parts[particle_id] for particle_id in ids]
+    dense_index = Dict(
+        particle_id => index for (index, particle_id) in pairs(ids)
+    )
+
+    group_builders =
+        Dict{Int,Vector{_CascadeGroupBuilder{N}}}()
+    group_positions = Dict{Int,Dict{ChannelKey,Int}}()
+    matrix_cache =
+        Dict{ChannelKey,NTuple{N,Matrix{Float32}}}()
+    dependencies = Set{Tuple{Int,Int}}()
+
+    compile_order = sort!(collect(keys(decay_list.byparent)))
+    eachchannelkey(decay_list; order = compile_order) do parent_id, channel, daughter_id, key
+        builders = get!(group_builders, parent_id) do
+            _CascadeGroupBuilder{N}[]
+        end
+        positions = get!(group_positions, parent_id) do
+            Dict{ChannelKey,Int}()
+        end
+
+        group_index = get(positions, key, 0)
+        if group_index == 0
+            matrices = get!(matrix_cache, key) do
+                _planmatrices(table, key)
+            end
+            push!(
+                builders,
+                _CascadeGroupBuilder{N}(
+                    matrices,
+                    Int[],
+                    Dict{Int,Float64}(),
+                ),
+            )
+            group_index = length(builders)
+            positions[key] = group_index
+        end
+
+        daughter = dense_index[daughter_id]
+        builder = builders[group_index]
+        if haskey(builder.weights, daughter)
+            builder.weights[daughter] += channel.br
+        else
+            push!(builder.daughters, daughter)
+            builder.weights[daughter] = channel.br
+        end
+
+        if daughter_id != parent_id && haskey(decay_list.byparent, daughter_id)
+            push!(dependencies, (parent_id, daughter_id))
+        end
+    end
+
+    parent_order = _cascadeorder(decay_list, dependencies)
+    steps = CascadeStep[]
+    groups = CascadeGroup{N}[]
+    targets = CascadeTarget[]
+
+    for parent_id in parent_order
+        builders = get(group_builders, parent_id, nothing)
+        builders === nothing && continue
+
+        group_start = length(groups) + 1
+        for builder in builders
+            target_start = length(targets) + 1
+            for daughter in builder.daughters
+                push!(
+                    targets,
+                    CascadeTarget(daughter, builder.weights[daughter]),
+                )
+            end
+            push!(
+                groups,
+                CascadeGroup{N}(
+                    builder.matrices,
+                    target_start:length(targets),
+                ),
+            )
+        end
+        push!(
+            steps,
+            CascadeStep(
+                dense_index[parent_id],
+                group_start:length(groups),
+            ),
+        )
+    end
+
+    return CascadePlan{typeof(table),N}(
+        table,
+        ids,
+        particles,
+        steps,
+        groups,
+        targets,
+    )
 end
 
 function decayfor(key::ChannelKey, rules::Rules)
@@ -619,6 +793,142 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
         end
     end
 
+    return (F = spectra, Fprim = primary_spectra)
+end
+
+function _initialize_plan_spectra(
+    plan::CascadePlan{T,N},
+    primary,
+) where {T,N}
+    species_count = length(plan.ids)
+    grid_length = length(plan.table.grid)
+    spectra = Dict{Int,Vector{Vector{Float64}}}()
+    primary_spectra = Dict{Int,Vector{Vector{Float64}}}()
+    sizehint!(spectra, species_count)
+    sizehint!(primary_spectra, species_count)
+
+    # Each mode task receives one dense particle-indexed vector, avoiding a
+    # particle→mode container lookup in the numerical loop.
+    spectra_by_mode = ntuple(
+        _ -> Vector{Vector{Float64}}(undef, species_count),
+        Val(N),
+    )
+
+    for dense_index in eachindex(plan.ids)
+        particle_id = plan.ids[dense_index]
+        particle = plan.particles[dense_index]
+        mode_spectra = Vector{Vector{Float64}}(undef, N)
+        primary_modes = Vector{Vector{Float64}}(undef, N)
+
+        for mode_index in 1:N
+            mode = plan.table.modes[mode_index]
+            spectrum =
+                Vector{Float64}(primary(particle, mode, plan.table.grid))
+            length(spectrum) == grid_length ||
+                throw(DimensionMismatch(
+                    "primary spectrum for particle $particle_id, mode $mode has " *
+                    "length $(length(spectrum)); expected $grid_length",
+                ))
+            mode_spectra[mode_index] = spectrum
+            primary_modes[mode_index] = copy(spectrum)
+            spectra_by_mode[mode_index][dense_index] = spectrum
+        end
+
+        spectra[particle_id] = mode_spectra
+        primary_spectra[particle_id] = primary_modes
+    end
+    return spectra, primary_spectra, spectra_by_mode
+end
+
+function _apply_plan_mode!(
+    mode_spectra::Vector{Vector{Float64}},
+    plan::CascadePlan{T,N},
+    mode_index::Int,
+    scratch::Vector{Float64},
+) where {T,N}
+    @inbounds for step in plan.steps
+        parent_spectrum = mode_spectra[step.parent]
+
+        for group_index in step.groups
+            group = plan.groups[group_index]
+            matrix = group.matrices[mode_index]
+
+            if length(group.targets) == 1
+                target = plan.targets[first(group.targets)]
+                daughter_spectrum = mode_spectra[target.daughter]
+                mul!(
+                    daughter_spectrum,
+                    matrix,
+                    parent_spectrum,
+                    target.weight,
+                    1.0,
+                )
+            else
+                mul!(scratch, matrix, parent_spectrum)
+                for target_index in group.targets
+                    target = plan.targets[target_index]
+                    daughter_spectrum = mode_spectra[target.daughter]
+                    axpy!(target.weight, scratch, daughter_spectrum)
+                end
+            end
+        end
+    end
+    return mode_spectra
+end
+
+function _apply_plan!(
+    spectra_by_mode::NTuple{N,Vector{Vector{Float64}}},
+    plan::CascadePlan{T,N},
+    parallel::Symbol,
+) where {T,N}
+    grid_length = length(plan.table.grid)
+    if parallel === :modes && Threads.nthreads() > 1 && N > 1
+        @sync for mode_index in 1:N
+            Threads.@spawn begin
+                scratch = Vector{Float64}(undef, grid_length)
+                _apply_plan_mode!(
+                    spectra_by_mode[mode_index],
+                    plan,
+                    mode_index,
+                    scratch,
+                )
+            end
+        end
+    else
+        scratch = Vector{Float64}(undef, grid_length)
+        for mode_index in 1:N
+            _apply_plan_mode!(
+                spectra_by_mode[mode_index],
+                plan,
+                mode_index,
+                scratch,
+            )
+        end
+    end
+    return spectra_by_mode
+end
+
+"""
+    runcascade(plan::CascadePlan; primary, parallel = :serial) -> (F, Fprim)
+
+Run a compiled plan without topology traversal, key construction, or dictionary
+lookup in the numerical loop. `parallel = :modes` assigns each Fourier mode to
+an independent task when multiple Julia threads and modes are available.
+Primary callbacks are always initialized serially. A plan is read-only and may
+be shared by concurrent calls whose callbacks and outputs are independent.
+"""
+function runcascade(
+    plan::CascadePlan;
+    primary,
+    parallel = :serial,
+)
+    parallel === :serial || parallel === :modes ||
+        throw(ArgumentError(
+            "parallel must be :serial or :modes, got $(repr(parallel))",
+        ))
+    spectra, primary_spectra, spectra_by_mode =
+        _initialize_plan_spectra(plan, primary)
+    _apply_plan!(spectra_by_mode, plan, parallel::Symbol)
     return (F = spectra, Fprim = primary_spectra)
 end
 

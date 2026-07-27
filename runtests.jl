@@ -10,6 +10,7 @@
 
 include("DecaySpectra.jl")
 using .DecaySpectra
+using Logging
 using QuadGK   # test harness only: outer adaptive integrals
 using Printf
 
@@ -429,11 +430,355 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     tab = CascadeTable(dl; grid = g, orders = ord, modes = [0], cache = nothing)
     prim(p, n, gr) = (n == 0 && p.id == 1) ? [exp(-hypot(p.mass, q) / 0.15) for q in gr] : zeros(length(gr))
     res = runcascade(tab, dl; primary = prim)
+    planned = runcascade(CascadePlan(tab, dl); primary = prim)
+    for particle_id in keys(res.F), mode_index in eachindex(tab.modes)
+        reference = res.F[particle_id][mode_index]
+        error = maximum(abs.(planned.F[particle_id][mode_index] .- reference)) /
+                max(maximum(abs.(reference)), 1.0)
+        @assert error ≤ 1e-12
+        @assert planned.Fprim[particle_id][mode_index] ==
+                res.Fprim[particle_id][mode_index]
+    end
     fda = sum(res.F[4][1] .- res.Fprim[4][1])                 # P→D→a downstream feed-down
     @assert fda > 0                                           # was exactly 0.0 under mass-order
     @printf("   P before D; downstream P→D→a feed-down = %.2e (was 0)\n", fda)
     println("   PASS")
 end
+
+# ---------------------------------------------------------------- test 7e
+println("== 7e. Flat CascadePlan: grouping, reuse, threading, validation ==")
+
+function assert_plan_matches(candidate, reference)
+    @assert Set(keys(candidate.F)) == Set(keys(reference.F))
+    @assert Set(keys(candidate.Fprim)) == Set(keys(reference.Fprim))
+    for particle_id in keys(reference.F)
+        @assert length(candidate.F[particle_id]) ==
+                length(reference.F[particle_id])
+        for mode_index in eachindex(reference.F[particle_id])
+            expected = reference.F[particle_id][mode_index]
+            actual = candidate.F[particle_id][mode_index]
+            error = maximum(abs.(actual .- expected)) /
+                    max(maximum(abs.(expected)), 1.0)
+            @assert error ≤ 1e-12
+            @assert candidate.Fprim[particle_id][mode_index] ==
+                    reference.Fprim[particle_id][mode_index]
+        end
+    end
+    return nothing
+end
+
+# The ordinary two-mode topology covers repeated daughter slots (rho → pi pi)
+# and verifies that the compiled arrays form gap-free flat ranges.
+plan7 = CascadePlan(tab7, dl7)
+planned7 = runcascade(plan7; primary = prim7)
+assert_plan_matches(planned7, res7)
+@assert plan7.ids == sort!(collect(keys(dl7.parts)))
+@assert [index for step in plan7.steps for index in step.groups] ==
+        collect(eachindex(plan7.groups))
+@assert [index for group in plan7.groups for index in group.targets] ==
+        collect(eachindex(plan7.targets))
+
+# A plan keeps references to table matrices; no matrix payload is copied.
+matrix_pool7 = [
+    matrix
+    for matrices in values(tab7.W)
+    for matrix in matrices
+]
+@assert all(
+    any(matrix === table_matrix for table_matrix in matrix_pool7)
+    for group in plan7.groups
+    for matrix in group.matrices
+)
+
+# Mode tasks preserve the serial operation order within every mode.
+threaded7 = runcascade(plan7; primary = prim7, parallel = :modes)
+@assert threaded7.F == planned7.F
+@assert threaded7.Fprim == planned7.Fprim
+
+# Reuse with a different callback must not retain or mutate run state.
+prim7alt(p, n, grid) =
+    (1.0 + p.id / 10) * (n == 0 ? 0.7 : -0.03) *
+    [exp(-hypot(p.mass, q) / (T * 1.1)) for q in grid]
+planned7_snapshot = deepcopy(planned7.F)
+alternate7 = runcascade(plan7; primary = prim7alt)
+alternate7_reference = runcascade(tab7, dl7; primary = prim7alt)
+assert_plan_matches(alternate7, alternate7_reference)
+@assert planned7.F == planned7_snapshot
+
+# The plan itself is immutable during execution and may serve concurrent calls.
+task7a = Threads.@spawn runcascade(plan7; primary = prim7)
+task7b = Threads.@spawn runcascade(plan7; primary = prim7alt)
+concurrent7a, concurrent7b = fetch(task7a), fetch(task7b)
+@assert concurrent7a.F == planned7.F
+@assert concurrent7a.Fprim == planned7.Fprim
+@assert concurrent7b.F == alternate7.F
+@assert concurrent7b.Fprim == alternate7.Fprim
+
+# A filtered topology compiles against the already-built full table.
+two_body7 = filter(nbody(2), dl7)
+two_body_plan7 = CascadePlan(tab7, two_body7)
+assert_plan_matches(
+    runcascade(two_body_plan7; primary = prim7),
+    runcascade(tab7, two_body7; primary = prim7),
+)
+empty_decay_list7 =
+    filter(channelfilter((_parent, _channel, _daughters) -> false), dl7)
+empty_plan7 = CascadePlan(tab7, empty_decay_list7)
+@assert isempty(empty_plan7.steps)
+@assert isempty(empty_plan7.groups)
+@assert isempty(empty_plan7.targets)
+empty_result7 = runcascade(empty_plan7; primary = prim7)
+@assert empty_result7.F == empty_result7.Fprim
+
+# Execution no longer consults the keyed table after plan construction.
+snapshot_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    copy(tab7.meta),
+    copy(tab7.W),
+)
+snapshot_plan7 = CascadePlan(snapshot_table7, dl7)
+snapshot_result7 = runcascade(snapshot_plan7; primary = prim7)
+empty!(snapshot_table7.W)
+@assert runcascade(snapshot_plan7; primary = prim7).F == snapshot_result7.F
+
+# Mode position, rather than the numerical mode value, selects a matrix.
+reversed_W7 = Dict{ChannelKey,Vector{Matrix{Float32}}}(
+    key => reverse(matrices) for (key, matrices) in tab7.W
+)
+reversed_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    reverse(tab7.modes),
+    copy(tab7.meta),
+    reversed_W7,
+)
+reversed_plan7 = CascadePlan(reversed_table7, dl7)
+reversed_serial7 = runcascade(reversed_plan7; primary = prim7)
+assert_plan_matches(
+    reversed_serial7,
+    runcascade(reversed_table7, dl7; primary = prim7),
+)
+@assert runcascade(
+    reversed_plan7;
+    primary = prim7,
+    parallel = :modes,
+).F == reversed_serial7.F
+
+one_mode_W7 = Dict{ChannelKey,Vector{Matrix{Float32}}}(
+    key => [matrices[1]] for (key, matrices) in tab7.W
+)
+one_mode_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    (tab7.modes[1],),
+    copy(tab7.meta),
+    one_mode_W7,
+)
+one_mode_plan7 = CascadePlan(one_mode_table7, dl7)
+one_mode_serial7 = runcascade(one_mode_plan7; primary = prim7)
+assert_plan_matches(
+    one_mode_serial7,
+    runcascade(one_mode_table7, dl7; primary = prim7),
+)
+@assert runcascade(
+    one_mode_plan7;
+    primary = prim7,
+    parallel = :modes,
+).F == one_mode_serial7.F
+
+# Invalid execution options fail before the callback is invoked.
+for invalid_parallel in (:threads, "modes", 2)
+    let threw = false
+        try
+            runcascade(
+                plan7;
+                primary = (_args...) -> error("primary must not be called"),
+                parallel = invalid_parallel,
+            )
+        catch error
+            threw =
+                error isa ArgumentError &&
+                occursin(":serial or :modes", sprint(showerror, error))
+        end
+        @assert threw
+    end
+end
+
+let threw = false
+    try
+        runcascade(
+            plan7;
+            primary = (_particle, _mode, grid) -> zeros(length(grid) - 1),
+        )
+    catch error
+        threw = error isa DimensionMismatch
+    end
+    @assert threw
+end
+
+# Missing or malformed table payloads are rejected while compiling the plan.
+missing_W7 = copy(tab7.W)
+missing_key7 = first(keys(missing_W7))
+delete!(missing_W7, missing_key7)
+missing_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    copy(tab7.meta),
+    missing_W7,
+)
+let threw = false
+    try
+        CascadePlan(missing_table7, dl7)
+    catch error
+        threw = error isa KeyError && error.key == missing_key7
+    end
+    @assert threw
+end
+
+malformed_W7 = copy(tab7.W)
+malformed_key7 = first(keys(malformed_W7))
+malformed_W7[malformed_key7] = malformed_W7[malformed_key7][1:1]
+malformed_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    copy(tab7.meta),
+    malformed_W7,
+)
+let threw = false
+    try
+        CascadePlan(malformed_table7, dl7)
+    catch error
+        threw = error isa DimensionMismatch
+    end
+    @assert threw
+end
+
+bad_shape_W7 = copy(tab7.W)
+bad_shape_key7 = first(keys(bad_shape_W7))
+bad_shape_matrices7 = copy(bad_shape_W7[bad_shape_key7])
+bad_shape_matrices7[1] =
+    zeros(Float32, length(tab7.grid) - 1, length(tab7.grid))
+bad_shape_W7[bad_shape_key7] = bad_shape_matrices7
+bad_shape_table7 = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    copy(tab7.meta),
+    bad_shape_W7,
+)
+let threw = false
+    try
+        CascadePlan(bad_shape_table7, dl7)
+    catch error
+        threw = error isa DimensionMismatch
+    end
+    @assert threw
+end
+
+# Equal-mass daughters share one transfer. Repeated slots/channels accumulate
+# independently for each dense destination.
+let
+    grid = range(0.0, 2.0, length = 17)
+    orders = (nq = 8, nθ = 4, nµ = 4)
+    parts = Dict(
+        10 => ParticleInfo(10, "P", 1.5, 0.0, 1.0, 0, 0),
+        11 => ParticleInfo(11, "Q", 1.5, 0.0, 1.0, 0, 0),
+        20 => ParticleInfo(20, "a", 0.2, 0.0, 1.0, 0, 0),
+        21 => ParticleInfo(21, "b", 0.2, 0.0, 1.0, 0, 0),
+        30 => ParticleInfo(30, "x", 0.3, 0.0, 1.0, 0, 0),
+    )
+    byparent = Dict(
+        10 => [
+            DecayChannel(10, 0.2, [20, 30]),
+            DecayChannel(10, 0.3, [21, 30]),
+            DecayChannel(10, 0.1, [20, 30]),
+        ],
+        11 => [DecayChannel(11, 0.4, [21, 30])],
+    )
+    decay_list = DecayList(parts, byparent, "grouped", "grouped")
+    table = CascadeTable(
+        decay_list;
+        grid,
+        orders,
+        modes = [0, 2],
+        cache = nothing,
+    )
+    plan = CascadePlan(table, decay_list)
+    @assert plan.ids[[step.parent for step in plan.steps]] == [10, 11]
+    @assert length(plan.groups) == 4
+    @assert sort([length(group.targets) for group in plan.groups]) ==
+            [1, 1, 1, 2]
+    @assert plan.groups[first(plan.steps[1].groups)].matrices[1] ===
+            plan.groups[first(plan.steps[2].groups)].matrices[1]
+
+    shared_group = only(
+        group for group in plan.groups if length(group.targets) == 2
+    )
+    shared_weights = Dict(
+        plan.ids[plan.targets[index].daughter] =>
+            plan.targets[index].weight
+        for index in shared_group.targets
+    )
+    @assert isapprox(shared_weights[20], 0.3; atol = 1e-15)
+    @assert isapprox(shared_weights[21], 0.3; atol = 1e-15)
+
+    primary(p, n, gr) =
+        (n == 0 ? 1.0 : 0.04) *
+        [exp(-hypot(p.mass, q) / T) for q in gr]
+    assert_plan_matches(
+        runcascade(plan; primary),
+        runcascade(table, decay_list; primary),
+    )
+end
+
+# A cycle retains the legacy deterministic mass-descending approximate sweep.
+let
+    grid = range(0.0, 1.0, length = 7)
+    parts = Dict(
+        101 => ParticleInfo(101, "P", 1.0, 0.1, 1.0, 0, 0),
+        102 => ParticleInfo(102, "Q", 1.0, 0.1, 1.0, 0, 0),
+        103 => ParticleInfo(103, "x", 0.1, 0.0, 1.0, 0, 0),
+    )
+    byparent = Dict(
+        101 => [DecayChannel(101, 0.2, [102, 103])],
+        102 => [DecayChannel(102, 0.3, [101, 103])],
+    )
+    decay_list = DecayList(parts, byparent, "cycle", "cycle")
+    matrices = Dict{ChannelKey,Vector{Matrix{Float32}}}()
+    CascadeTables.eachchannelkey(decay_list) do _parent, _channel, _daughter, key
+        get!(matrices, key) do
+            [fill(0.002f0, length(grid), length(grid))]
+        end
+    end
+    table = CascadeTable(
+        grid,
+        tab7.orders,
+        (0,),
+        Dict{Symbol,Any}(),
+        matrices,
+    )
+    cycle_log = IOBuffer()
+    plan = with_logger(SimpleLogger(cycle_log, Logging.Warn)) do
+        CascadePlan(table, decay_list)
+    end
+    @assert occursin("cycle", lowercase(String(take!(cycle_log))))
+    @assert plan.ids[[step.parent for step in plan.steps]] == [101, 102]
+    @assert length(plan.groups) == 4
+    primary(p, _n, gr) = fill(p.id == 101 ? 1.0 : 0.1, length(gr))
+    reference = with_logger(SimpleLogger(IOBuffer(), Logging.Error)) do
+        runcascade(table, decay_list; primary)
+    end
+    assert_plan_matches(
+        runcascade(plan; primary),
+        reference,
+    )
+end
+
+println("   PASS")
 
 # ---------------------------------------------------------------- test 8
 println("== 8. Public API contract: shapes, types, dispatch, invariants ==")

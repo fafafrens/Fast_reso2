@@ -1,6 +1,9 @@
 # Compiled and Partially Threaded Cascade Plan
 
-Status: design proposal; not yet implemented.
+Status: implementation and correctness validation complete. Deterministic
+full-topology benchmarks are recorded below; resident production-cache and
+one/two/four-thread scaling measurements remain pending. The keyed one-shot
+executor remains as the compatibility and numerical-reference path.
 
 ## 1. Goal
 
@@ -62,7 +65,7 @@ A `CascadePlan` is therefore an in-memory, topology-specific view of the
 table.  It stores dense particle indices and direct references to the existing
 matrices.  It does not copy matrix payloads and is not serialized.
 
-## 3. Proposed representation
+## 3. Implemented representation
 
 ```julia
 struct CascadeTarget
@@ -70,21 +73,23 @@ struct CascadeTarget
     weight::Float64
 end
 
-struct CascadeGroup
-    matrices::Vector{Matrix{Float32}}
-    targets::Vector{CascadeTarget}
+struct CascadeGroup{N}
+    matrices::NTuple{N,Matrix{Float32}}
+    targets::UnitRange{Int}
 end
 
 struct CascadeStep
     parent::Int
-    groups::Vector{CascadeGroup}
+    groups::UnitRange{Int}
 end
 
-struct CascadePlan{T<:CascadeTable}
+struct CascadePlan{T<:CascadeTable,N}
     table::T
     ids::Vector{Int}
     particles::Vector{ParticleInfo}
     steps::Vector{CascadeStep}
+    groups::Vector{CascadeGroup{N}}
+    targets::Vector{CascadeTarget}
 end
 ```
 
@@ -95,7 +100,9 @@ The fields have the following meanings:
 - `steps` follows the exact feeder-before-fed order from `cascadeorder`;
 - one `CascadeGroup` represents one exact `(parent, ChannelKey)` pair;
 - `matrices[m]` is the already-built decay matrix for mode `m`;
-- each target contains a dense daughter index and its total branching weight.
+- each target contains a dense daughter index and its total branching weight;
+- step and group ranges index contiguous flat `groups` and `targets` arrays,
+  avoiding one separately allocated vector per step or group.
 
 Keeping `table` in the plan explicitly owns the referenced matrices.  This is
 also the correct lifetime model if table matrices later become mmap-backed
@@ -155,14 +162,15 @@ to two parents act on different parent spectra.  Parent steps must retain the
 topological order.  Stable first-seen ordering of groups and targets should be
 used for reproducibility.
 
-A missing table entry naturally throws during construction at
-`table.W[key]`; no separate validation layer is needed.  No grid, topology, or
-hash validation belongs in the hot execution path.
+A missing table entry naturally throws during construction at `table.W[key]`.
+Matrix count and shape are also validated during construction. No key, grid,
+topology, or hash validation belongs in the hot execution path.
 
 The dependency edges should be deduplicated even when several slots or
 channels connect the same parent and daughter.  A dependency cycle has no
-exact single-sweep order; plan construction should report it rather than hide
-it inside repeated execution.
+exact single-sweep order; construction warns once and preserves the legacy
+deterministic mass-descending approximate fallback, with particle ID as the
+tie-break.
 
 ## 5. Serial execution
 
@@ -179,17 +187,19 @@ For one Fourier mode, the numerical loop is conceptually
 for step in plan.steps
     Fp = denseF[step.parent][mode_index]
 
-    for group in step.groups
+    for group_index in step.groups
+        group = plan.groups[group_index]
         W = group.matrices[mode_index]
 
         if length(group.targets) == 1
-            target = only(group.targets)
+            target = plan.targets[first(group.targets)]
             Fd = denseF[target.daughter][mode_index]
             mul!(Fd, W, Fp, target.weight, 1.0)
         else
             mul!(scratch, W, Fp)
 
-            for target in group.targets
+            for target_index in group.targets
+                target = plan.targets[target_index]
                 Fd = denseF[target.daughter][mode_index]
                 axpy!(target.weight, scratch, Fd)
             end
@@ -251,12 +261,12 @@ function apply_plan!(denseF, plan; parallel)
        length(plan.table.modes) > 1
         @sync for m in eachindex(plan.table.modes)
             Threads.@spawn begin
-                scratch = zeros(Float64, length(plan.table.grid))
+                scratch = Vector{Float64}(undef, length(plan.table.grid))
                 apply_mode!(denseF, plan, m, scratch)
             end
         end
     else
-        scratch = zeros(Float64, length(plan.table.grid))
+        scratch = Vector{Float64}(undef, length(plan.table.grid))
         for m in eachindex(plan.table.modes)
             apply_mode!(denseF, plan, m, scratch)
         end
@@ -505,37 +515,58 @@ Initial acceptance criteria:
 - a measurable mode-threading gain on two-mode workloads, reported without
   assuming ideal two-way scaling.
 
+### Current deterministic benchmark
+
+`benchmarks/cascade_plan.jl` exercises the complete bundled 1,518-particle
+topology with distinct resident matrices, without requiring the production
+cache. On the implementation host with Julia 1.12.6, two Julia threads, one
+BLAS thread, `G = 32`, two modes, and five median samples:
+
+| path | median | allocations | speedup vs keyed |
+|---|---:|---:|---:|
+| keyed one-shot | 40.090 ms | 33.295 MiB | 1.00x |
+| flat serial | 19.360 ms | 3.168 MiB | 2.07x |
+| flat mode-threaded | 10.206 ms | 3.170 MiB | 3.93x |
+
+Plan compilation was 38.868 ms and 67.112 MiB, reported separately because it
+is amortized across repeated runs. The isolated compiled apply measured
+18.422 ms serial and 9.026 ms mode-threaded. The normalized error against the
+keyed reference was `4.646e-14`; serial and mode-threaded outputs were bitwise
+equal. These measurements include numerical matrix-vector applications with
+deterministic payloads while excluding matrix construction and cache I/O. They
+are not claims about the multi-gigabyte production cache.
+
 ## 12. Implementation stages
 
-### Stage 1: compiled serial plan
+### Stage 1: compiled serial plan — complete
 
 - add dense indices, direct matrix references, and ordered parent steps;
 - preserve the current slot operation order;
 - establish the reference tests and benchmark harness.
 
-### Stage 2: grouped serial plan
+### Stage 2: grouped serial plan — complete
 
 - coalesce identical `(parent, key, daughter)` transfers;
 - group all destinations of one `(parent, key)`;
 - use direct `mul!` for singleton groups and scratch/scatter otherwise.
 
-### Stage 3: mode-level threading
+### Stage 3: mode-level threading — complete
 
 - move the task boundary outside the entire per-mode cascade;
 - allocate one scratch vector per mode task;
 - keep primary initialization serial;
 - add serial/threaded determinism and concurrent-call tests.
 
-### Stage 4: decide compatibility behavior
+### Stage 4: compatibility behavior — complete
 
-After measuring compilation cost, decide whether
+The existing
 
 ```julia
 runcascade(table, decaylist; primary)
 ```
 
-should construct a temporary plan or retain the one-shot implementation.
-Repeated workloads should explicitly construct and reuse `CascadePlan`.
+retains its one-shot implementation as a compatibility and numerical-reference
+path. Repeated workloads explicitly construct and reuse `CascadePlan`.
 
 ### Stage 5: optional wider parallelism
 
