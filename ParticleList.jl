@@ -25,30 +25,27 @@ struct ParticleInfo
     degeneracy::Float64
     baryon::Int
     charge::Int
-    strangeness::Int      # S  (field 7)
-    charm::Int            # C  (field 8) — all zero in the QM2016 list
-    twiceisospin::Int     # 2I (field 10 × 2): integer 0,1,2,3 for I = 0,½,1,1½
+    strangeness::Int      # S, file field 7
+    charm::Int            # C, file field 8
+    twiceisospin::Int     # twice I, derived from file field 10
 end
 
-# 7-arg form (pre-quantum-number callers, tests) defaults S = C = 0, 2I = 0.
-ParticleInfo(id, name, mass, width, deg, baryon, charge) =
-    ParticleInfo(id, name, mass, width, deg, baryon, charge, 0, 0, 0)
+# Constructor with zero strangeness, charm, and isospin.
+ParticleInfo(id, name, mass, width, degeneracy, baryon, charge) =
+    ParticleInfo(id, name, mass, width, degeneracy, baryon, charge, 0, 0, 0)
 
-# --- derived quantities (exact from stored fields) -------------------------
 "Physical isospin I (half-integer), recovered from the stored 2I."
-isospin(p::ParticleInfo)        = p.twiceisospin / 2
-"Physical spin J (half-integer), from the 2J+1 spin degeneracy (charge states
-are split and isospin is separate, so `degeneracy` is spin-only — even the
-high-spin baryons like Δ(2950), J=15/2, deg=16)."
-spin(p::ParticleInfo)           = (p.degeneracy - 1) / 2
+isospin(particle::ParticleInfo) = particle.twiceisospin / 2
+"Physical spin J (half-integer), recovered from the 2J+1 spin degeneracy."
+spin(particle::ParticleInfo) = (particle.degeneracy - 1) / 2
 "True for a baryon (nonzero baryon number)."
-isbaryon(p::ParticleInfo)       = p.baryon != 0
+isbaryon(particle::ParticleInfo) = particle.baryon != 0
 "True for a meson (zero baryon number)."
-ismeson(p::ParticleInfo)        = p.baryon == 0
+ismeson(particle::ParticleInfo) = particle.baryon == 0
 "True for an antiparticle (negative id in this list's convention)."
-isantiparticle(p::ParticleInfo) = p.id < 0
+isantiparticle(particle::ParticleInfo) = particle.id < 0
 "True for a strange hadron (nonzero strangeness)."
-isstrange(p::ParticleInfo)      = p.strangeness != 0
+isstrange(particle::ParticleInfo) = particle.strangeness != 0
 
 struct DecayChannel
     parent::Int
@@ -57,55 +54,61 @@ struct DecayChannel
 end
 
 """
-    read_decaylist(path) -> (particles, byparent)
+    read_decaylist(path) -> (particles, channels_by_parent)
 
 `particles :: Dict{Int,ParticleInfo}` keyed by id, and
-`byparent :: Dict{Int,Vector{DecayChannel}}` — every particle's channels
-grouped under its id (absent key = no channel lines for that id).
+`channels_by_parent :: Dict{Int,Vector{DecayChannel}}` groups channels by
+parent id (absent key = no channel rows for that id).
 """
 function read_decaylist(path::AbstractString)
     particles = Dict{Int,ParticleInfo}()
-    byparent = Dict{Int,Vector{DecayChannel}}()
-    for ln in eachline(path)
-        s = split(ln)                          # whitespace/tab tolerant
-        (isempty(s) || startswith(s[1], "#")) && continue
-        # The two line types are distinguished purely by field count: headers
-        # have 12 fields, channel lines always 8 (5 daughter slots, 0-padded).
-        # Safe because particle names contain no whitespace in this format.
-        if length(s) == 12
-            # header: id name mass width degeneracy B S C Bot I Q n_channels
-            #         1  2    3    4     5          6 7 8 9   10 11 12
-            # (Bot (9) and the redundant trailing count (12) are skipped;
-            #  channels carry their own parent id, so 12 is never needed)
-            id = parse(Int, s[1])
-            particles[id] = ParticleInfo(id, String(s[2]),
-                parse(Float64, s[3]), parse(Float64, s[4]), parse(Float64, s[5]),
-                round(Int, parse(Float64, s[6])), round(Int, parse(Float64, s[11])),
-                round(Int, parse(Float64, s[7])), round(Int, parse(Float64, s[8])),
-                round(Int, 2 * parse(Float64, s[10])))     # store 2I as an integer
-        elseif length(s) == 8
-            # channel: id n_daughters BR d1 d2 d3 d4 d5
-            # only the first n_daughters slots are meaningful, the rest are 0.
-            # Stable particles appear as a self-channel (n_daughters = 1,
-            # d1 = id, BR = 1) — kept as-is; the cascade skips them by nd == 1.
-            parent = parse(Int, s[1])
-            nd = parse(Int, s[2])
-            1 ≤ nd ≤ 5 || error("channel n_daughters=$nd out of range 1–5: $ln")
-            br = parse(Float64, s[3])
-            ds = [parse(Int, s[3 + k]) for k in 1:nd]
-            # the unused slots MUST be 0-padded: a nonzero slot past nd means the
-            # declared count is wrong and daughters would be silently dropped
-            # (an under-declared multiplicity or a lost radiative photon). Fail
-            # loudly rather than parse a corrupt channel.
-            all(k -> parse(Int, s[3 + k]) == 0, nd+1:5) ||
-                error("channel declares $nd daughters but has nonzero padding: $ln")
-            push!(get!(byparent, parent, DecayChannel[]), DecayChannel(parent, br, ds))
+    channels_by_parent = Dict{Int,Vector{DecayChannel}}()
+
+    for line in eachline(path)
+        fields = split(line)
+        (isempty(fields) || startswith(fields[1], "#")) && continue
+
+        # Field count identifies the row type because names contain no whitespace.
+        if length(fields) == 12
+            particle_id = parse(Int, fields[1])
+            name = String(fields[2])
+            mass = parse(Float64, fields[3])
+            width = parse(Float64, fields[4])
+            degeneracy = parse(Float64, fields[5])
+            baryon = round(Int, parse(Float64, fields[6]))
+            charge = round(Int, parse(Float64, fields[11]))
+            strangeness = round(Int, parse(Float64, fields[7]))
+            charm = round(Int, parse(Float64, fields[8]))
+            twice_isospin = round(Int, 2 * parse(Float64, fields[10]))
+
+            # Bottomness (field 9) and the declared channel count (12) are not stored.
+            particles[particle_id] = ParticleInfo(
+                particle_id, name, mass, width, degeneracy, baryon, charge,
+                strangeness, charm, twice_isospin,
+            )
+        elseif length(fields) == 8
+            parent_id = parse(Int, fields[1])
+            daughter_count = parse(Int, fields[2])
+            1 ≤ daughter_count ≤ 5 ||
+                error("channel n_daughters=$daughter_count out of range 1–5: $line")
+
+            branching_ratio = parse(Float64, fields[3])
+            daughter_ids = [parse(Int, fields[3 + index])
+                            for index in 1:daughter_count]
+
+            # Reject nonzero padding so under-declared daughters are not dropped.
+            all(index -> parse(Int, fields[3 + index]) == 0,
+                daughter_count + 1:5) ||
+                error("channel declares $daughter_count daughters but has nonzero padding: $line")
+
+            channel = DecayChannel(parent_id, branching_ratio, daughter_ids)
+            parent_channels = get!(channels_by_parent, parent_id, DecayChannel[])
+            push!(parent_channels, channel)
         else
-            # fail loudly: a silently mis-split line would corrupt the cascade
-            error("unrecognized line ($(length(s)) fields): $ln")
+            error("unrecognized line ($(length(fields)) fields): $line")
         end
     end
-    return particles, byparent
+    return particles, channels_by_parent
 end
 
 end # module
