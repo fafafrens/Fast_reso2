@@ -348,19 +348,39 @@ println("   PASS")
 # ---------------------------------------------------------------- test 7b
 println("== 7b. Channel filtering: ChannelFilter selection, combinators, reuse ==")
 # dl7 = ρ→ππ (2-body, pid 1) and ω→ππϖ (3-body, pid 3)
-@assert  haskey(filter(nbody(2), dl7).byparent, 1) && !haskey(filter(nbody(2), dl7).byparent, 3)
-@assert !haskey(filter(nbody(3), dl7).byparent, 1) &&  haskey(filter(nbody(3), dl7).byparent, 3)
-# combinators compose booleanly
-@assert haskey(filter(nbody(2) | nbody(3), dl7).byparent, 1)     # union keeps both parents
-@assert isempty(filter(nbody(2) & nbody(3), dl7).byparent)       # no channel is both
-@assert haskey(filter(!nbody(3), dl7).byparent, 1) && !haskey(filter(!nbody(3), dl7).byparent, 3)
-# name / id / mass selectors
-@assert  haskey(filter(fromparent("om"), dl7).byparent, 3) && !haskey(filter(fromparent("om"), dl7).byparent, 1)
-@assert length(filter(fromid(1), dl7).byparent) == 1 && haskey(filter(fromid(1), dl7).byparent, 1)
-@assert isempty(filter(parentmass(0.0, 0.5), dl7).byparent)      # both parents heavier
+let
+    parentids(selection) = Set(keys(filter(selection, dl7).byparent))
+    # Channel properties and boolean composition.
+    @assert parentids(nbody(2)) == Set([1])
+    @assert parentids(nbody(3)) == Set([3])
+    @assert parentids(nbody(2) | nbody(3)) == Set([1, 3])
+    @assert isempty(parentids(nbody(2) & nbody(3)))
+    @assert parentids(!nbody(3)) == Set([1])
+    @assert parentids(brabove(0.8)) == Set([3])
+
+    # Parent properties.
+    @assert parentids(fromparent("om")) == Set([3])
+    @assert parentids(fromid(1)) == Set([1])
+    @assert isempty(parentids(parentmass(0.0, 0.5)))
+    @assert parentids(mesonicparent()) == Set([1, 3])
+    @assert parentids(parentstrangeness(0)) == Set([1, 3])
+    @assert parentids(parentisospin(0)) == Set([1, 3])
+    @assert isempty(parentids(baryonicparent()))
+    @assert isempty(parentids(strangeparent()))
+    @assert isempty(parentids(charmparent()))
+
+    # Daughter properties.
+    @assert parentids(todaughter("pi0")) == Set([3])
+    @assert parentids(toid(4)) == Set([3])
+    @assert parentids(daughtermass(0.139, 0.140)) == Set([1])
+end
+
 # an all-true filter reproduces the full cascade bit-for-bit, REUSING tab7 in
 # memory (build once, filter freely — no rebuild)
 allpass = filter(channelfilter((p, ch, ds) -> true), dl7)
+@assert allpass.parts === dl7.parts
+@assert allpass.byparent == dl7.byparent
+@assert allpass.path == dl7.path && allpass.sha == dl7.sha
 resall = runcascade(tab7, allpass; primary = prim7)
 @assert resall.F[2][1] == res7.F[2][1] && resall.F[2][2] == res7.F[2][2]
 # restricting to 2-body drops the ω feed-down: mode-0 pion yield falls but stays

@@ -48,6 +48,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
 | `runtests.jl`       | Test suite (see below) |
+| `cascade_plan.md`   | Design for compiled, grouped, and partially threaded cascade execution |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 | `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
@@ -106,12 +107,17 @@ apply with no change to `runcascade`/`CascadeTable`. Filters are values of a
 composable `ChannelFilter` type (combine with `&`, `|`, `!`):
 
 ```julia
-t   = CascadeTable(dl; cache = "Wtables.jls")            # full table, built once
-res = runcascade(t, filter(nbody(2), dl); primary)       # 2-body only — REUSES the full table
-res = runcascade(t, filter(nbody(2,3) & !todaughter("gamma"), dl); primary)
-res = runcascade(t, filter(parentmass(0, 1) | fromparent("omega"), dl); primary)
+t = CascadeTable(dl; cache = "Wtables.jls")              # full table, built once
 
-tlean = CascadeTable(filter(nbody(2), dl); cache = "W2.jls")  # or build only 2-body matrices
+two_body = filter(nbody(2), dl)
+hadronic = filter(nbody(2, 3) & !todaughter("Gamma"), dl)
+selected = filter(parentmass(0, 1) | fromparent("omega"), dl)
+
+res = runcascade(t, two_body; primary)                    # REUSES the full table
+res = runcascade(t, hadronic; primary)
+res = runcascade(t, selected; primary)
+
+tlean = CascadeTable(two_body; cache = "W2.jls")         # or build only 2-body matrices
 ```
 
 Ready-made filters (all return a `ChannelFilter`):

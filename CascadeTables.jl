@@ -83,13 +83,31 @@ end
 # `CascadeTable` (build) and `runcascade` (apply). See the README.
 
 struct ChannelFilter{Fun}
-    keep::Fun     # (p::ParticleInfo, ch::DecayChannel, ds::Vector{ParticleInfo}) -> Bool
+    keep::Fun
 end
-(f::ChannelFilter)(p, ch, ds)  = f.keep(p, ch, ds)::Bool
 
-Base.:&(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) && b(p, ch, ds))
-Base.:|(a::ChannelFilter, b::ChannelFilter) = ChannelFilter((p, ch, ds) -> a(p, ch, ds) || b(p, ch, ds))
-Base.:!(a::ChannelFilter)                   = ChannelFilter((p, ch, ds) -> !a(p, ch, ds))
+(selection::ChannelFilter)(parent, channel, daughters) =
+    selection.keep(parent, channel, daughters)::Bool
+
+function Base.:&(left::ChannelFilter, right::ChannelFilter)
+    keep(parent, channel, daughters) =
+        left(parent, channel, daughters) &&
+        right(parent, channel, daughters)
+    return ChannelFilter(keep)
+end
+
+function Base.:|(left::ChannelFilter, right::ChannelFilter)
+    keep(parent, channel, daughters) =
+        left(parent, channel, daughters) ||
+        right(parent, channel, daughters)
+    return ChannelFilter(keep)
+end
+
+function Base.:!(selection::ChannelFilter)
+    keep(parent, channel, daughters) =
+        !selection(parent, channel, daughters)
+    return ChannelFilter(keep)
+end
 
 """
     filter(f::ChannelFilter, dl::DecayList) -> DecayList
@@ -100,49 +118,99 @@ The result flows unchanged through `CascadeTable` and `runcascade`; since the
 masses are unchanged, its decay-matrix keys are a subset of the full list's, so
 filtering an *apply* reuses a full cached table with no rebuild.
 """
-function Base.filter(f::ChannelFilter, dl::DecayList)
-    bp = Dict{Int,Vector{DecayChannel}}()
-    for (pid, chans) in dl.byparent
-        p = dl.parts[pid]
-        kept = [ch for ch in chans
-                if all(d -> haskey(dl.parts, d), ch.daughters) &&
-                   f(p, ch, ParticleInfo[dl.parts[d] for d in ch.daughters])]
-        isempty(kept) || (bp[pid] = kept)
+function Base.filter(selection::ChannelFilter, dl::DecayList)
+    channels_by_parent = Dict{Int,Vector{DecayChannel}}()
+
+    for (parent_id, channels) in dl.byparent
+        parent = dl.parts[parent_id]
+        selected = DecayChannel[]
+
+        for channel in channels
+            daughter_ids = channel.daughters
+            if !all(daughter_id -> haskey(dl.parts, daughter_id), daughter_ids)
+                continue
+            end
+
+            daughters = ParticleInfo[
+                dl.parts[daughter_id] for daughter_id in daughter_ids
+            ]
+            if selection(parent, channel, daughters)
+                push!(selected, channel)
+            end
+        end
+
+        if !isempty(selected)
+            channels_by_parent[parent_id] = selected
+        end
     end
-    return DecayList(dl.parts, bp, dl.path, dl.sha)
+
+    return DecayList(dl.parts, channels_by_parent, dl.path, dl.sha)
 end
 
-# --- ready-made filters (each returns a ChannelFilter) ---------------------
+# --- channel properties ----------------------------------------------------
 "Keep channels whose daughter count is one of `ns` — e.g. `nbody(2)`, `nbody(2, 3)`."
-nbody(ns::Integer...)                = ChannelFilter((p, ch, ds) -> length(ch.daughters) in ns)
-"Keep channels whose parent mass lies in `[lo, hi]`."
-parentmass(lo, hi)                   = ChannelFilter((p, ch, ds) -> lo ≤ p.mass ≤ hi)
-"Keep channels all of whose daughter masses lie in `[lo, hi]`."
-daughtermass(lo, hi)                 = ChannelFilter((p, ch, ds) -> all(d -> lo ≤ d.mass ≤ hi, ds))
+nbody(ns::Integer...) =
+    ChannelFilter((_parent, channel, _daughters) -> length(channel.daughters) in ns)
 "Keep channels with branching ratio ≥ `x`."
-brabove(x)                           = ChannelFilter((p, ch, ds) -> ch.br ≥ x)
+brabove(x) =
+    ChannelFilter((_parent, channel, _daughters) -> channel.br ≥ x)
+
+# --- parent properties -----------------------------------------------------
+"Keep channels whose parent mass lies in `[lo, hi]`."
+parentmass(lo, hi) =
+    ChannelFilter((parent, _channel, _daughters) -> lo ≤ parent.mass ≤ hi)
 "Keep channels whose parent name is one of `names`."
-fromparent(names::AbstractString...) = ChannelFilter((p, ch, ds) -> p.name in names)
-"Keep channels with at least one daughter named in `names`."
-todaughter(names::AbstractString...) = ChannelFilter((p, ch, ds) -> any(d -> d.name in names, ds))
+fromparent(names::AbstractString...) =
+    ChannelFilter((parent, _channel, _daughters) -> parent.name in names)
 "Keep channels whose parent id is one of `ids`."
-fromid(ids::Integer...)              = ChannelFilter((p, ch, ds) -> p.id in ids)
-"Keep channels with at least one daughter id in `ids`."
-toid(ids::Integer...)                = ChannelFilter((p, ch, ds) -> any(d -> d.id in ids, ds))
+fromid(ids::Integer...) =
+    ChannelFilter((parent, _channel, _daughters) -> parent.id in ids)
 "Keep channels whose parent is a baryon (nonzero baryon number)."
-baryonicparent()                     = ChannelFilter((p, ch, ds) -> p.baryon != 0)
+baryonicparent() =
+    ChannelFilter((parent, _channel, _daughters) -> isbaryon(parent))
 "Keep channels whose parent is a meson (zero baryon number)."
-mesonicparent()                      = ChannelFilter((p, ch, ds) -> p.baryon == 0)
+mesonicparent() =
+    ChannelFilter((parent, _channel, _daughters) -> ismeson(parent))
 "Keep channels whose parent strangeness is one of `ss` — e.g. `parentstrangeness(1, -1)`."
-parentstrangeness(ss::Integer...)    = ChannelFilter((p, ch, ds) -> p.strangeness in ss)
+parentstrangeness(ss::Integer...) =
+    ChannelFilter((parent, _channel, _daughters) -> parent.strangeness in ss)
 "Keep channels whose parent carries nonzero strangeness."
-strangeparent()                      = ChannelFilter((p, ch, ds) -> p.strangeness != 0)
+strangeparent() =
+    ChannelFilter((parent, _channel, _daughters) -> isstrange(parent))
 "Keep channels whose parent carries nonzero charm."
-charmparent()                        = ChannelFilter((p, ch, ds) -> p.charm != 0)
+charmparent() =
+    ChannelFilter((parent, _channel, _daughters) -> parent.charm != 0)
 "Keep channels whose parent isospin is one of `is` — pass physical values, e.g. `parentisospin(0.5, 1.5)`."
-parentisospin(is::Real...)           = ChannelFilter((p, ch, ds) -> any(i -> round(Int, 2i) == p.twiceisospin, is))
+function parentisospin(isospins::Real...)
+    twice_isospins = map(isospin -> round(Int, 2isospin), isospins)
+    return ChannelFilter(
+        (parent, _channel, _daughters) ->
+            parent.twiceisospin in twice_isospins,
+    )
+end
+
+# --- daughter properties ---------------------------------------------------
+"Keep channels all of whose daughter masses lie in `[lo, hi]`."
+daughtermass(lo, hi) =
+    ChannelFilter(
+        (_parent, _channel, daughters) ->
+            all(daughter -> lo ≤ daughter.mass ≤ hi, daughters),
+    )
+"Keep channels with at least one daughter named in `names`."
+todaughter(names::AbstractString...) =
+    ChannelFilter(
+        (_parent, _channel, daughters) ->
+            any(daughter -> daughter.name in names, daughters),
+    )
+"Keep channels with at least one daughter id in `ids`."
+toid(ids::Integer...) =
+    ChannelFilter(
+        (_parent, _channel, daughters) ->
+            any(daughter -> daughter.id in ids, daughters),
+    )
+
 "Wrap a raw predicate `(p, ch, ds) -> Bool` as a `ChannelFilter`."
-channelfilter(f)                     = ChannelFilter(f)
+channelfilter(predicate) = ChannelFilter(predicate)
 
 # ---------------------------------------------------------------------------
 # Channel key: the masses and parent width that determine a decay matrix,
@@ -192,33 +260,74 @@ end
 function eachchannelkey(f, dl::DecayList; order = keys(dl.byparent))
     stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
                  :γdaughter => 0, :unknown => 0)
-    for pid in order
-        haskey(dl.byparent, pid) || continue
-        ma = dl.parts[pid].mass
-        Γa = dl.parts[pid].width
-        broad = Γa > WIDTHCUT
-        for ch in dl.byparent[pid]
-            ds = ch.daughters
-            nd = length(ds)
-            nd == 1 && (stats[:self] += 1; continue)          # stable self-channel
-            nd ≥ 5 && (stats[:nd5] += 1; continue)            # no 5-body kernel (none in data)
-            all(d -> haskey(dl.parts, d), ds) || (stats[:unknown] += 1; continue)
-            ms = [dl.parts[d].mass for d in ds]
-            Σm = sum(ms)
-            openpole = ma > Σm + 1e-6                          # open at the pole mass
-            # a broad parent's spectral tail can reopen a nominally-closed channel
-            reopenable = broad && (ma + WIDTHK * Γa > Σm + 1e-6)
-            openpole || reopenable || (stats[:closed] += 1; continue)
-            openpole || (stats[:reopened] += 1)               # closed at pole, tail-reopened
-            Γk = broad ? Γa : 0.0                             # 0 ⇒ sharp key
-            for (slot, did) in enumerate(ds)
-                mb = ms[slot]
-                mb > 0 || (stats[:γdaughter] += 1; continue)  # photon not observable
-                did == pid && continue                        # a particle is not its own
-                                                              # decay product; keeps the apply's
-                                                              # in-place mul! free of aliasing
-                key = ChannelKey(ma, mb, [ms[t] for t in eachindex(ms) if t != slot], Γk)
-                f(pid, ch, did, key)
+
+    for parent_id in order
+        if !haskey(dl.byparent, parent_id)
+            continue
+        end
+
+        parent = dl.parts[parent_id]
+        parent_mass = parent.mass
+        parent_width = parent.width
+        broad_parent = parent_width > WIDTHCUT
+
+        for channel in dl.byparent[parent_id]
+            daughter_ids = channel.daughters
+            multiplicity = length(daughter_ids)
+
+            if multiplicity == 1
+                stats[:self] += 1
+                continue
+            end
+            if multiplicity ≥ 5
+                stats[:nd5] += 1
+                continue
+            end
+            if !all(daughter_id -> haskey(dl.parts, daughter_id), daughter_ids)
+                stats[:unknown] += 1
+                continue
+            end
+
+            daughter_masses = [
+                dl.parts[daughter_id].mass for daughter_id in daughter_ids
+            ]
+            threshold = sum(daughter_masses) + 1e-6
+            open_at_pole = parent_mass > threshold
+            open_in_tail =
+                broad_parent && parent_mass + WIDTHK * parent_width > threshold
+
+            if !open_at_pole && !open_in_tail
+                stats[:closed] += 1
+                continue
+            end
+            if !open_at_pole
+                stats[:reopened] += 1
+            end
+
+            key_width = broad_parent ? parent_width : 0.0
+            for (slot, daughter_id) in enumerate(daughter_ids)
+                daughter_mass = daughter_masses[slot]
+
+                if daughter_mass ≤ 0
+                    stats[:γdaughter] += 1
+                    continue
+                end
+                if daughter_id == parent_id
+                    # Keeps the in-place apply free of input/output aliasing.
+                    continue
+                end
+
+                partner_masses = [
+                    daughter_masses[index]
+                    for index in eachindex(daughter_masses) if index != slot
+                ]
+                key = ChannelKey(
+                    parent_mass,
+                    daughter_mass,
+                    partner_masses,
+                    key_width,
+                )
+                f(parent_id, channel, daughter_id, key)
             end
         end
     end
@@ -232,43 +341,67 @@ function neededkeys(dl::DecayList)
     return need, stats
 end
 
-# Parent visitation order for the cascade sweep: every species must be processed
-# after all its feeders, so F[species] is complete before it decays. Pole-mass
-# descending guarantees this only while daughters are lighter than parents — true
-# for every channel open at the pole. A *reopened* channel (open only through a
-# broad parent's spectral tail) can feed a daughter HEAVIER than the parent,
-# inverting the mass order and, under a pole-mass sweep, silently dropping that
-# daughter's downstream feed-down (it was already processed). A topological sort
-# of the feed-down graph (feeders before fed) handles the inversion; on a
-# pole-downhill DAG it reduces to mass-descending, so standard data is unchanged.
-#
-# Kahn with a heaviest-ready tie-break. A cycle (mutually reopening broad
-# parents — none in standard data) has no valid order; its members are appended
-# mass-descending with a warning, their cross feed-down then approximate (a
-# tail×tail higher-order effect).
+"""
+    cascadeorder(dl::DecayList) -> Vector{Int}
+
+Order decaying parents feeder-before-fed, so every parent spectrum is complete
+before that parent decays. This is a topological sort of the enrolled feed-down
+graph. Among parents whose inputs are ready, process the heaviest first.
+
+A mass-only ordering is insufficient because a broad parent's spectral tail
+can reopen a channel to a heavier daughter. If the graph contains a cycle, no
+exact single-sweep order exists; append all parents blocked by that cycle in
+descending mass order and warn that their cross feed-down is approximate.
+"""
 function cascadeorder(dl::DecayList)
-    parents = collect(keys(dl.byparent))
-    indeg = Dict(p => 0 for p in parents)
-    succ = Dict(p => Int[] for p in parents)
-    eachchannelkey(dl) do pid, _ch, did, _key
-        (did != pid && haskey(dl.byparent, did)) || return   # edge feeder → fed
-        push!(succ[pid], did); indeg[did] += 1
-    end
-    order = Int[]
-    remaining = Set(parents)
-    while !isempty(remaining)
-        ready = [p for p in remaining if indeg[p] == 0]
-        if isempty(ready)                                    # cycle: break by mass
-            rest = sort!(collect(remaining); by = p -> dl.parts[p].mass, rev = true)
-            @warn "cascade feed-down graph has a cycle (mutually reopening broad \
-                   parents); $(length(rest)) species ordered by mass, cross \
-                   feed-down approximate" maxlog = 1
-            append!(order, rest); break
+    decaying_parents = collect(keys(dl.byparent))
+    incoming_count = Dict(parent_id => 0 for parent_id in decaying_parents)
+    downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
+
+    # An enrolled parent → daughter slot is a dependency only when the daughter
+    # also decays. Stable daughters are outputs, not steps in the cascade sweep.
+    eachchannelkey(dl) do parent_id, _channel, daughter_id, _key
+        daughter_decays = haskey(dl.byparent, daughter_id)
+        if daughter_id != parent_id && daughter_decays
+            push!(downstream[parent_id], daughter_id)
+            incoming_count[daughter_id] += 1
         end
-        p = argmax(q -> dl.parts[q].mass, ready)             # heaviest ready (= mass-desc on a DAG)
-        push!(order, p); delete!(remaining, p)
-        for q in succ[p]; indeg[q] -= 1; end
     end
+
+    order = Int[]
+    unprocessed = Set(decaying_parents)
+
+    while !isempty(unprocessed)
+        ready_parents = [
+            parent_id for parent_id in unprocessed
+            if incoming_count[parent_id] == 0
+        ]
+
+        if isempty(ready_parents)
+            blocked_parents = sort!(
+                collect(unprocessed);
+                by = parent_id -> dl.parts[parent_id].mass,
+                rev = true,
+            )
+            @warn "cascade feed-down graph has a cycle (mutually reopening broad \
+                   parents); $(length(blocked_parents)) species ordered by mass, cross \
+                   feed-down approximate" maxlog = 1
+            append!(order, blocked_parents)
+            break
+        end
+
+        parent_id = argmax(
+            candidate -> dl.parts[candidate].mass,
+            ready_parents,
+        )
+        push!(order, parent_id)
+        delete!(unprocessed, parent_id)
+
+        for daughter_id in downstream[parent_id]
+            incoming_count[daughter_id] -= 1
+        end
+    end
+
     return order
 end
 
