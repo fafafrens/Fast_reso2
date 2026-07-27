@@ -1,5 +1,6 @@
 \documentclass[11pt]{article}
 \usepackage{amsmath,amssymb}
+\usepackage{array}
 \usepackage[margin=1.1in]{geometry}
 \usepackage{hyperref}
 
@@ -8,20 +9,22 @@
 \newcommand{\Fan}{\mathcal{F}_{a,n}}
 \newcommand{\Fbn}{\mathcal{F}_{b,n}}
 
-\title{Numerical evaluation and matrix representation\\
-of the decay feed-down kernel}
-\author{Notes accompanying \texttt{DecaySpectra.jl}}
+\title{Numerical evaluation, matrix representation,\\
+and cascade application of decay feed-down}
+\author{Notes accompanying \texttt{DecaySpectra.jl} and
+\texttt{CascadeTables.jl}}
 \date{\today}
 
 \begin{document}
 \maketitle
 
-These notes accompany \texttt{DecaySpectra.jl}.  For the two-, three-, and
-four-body decay maps of the main notes (equation numbers below refer to
-\emph{Maximum\_Entropy\_notes.pdf}) they document how each map is (i) reduced
-to a form that fixed-order Gauss--Legendre quadrature evaluates rapidly, and
-(ii) precomputed as a matrix acting on a parent spectrum sampled on a fixed
-grid.
+These notes accompany \texttt{DecaySpectra.jl} and
+\texttt{CascadeTables.jl}.  For the decays with two, three, or four daughters
+in the main physics notes (whose equation numbers are used below), they
+document how each map is (i) reduced to a form that fixed-order
+Gauss--Legendre quadrature evaluates rapidly, (ii) precomputed as a matrix
+acting on a parent spectrum sampled on a fixed grid, and (iii) composed
+through the full resonance cascade.
 
 \paragraph{How to read this.}
 The presentation is \emph{topic by topic}, and within each topic the
@@ -36,13 +39,19 @@ The topics build on one another:
 \item finite resonance widths (Sec.~\ref{sec:width});
 \item the matrix representation for boost-invariant sources
 (Sec.~\ref{sec:matrix});
+\item full-list table construction, cascade ordering, memory, and persistence
+(Sec.~\ref{sec:cascade});
 \item its block-Toeplitz generalization to rapidity-dependent sources
-(Sec.~\ref{sec:rapidity}).
+(Sec.~\ref{sec:rapidity});
+\item the validated numerical domain, regression evidence, and known boundary
+cases (Sec.~\ref{sec:validation}).
 \end{itemize}
 One device recurs throughout and is worth keeping in mind: every multi-body
-or finite-width complication is an \emph{average of the same two-body kernel}
-over an effective-mass or spectral distribution.  The expensive kernel is
-therefore evaluated once; only the cheap averaging weight changes.
+or finite-width complication is an \emph{average of the same two-body-kernel
+implementation} over an effective-mass or spectral distribution.  A
+multi-body decay changes only the cheap averaging weight at fixed parent
+mass; a finite parent width evaluates that kernel at several parent-mass
+nodes and folds the results into one same-shape matrix.
 
 \section{The decay map is linear}
 
@@ -93,7 +102,7 @@ converges rapidly, and reports the measured accuracy.
 \subsection{Analytic structure: domain and singularities}
 \label{sec:kernel-analytic}
 
-\subsubsection{The $\Delta\eta$ window}
+\subsubsection{The rapidity-difference window}
 \label{sec:window}
 
 \paragraph{What the window is.}
@@ -214,7 +223,7 @@ guards accompany the window: $q_T$ nodes with $(C+Q)/M\le1$ are skipped
 (roundoff can push a node marginally outside the support), and inside the
 loop $S_2=(Q-D)(Q+D)\le0$ nodes are dropped for the same reason.
 
-\subsubsection{The $q_T$ band}
+\subsubsection{The transverse-momentum band}
 \label{sec:band}
 
 By \eqref{eq:nonempty}, the window is nonempty exactly when
@@ -288,7 +297,7 @@ sets the required extent of any fixed parent grid.  Note that
 $T_{\rm eff}$ is the slope of the \emph{actual} source --- radial flow
 blueshifts it well above the freeze-out temperature.
 
-\subsubsection{The logarithmic singularity at $q_T^{*}$}
+\subsubsection{The logarithmic singularity at the internal band point}
 \label{sec:logsing}
 
 Inside the band the window changes topology where $\eta_{\rm lo}$ reaches
@@ -445,7 +454,7 @@ continuous but not analytic --- for which the Gauss error decreases
 algebraically, $\sim n_q^{-4}$ (measured: the error at low $p_T$ drops
 $\approx16\times$ per doubling of $n_q$).
 
-\subsubsection{Three-body: the $\mu$ average}
+\subsubsection{Three-body: the effective-mass average}
 
 For $a\to b+c+d$ the kernel is averaged over the effective mass
 $\mu\in[m_c+m_d,\,m_a-m_b]$ with weight
@@ -483,10 +492,15 @@ $\omega\to3\pi$:\; $(n_\mu,n_q,n_\theta)=(32,128,32)$ & $2\cdot10^{-8}$ & $3\cdo
 The $\Delta\eta$ direction is spectrally convergent and over-resolved
 already at $n_\theta=16$; $n_q$ is limited by the logarithm
 ($\sim n_q^{-4}$, only relevant for $p_T<p_b$); $n_\mu\ge16$ is safe while
-$n_\mu=4$ fails at the percent level.  The defaults
-$(n_q,n_\theta,n_\mu)=(128,32,32)$ are conservative; cost scales linearly
-in each order.  Number conservation, $N_b=B\,N_a$, holds at the
-$10^{-5}$ level for both decays at default orders.
+$n_\mu=4$ fails at the percent level.  The exported functor constructors
+default to $(n_q,n_\theta,n_\mu)=(128,32,32)$; these settings are
+conservative, and cost scales linearly in each order.  The production
+\texttt{CascadeTable} instead defaults to
+$(n_q,n_\theta,n_\mu,n_\sigma,n_{m_a})=(32,8,8,8,8)$, trading some build
+accuracy for speed on its sampled grid.  The continuous-functor regression
+tests give number conservation, $N_b=B\,N_a$, at the $10^{-4}$ level or
+better, but they use the higher exported-functor defaults; they do not by
+themselves certify the production table orders.
 
 \section{Multi-body decays: the effective-mass average}
 \label{sec:extensions}
@@ -581,13 +595,17 @@ q(\mu;m_c,\sigma)\;q(\sigma;m_d,m_e).
 Assembling the pieces, the observed-$b$ spectrum of $a\to b\,c\,d\,e$ is the
 two-dimensional mass average
 \begin{equation}
-\Fb=\frac{B\,m_a}{4\pi\,\mathcal N}
-\int_{m_c+m_d+m_e}^{m_a-m_b}\!\!\mathrm{d}\mu\;p^a_b(\mu)
+\begin{aligned}
+\Fb
+&=\frac{B\,m_a}{4\pi\,\mathcal N}
+\int_{m_c+m_d+m_e}^{m_a-m_b}\!\!\mathrm{d}\mu\;p^a_b(\mu)\\
+&\quad{}\times
 \underbrace{\left[\int_{m_d+m_e}^{\mu-m_c}\!\!\mathrm{d}\sigma\;
 q(\mu;m_c,\sigma)\,q(\sigma;m_d,m_e)\right]}_{\rho_3(\mu)}
-K\big(E_b(\mu)\big),
-\quad
-\mathcal N=\int\!\mathrm{d}\mu\,p^a_b(\mu)\rho_3(\mu).
+K\big(E_b(\mu)\big),\\
+\mathcal N
+&=\int\!\mathrm{d}\mu\,p^a_b(\mu)\rho_3(\mu).
+\end{aligned}
 \label{eq:fourbody}
 \end{equation}
 The bracket is the Lorentz-invariant phase-space volume of the
@@ -650,6 +668,14 @@ particles in relative angular momentum $\ell$,
 $m=m_1+m_2$, so $\varrho_i$ carries no weight below threshold, and
 $\varrho_i\to\delta(m-m_i)$ as $\Gamma_i\to0$.
 
+Equations above describe the general mass-dependent-width construction.
+The current \texttt{BreitWigner} implementation uses the constant-width
+specialization $\Gamma_i(m)=\Gamma_i$, truncates it to a caller-specified
+mass window, and returns an \emph{unnormalized} spectral shape.  The
+normalization is performed by \texttt{BroadParent} when forming the
+parent-mass average.  A mass-dependent width and the barrier factor in
+\eqref{eq:massdep-width} are not yet implemented.
+
 \paragraph{One principle, two costs.}
 Whether a given width is cheap or expensive to include is decided by
 \emph{how that mass enters the decay map}.  A mass that enters \emph{only
@@ -677,8 +703,9 @@ matters most.
 \end{itemize}
 
 \paragraph{Which case this cascade needs.}
-The split above is general, but the cascade of Sec.~\ref{sec:matrix} decays
-every resonance in \emph{its own} mass-ordered step: $a\to bR$ and
+The split above is general, but the cascade of Sec.~\ref{sec:cascade} decays
+every resonance in \emph{its own} feeder-before-fed step (mass-descending for
+an ordinary pole-open graph): $a\to bR$ and
 $R\to cc'$ are two separate two-body decays, never collapsed into one
 three-body $a\to bcc'$.  A broad $R$ therefore enters \emph{as a parent}
 --- when $R$ itself decays --- not as a cluster mass.  The cluster case is
@@ -691,7 +718,7 @@ decay list.  The cheap case is kept for completeness (a collapsed treatment,
 or a genuinely broad unobserved daughter), but it is the exception here.  The
 next two subsections treat each in turn, cheap first.
 
-\subsection{The cheap case: width is a reweighting of the $\mu$ integral}
+\subsection{The cheap case: width reweights the effective-mass integral}
 
 Case~1 is not a new mechanism --- it \emph{is} the effective-mass integral
 of Sec.~\ref{sec:recursive}.  When the unobserved pair $c\,c'$ forms a
@@ -736,15 +763,18 @@ At the sharp pole mass a channel with $\sum_{\rm daughters}m>m_a$ is
 forbidden, and the cascade skips it.  But $\varrho_a$ has support above the
 pole: on the tail $m_a'>\sum m$ the daughters fit, and the channel
 contributes.  Nothing special is required --- the same mass average
-\eqref{eq:width-matrixsum} does it, with the closed nodes
-($m_a'<\sum m$) simply contributing zero:
+\eqref{eq:width-matrixsum} does it.  Numerically, the normalization spans
+the full spectral window, while kernel nodes are placed only in its open
+part; the closed region therefore contributes spectral normalization but
+requires no kernel evaluations:
 \begin{equation}
 W^{\rm eff}_n\big|_{\text{closed channel}}
 =\int_{\sum m}^{m_{\max}}\!\mathrm{d}m_a'\;\varrho_a(m_a')\,W_n(m_a').
 \end{equation}
 A channel that is exactly zero in the sharp limit thus acquires a small
 weight from the parent's high-mass tail --- this is the physical meaning of
-the ``closed-at-nominal-mass'' count the cascade reports.
+the ``closed-at-nominal-mass'' count reported by list validation and channel
+enrollment.
 
 \paragraph{Production and decay use the same $\varrho_a$.}
 In a thermal source the parent is produced already dressed with its spectral
@@ -756,25 +786,31 @@ decay) is the usual on-shell-spectral compromise, good while $\Gamma_a/m_a$
 is not large.
 
 \paragraph{Status.}
-Four-body is implemented (the $531$ cluster keys of Sec.~\ref{sec:recursive}),
+Four-body is implemented (the $532$ cluster keys of Sec.~\ref{sec:recursive}),
 and so now is the \emph{parent width} --- the main case for this cascade.  Each
 species with $\Gamma>1$\,MeV is averaged over its (constant-width, truncated)
 Breit--Wigner by \eqref{eq:width-matrixsum}: the decay matrix at $n_{m_a}$
 parent-mass nodes, weighted by $\varrho_a$ and summed, giving a same-shape
 matrix that the cascade uses unchanged.  The mass integral uses the
-tan-substitution $s=m_a^2+m_am_R\Gamma\tan\psi$, which flattens the Lorentzian
-so plain Gauss--Legendre in $\psi$ resolves the peak for any $\Gamma$ (a cosine
-map would starve it).  Closed nodes ($m_a<\sum m_{\rm daughters}$) enter only
-the normalization, so a channel closed at the pole keeps its open-tail fraction
+tan-substitution
+$s=m_R^2+m_R\Gamma\tan\psi$, with node mass $m_a=\sqrt{s}$, which
+flattens the Lorentzian so plain Gauss--Legendre in $\psi$ resolves the peak
+for any $\Gamma$ (a cosine map would starve it).  When threshold cuts the
+window, a cosine map is used on the open interval to absorb the integrable
+$1/\sqrt{m_a-\sum m}$ endpoint behavior.  The full window still sets the
+normalization, so a channel closed at the pole keeps its open-tail fraction
 --- channel reopening, for free.  Validated by number conservation, the
 single-node$\,\to\,$sharp and narrow-$\Gamma\to$sharp limits, spectral
-convergence in $n_{m_a}$, and reopening; on the full list $\sim3200$ of the
-$18{,}000$ keys are broad, shifting the feed-down at the few-percent level.
-Since the averaged matrix is the \emph{same shape}, the cache does not grow ---
-only the build (an $n_{m_a}$-fold repeat for broad-parent keys), so persistence
-(Sec.~\ref{sec:matrix}) is essential.  The cheap cluster reweight (for a genuine
-broad unobserved daughter) and observed-daughter width (rare) remain future
-work.
+convergence in $n_{m_a}$, and reopening.  In the full-list benchmark that
+motivated this implementation, roughly $3{,}200$ of about $18{,}000$ keys
+were broad, shifting the feed-down at the few-percent level.
+The averaged matrix has the \emph{same per-key shape}, so width does not
+multiply its stored size by $n_{m_a}$; it can nevertheless create additional
+unique keys because $\Gamma$ is part of \eqref{eq:channel-key}.  Width mainly
+multiplies build work by $n_{m_a}$ for each broad key, so persistence
+(Sec.~\ref{sec:cascade}) is essential.  The cheap cluster reweight (for a
+genuine broad unobserved daughter) and observed-daughter width (rare) remain
+future work.
 
 \paragraph{One kernel average.}
 The effective-mass average of Sec.~\ref{sec:extensions} and the parent-width
@@ -813,14 +849,14 @@ $\Fa(q_T,\eta_q,\phi_q)=\Fan(q_T)\cos(n\phi_q)$ into the source bracket
 of \eqref{eq:map}, evaluated at $\phi_p=0$; together with the two
 rapidity signs (equal contributions, since neither the kernel nor this
 source distinguishes $\pm\Delta\eta$) the four source evaluations are
-\begin{equation}
+\begin{align}
 \sum_{s=\pm}\sum_{r=\pm}
 \Fan(q_T)\cos\!\big(n(0+r\alpha)\big)
-=\Fan(q_T)\,\big[2\cos(n\alpha)+2\cos(-n\alpha)\big]
-=4\cos(n\alpha)\,\Fan(q_T)
+&=\Fan(q_T)\,\big[2\cos(n\alpha)+2\cos(-n\alpha)\big]\nonumber\\
+&=4\cos(n\alpha)\,\Fan(q_T)
 =4\,T_n(Z)\,\Fan(q_T),
 \label{eq:fourTn}
-\end{equation}
+\end{align}
 using the evenness of the cosine and $\cos(n\arccos Z)=T_n(Z)$
 [Eq.~(40)].  Now discretize \eqref{eq:map} by the tensor rule
 \eqref{eq:tensor} and insert the interpolation \eqref{eq:interp} at every
@@ -861,9 +897,16 @@ Two properties of the quadrature matter for the matrix:
 $q_T^{\pm}=m_a\big(E^a_{b|c}\,p_T\pm p^a_{b|c}\,m_{bT}\big)/m_b^2$;
 each row is supported (up to the stencil halo) inside its band.
 For light daughters the band is wide ($\propto m_b^{-2}$), so in practice
-the matrices are effectively dense (measured fill $65$--$76\%$ for
-$\rho\to\pi\pi$, $\omega\to\pi\pi\pi$), and they are numerically full
-rank; neither sparse nor low-rank storage pays.  At
+the $\rho\to\pi\pi$ and $\omega\to\pi\pi\pi$ examples are effectively
+dense (measured fill $65$--$76\%$) and numerically full rank.  They are not,
+however, representative of every production key.  A deterministic
+300-key sample from the bundled list had $32.2\%$ exact nonzeros, while the
+contiguous support span of each row occupied $43.7\%$ of a dense row and was
+$73.6\%$ filled internally.  Generic compressed sparse-column storage with
+64-bit indices is near its memory break-even at this density, but a custom
+row-banded format (start column plus contiguous values per row) is a credible
+storage and bandwidth optimization that still requires a full-cascade
+benchmark.  The current implementation remains dense.  At
 $N_{p_T}\times N_q\sim 39\times121$ a matrix is $\sim37$\,KB and applies
 in microseconds.
 \item The integrand has an integrable $\ln|q_T-q_T^{*}|$ singularity at
@@ -881,7 +924,7 @@ thermal source reproduces the functor to a few$\,\times10^{-5}$, and the
 truncation ``$\Fa\equiv0$ outside the grid'' requires the source to be
 negligible beyond the last grid point.
 
-\subsection{The $Z$-space form of the assembly integral}
+\subsection{The Z-space form of the assembly integral}
 \label{sec:zspace}
 
 For the matrix assembly the inner rapidity integral can be freed of all
@@ -1055,17 +1098,17 @@ to $4n_\theta$ Chebyshev nodes whenever $Z_{\rm lo}>-\tfrac32$, i.e.\
 exactly where \eqref{eq:bernstein} predicts the base rule falls above
 the $10^{-7}$ level.  The choice of threshold is a cost/accuracy
 compromise: a first attempt with the densification band extended to
-$Z_{\rm lo}>-3$ was accurate but slowed the cascade below the gain of
+$Z_{\rm lo}>-3$ was accurate but slowed the full table build below the gain of
 the $Z$-space form itself.
 
 \subsubsection{Measured effect}
 
-On the full 1518-species cascade (8 threads, production orders
-$n_q{=}32$, $n_\theta{=}8$, $n_\mu{=}8$, $168$-point grid):
+In a historical full-table assembly benchmark (1518 species, 8 threads,
+$n_q{=}32$, $n_\theta{=}8$, $n_\mu{=}8$, and a 168-point grid):
 \begin{center}
 \begin{tabular}{lccc}
 \hline
-assembly scheme & single $2$-body build & cascade & $n{=}2$ validation\\
+assembly scheme & single $2$-body build & table build & $n{=}2$ validation\\
 \hline
 $\Delta\eta$-space (arccosh + cosh + arccos) & $0.51$\,ms & $20.2$\,s & $2.6\cdot10^{-5}$\\
 $\Delta\eta$-space, $\arccos\to T_n$ recurrence & $0.41$\,ms & $20.2$\,s & $2.6\cdot10^{-5}$\\
@@ -1081,8 +1124,443 @@ $\eta_p\pm\Delta\eta$ and $\phi_p\pm\alpha$, so there the rapidity and the
 azimuthal angle are genuine arguments and the $\Delta\eta$-space form of
 Sec.~\ref{sec:quadrature} remains the appropriate one.
 
-\section{Rapidity-dependent sources: the $\Delta\eta$-Toeplitz structure}
+\section{From per-channel matrices to the full cascade}
+\label{sec:cascade}
+
+The matrix of Sec.~\ref{sec:matrix} describes one observed daughter of one
+decay channel, for one Fourier mode.  \texttt{CascadeTables.jl} turns these
+local maps into a full feed-down calculation.  If channel $c$ has parent
+$a(c)$, daughter slots $d_s(c)$, and branching ratio $B_c$, the cascade starts
+from primary spectra
+\begin{equation}
+ F_{i,n}=F^{\rm prim}_{i,n}
+\end{equation}
+and performs, once for every massive observed-daughter slot,
+\begin{equation}
+ F_{d_s,n}\;\leftarrow\;
+ F_{d_s,n}
+ +B_c\,W_{\kappa(c,s),n}\,F_{a(c),n}.
+ \label{eq:cascade-update}
+\end{equation}
+The matrix is built with unit branching ratio; $B_c$ is applied only in
+\eqref{eq:cascade-update}.  If the same daughter occurs twice, as in
+$\rho\to\pi\pi$, the same matrix is deliberately applied twice.  This gives
+the physical multiplicity without storing the matrix twice.
+
+\subsection{Channels, observed slots, and canonical keys}
+
+Three objects must be distinguished:
+\begin{enumerate}
+\item a physical channel record, containing parent and daughter identifiers
+and $B_c$;
+\item an observed-daughter slot $s$ within that record;
+\item the unique kinematic key of the matrix used for that slot.
+\end{enumerate}
+For a two-, three-, or four-body channel the key is
+\begin{equation}
+\kappa(c,s)=
+\left(
+N_d,\;m_a,\;m_{d_s},\;\Gamma_{\rm key},\;
+\operatorname{sort}\{m_{d_t}:t\ne s\}
+\right),
+\qquad
+\Gamma_{\rm key}=
+\begin{cases}
+\Gamma_a,&\Gamma_a>10^{-3}\ {\rm GeV},\\
+0,&\text{otherwise}.
+\end{cases}
+\label{eq:channel-key}
+\end{equation}
+The partner block is zero-padded to three masses in the concrete
+\texttt{ChannelKey}.  The observed mass $m_{d_s}$ is \emph{not} sorted with
+the partners: it controls $E_b$, $p_b$, the $q_T$ band, and the Jacobian.
+The unobserved partners enter symmetrically and may be sorted.  Particle
+identifiers and $B_c$ are intentionally absent, so charge-conjugate or
+equal-mass channels share matrices and a branching-ratio update requires no
+rebuild.  Grid, quadrature orders, and requested modes are properties of the
+whole table rather than each key.
+
+The function \texttt{eachchannelkey} is the single enrollment rule used both
+when finding matrices to build and when applying the cascade.  It:
+\begin{itemize}
+\item accepts channels with two to four resolved daughters;
+\item requires either
+$m_a>\sum_i m_i+10^{-6}\,\mathrm{GeV}$ at the pole or, for a broad parent,
+$m_a+4\Gamma_a>\sum_i m_i+10^{-6}\,\mathrm{GeV}$;
+\item invokes the operation once per massive observed slot.  A photon is
+skipped as the observed daughter but remains a valid unobserved partner of a
+massive daughter;
+\item skips a slot whose daughter identifier equals the parent identifier,
+which prevents input/output aliasing in the in-place update.
+\end{itemize}
+One-body records are currently treated as stable self entries and skipped;
+their identifier and unit branching ratio are an input convention rather
+than something enrollment verifies.  Channels with five or more daughters
+are unsupported and skipped.
+
+\subsection{Table construction and cache identity}
+
+A \texttt{CascadeTable} contains
+\begin{equation}
+\mathcal T=(g,\ {\rm orders},\ {\rm modes},\ {\rm metadata},\ \mathcal W),
+\qquad
+\mathcal W:\kappa\longmapsto
+\{W_{\kappa,n}\}_{n\in{\rm modes}} .
+\end{equation}
+With the default common grid, every $W_{\kappa,n}$ is a
+$134\times134$ \texttt{Float32} matrix.  Each row is accumulated at
+\texttt{Float64} precision and rounded once into its final storage, while
+cascade spectra and their accumulated feed-down remain \texttt{Float64}.
+
+Unique keys are independent build tasks.  The implementation first warms the
+shared quadrature-node caches, then uses
+\texttt{Threads.@threads :greedy} over keys.  Greedy scheduling matters
+because the recorded per-key cost ranges from roughly $0.5$\,ms for a sharp
+two-body key to $5.5$\,ms for a broad three-body key.  All requested Fourier
+modes are fused within a key.  The inner matrix assembly is left serial
+(\texttt{threaded=false}) because the outer key loop already occupies the
+thread pool; nested threading would oversubscribe it.  Results first land in
+a preallocated vector, and the dictionary is filled serially afterward, so
+the build needs no dictionary lock.
+
+One custom-order caveat remains.  The build currently warms
+$n_q,n_\theta,n_\mu,n_\sigma$ but not a distinct $n_{m_a}$.  The default has
+$n_{m_a}=n_\sigma=8$ and is already warm.  If a threshold-cut broad channel
+uses a custom $n_{m_a}$ unequal to every other order, its first cosine-node
+cache insertion can occur inside the threaded key build.  Robust custom-order
+code should warm $n_{m_a}$ before launching threads (or extend
+\texttt{warmnodes!} to include it).
+
+Cache compatibility requires exact agreement of the format version, grid,
+orders, and modes.  The decay-list SHA is provenance rather than a hard
+invalidation boundary.  On a hash mismatch, matrices whose mass/width keys
+still match are retained, missing keys are built, and \texttt{prune!} can
+remove orphan keys.  A branching-ratio-only change reuses every matrix.
+This is intentionally a lenient, incremental cache policy.  In the current
+code, a lenient update does not refresh the stored SHA/path/raw-file metadata,
+and \texttt{prune!} changes only the in-memory table until the caller
+explicitly saves it.
+
+\subsection{Feeder-before-fed ordering}
+
+Equation~\eqref{eq:cascade-update} is an exact one-pass evaluation only if a
+parent is processed after all spectra that feed it have arrived and before it
+feeds its own daughters.  Thus the required order is \emph{feeder before
+fed}.  For ordinary pole-open decays, daughters are lighter and this reduces
+to the familiar mass-descending sweep.
+
+A finite-width tail can reopen $P\to D+x$ even when the pole mass of $D$ is
+larger than that of $P$.  A pole-mass ordering would process $D$ too early and
+silently lose the downstream contribution $P\to D\to\cdots$.  The
+implementation instead topologically sorts the enrolled feed-down graph,
+using the heaviest ready parent only as a tie-break.  This preserves the
+usual order on a pole-downhill graph and handles a heavier reopened daughter
+correctly.
+
+An acyclic feed graph is therefore a mathematical precondition for an exact
+single sweep.  If a cycle is detected, the current fallback warns and appends
+the cyclic remainder in mass order, making cross-cycle feed-down approximate.
+An exact treatment would identify the strongly connected component and solve
+a coupled linear system of the form
+\begin{equation}
+ (I-A_{\rm cyc})F_{\rm cyc}
+ =F^{\rm prim}_{\rm cyc}+F^{\rm incoming}_{\rm cyc},
+\end{equation}
+which is not implemented.
+
+\subsection{The hot apply path and the role of dictionaries}
+
+The current representation keeps matrices in a dictionary from
+\texttt{ChannelKey} to one vector of \texttt{Float32} matrices, and spectra
+in dictionaries from particle identifier to one \texttt{Float64} vector per
+mode.  These dictionaries organize the graph;
+they are not consulted inside the $p_T$ element loop.  Each enrolled slot
+performs a few dictionary lookups and then, for every mode, the five-argument
+operation
+\begin{equation}
+\texttt{mul!(Fd, W, Fp, Bc, 1.0)}
+\quad\Longleftrightarrow\quad
+F_d\leftarrow B_cWF_p+F_d .
+\end{equation}
+This avoids allocating a temporary $WF_p$ for every channel.  The code also
+excludes $d=a$, so output never aliases the parent input.
+
+The multiply is deliberately mixed precision: a \texttt{Float32} matrix
+times a \texttt{Float64} vector accumulates into a \texttt{Float64} vector.
+This halves the table relative to \texttt{Float64} matrices while preserving
+double-precision accumulation through a long decay chain, but it cannot use a
+same-type BLAS GEMV.  Two
+alternatives should be benchmarked rather than assumed faster:
+all-\texttt{Float32} enables SGEMV but reduces accumulation precision, while
+all-\texttt{Float64} enables DGEMV but doubles the matrix payload to about
+$4.90$\,GiB at the current size.  A custom mixed-precision row-band kernel is
+a third possibility.
+
+For the bundled list there are only $44{,}643$ slot-level operation records
+but about $1.60\times10^9$ matrix-element multiply--adds in a two-mode sweep.
+Without cache reuse those operations stream about $6.41$\,GB of
+\texttt{Float32} matrix values.
+Removing a dictionary lookup does not remove any of those arithmetic or
+memory accesses.  Consequently, the dictionaries are neither the dominant
+RAM cost nor the main apply bottleneck.
+
+\paragraph{Measured cascade speed.}
+On 25 July 2026, an Apple M2 running Julia~1.12.6 with four Julia threads
+and one BLAS thread gave the following warmed measurements at the production
+grid and mode settings.  The machine had only $0.06$--$0.08$\,GiB reported
+free, so the $2.448$\,GiB serialized full table was deliberately not
+deserialized.  Instead, two deterministic parent samples measured resident
+matrix application without risking a swap-dominated or out-of-memory run:
+\begin{center}
+\begin{tabular}{rrrrrr}
+\hline
+parents & keys & slots & table & apply median & empty median\\
+\hline
+$20$ & $730$ & $831$ & $100.01$\,MiB & $16.48$\,ms & $8.07$\,ms\\
+$50$ & $1{,}600$ & $1{,}939$ & $219.19$\,MiB & $28.82$\,ms & $8.78$\,ms\\
+\hline
+\end{tabular}
+\end{center}
+Here ``empty'' constructs all $1{,}518$ primary and output spectra but
+applies no decay channels.  Subtracting that fixed cost and the sampled graph
+walk, scaling only the matrix work by the slot count, and then adding the
+directly measured full graph walk gives $0.473$ and $0.483$\,s.  Their
+agreement makes about $0.48$\,s a useful \emph{warmed resident-table linear
+projection}, not a measured full-table time or a guaranteed lower bound: the
+sample pages were resident across repeated trials, whereas the full table has
+a much larger working set, streams up to $6.41$\,GB of matrix values, and is
+sensitive to memory pressure, paging, TLB behavior, and key reuse.
+
+The complete $44{,}643$-slot topology can be measured without loading any
+matrices.  Its warmed median was $29.06$\,ms (minimum $27.28$\,ms) with
+$28.44$\,MiB allocated.  Thus replacing dictionaries cannot explain the gap
+between the approximately $0.48$\,s resident projection and the repository's
+roughly $2$\,s historical full sweep; matrix access remains dominant.  The
+current in-place \texttt{mul!} change reduced historical whole-apply
+allocations from roughly $152$ to $45$\,MB and improved time by about $4\%$,
+while changing results only at the $4\times10^{-14}$ level.
+
+A separate build estimate sampled $24$ keys from each of the six combinations
+of multiplicity (two, three, or four bodies) and parent treatment (sharp or
+broad), population-weighted the per-key work, and divided by the observed
+$3.57$--$3.67$ speedup on that $144$-key, four-thread sample.
+Two runs projected $6.53$--$7.65$\,s for all $18{,}299$ keys.  This is a
+sampled matrix-construction estimate (roughly $7$\,s, before serialization),
+while the $10$\,s recorded full build below remains the stronger end-to-end
+reference.
+
+For many cascades with the same table and topology, a useful
+\emph{not-yet-implemented} optimization is a compiled execution plan.  It
+would map particle identifiers to dense integer indices once and store each
+operation as
+\[
+(\text{parent index},\ \text{daughter index},\ B_c,\ \text{matrix offset}),
+\]
+with spectra in a dense three-dimensional array.  This removes repeated graph
+construction, topological sorting, and key hashing.  It should be viewed as a
+constant-factor orchestration improvement; the matrix stream remains the
+dominant work.
+
+A metadata-only full-list benchmark makes the distinction precise.  The
+\texttt{W} hash lookup contributed roughly $7$--$8$\,ms over all
+$44{,}643$ slots, while a precompiled dense-index operation vector iterated in
+about $0.1$--$0.2$\,ms.  Replacing \texttt{W} by a vector but still performing
+a key-to-index dictionary lookup for every slot was neutral or slightly
+slower: it retains hashing and adds a vector dereference.  Even eliminating
+all measured topology and initialization overhead gives only a roughly
+$30$--$38$\,ms end-to-end ceiling, about $6$--$8\%$ of the resident
+projection or $2\%$ of the historical full sweep.  The recommended design is
+therefore to keep the keyed dictionary for building, invalidation, and
+filtering, then cache a separate compiled plan for repeated applies.
+
+The production sparsity sample above suggests a potentially larger
+speed/memory experiment: pack only each row's contiguous support band and
+multiply that band by the corresponding parent slice.  This could remove
+roughly half of the matrix-value traffic without the index cost of a generic
+sparse matrix.  It is a benchmark candidate, not a demonstrated replacement
+for the dense path.
+
+\pagebreak
+\subsection{Memory scaling}
+
+Let $K$ be the number of unique keys, $M$ the number of modes, $G$ the common
+grid length, and $S$ the number of species.  Ignoring small object and
+dictionary headers, the two dominant payload estimates are
+\begin{align}
+\mathcal M_W &\simeq
+K\,M\,G^2\,\operatorname{sizeof}(\texttt{Float32}),\\
+\mathcal M_{F+F^{\rm prim}} &\simeq
+2S\,M\,G\,\operatorname{sizeof}(\texttt{Float64}).
+\label{eq:cascade-memory}
+\end{align}
+The quadratic dependence on $G$, rather than the dictionaries, controls
+whether the table fits in RAM.
+
+For the current bundled \texttt{decays\_QM2016Plus\_massorder.dat}, a
+read-only enumeration gives:
+\begin{center}
+\begin{tabular}{lr}
+\hline
+quantity & current value\\
+\hline
+species & $1{,}518$\\
+multi-daughter channel records (plus stable self rows) & $20{,}509\ (+24)$\\
+enrolled massive observed-daughter slots & $44{,}643$\\
+unique keys: two-/three-/four-body & $12{,}725/5{,}042/532$\\
+all unique keys, of which broad & $18{,}299,\quad 3{,}227$ broad\\
+massless observed slots skipped & $1{,}242$\\
+closed/reopened/unresolved/five-body channels & $0/0/0/0$\\
+\hline
+\end{tabular}
+\end{center}
+At $G=134$ and $M=2$, the raw matrix payload is therefore
+\begin{equation}
+18{,}299\times2\times134^2\times4
+=2{,}628{,}614{,}752\ {\rm bytes}
+=2.448\ {\rm GiB}.
+\end{equation}
+Both \texttt{F} and \texttt{Fprim} together contain only
+$6{,}509{,}184$ bytes ($6.21$\,MiB) of spectrum values.  The full apply
+executes $89{,}286$ mode-specific dense matrix--vector products.  Doubling
+the grid to $G=268$ would quadruple the matrix payload to about
+$9.79$\,GiB; adding modes grows it linearly.
+
+The repository's recorded full-list timings are roughly $10$\,s to build on
+eight threads, $7$\,s to load the approximately $2.5$\,GB cache, and $2$\,s
+for the two-mode sweep.  These are hardware- and filesystem-dependent
+reference numbers, not algorithmic guarantees.
+
+\subsection{Persistence when the cache approaches or exceeds RAM}
+
+The current cache uses Julia's standard \texttt{Serialization}.  Saving
+streams the object graph to one file, but the complete dictionary of matrices
+must already be resident in memory.  Loading calls \texttt{deserialize} on
+the entire file before validating its format tuple, so it reconstructs the
+whole table; it cannot selectively page one key.  The format is therefore a
+regenerable Julia-local cache, not a portable long-term data format.
+
+The current writer also opens the final path directly in write mode.  An
+interrupted save may leave a truncated file; loading catches the failure and
+rebuilds, but the previous good cache has already been lost.  A safer writer
+would stream to a temporary file on the same filesystem, flush and close it,
+then atomically rename it over the destination.
+
+\begin{samepage}
+Before a large build, Julia can expose both the predicted payload and coarse
+system-memory information:
+\begin{verbatim}
+G, M = length(grid), length(modes)
+K = length(CascadeTables.neededkeys(dl)[1])
+raw = K * M * G^2 * sizeof(Float32)
+@show raw / 2.0^30                 # predicted matrix GiB
+@show Sys.total_memory() / 2.0^30
+@show Sys.free_memory() / 2.0^30
+@show Sys.maxrss() / 2.0^30
+
+# After a table exists:
+@show Base.summarysize(tab) / 2.0^30
+@show filesize("Wtables.jls") / 2.0^30
+\end{verbatim}
+\end{samepage}
+\texttt{Sys.free\_memory()} is only a conservative instantaneous signal:
+the operating system may reclaim file cache, while other processes can also
+consume memory after the check.  \texttt{Sys.maxrss()} is the process
+resident-set high-water mark, and \texttt{Base.summarysize} estimates
+Julia-owned reachable objects but not the resident pages of an mmap.  A
+safety margin is still required.
+
+There are three distinct persistence choices:
+\begin{center}
+\begin{tabular}{p{0.20\linewidth}p{0.29\linewidth}p{0.39\linewidth}}
+\hline
+format & RAM behavior & speed and best use\\
+\hline
+Julia Serialization
+& full table reconstructed
+& simple and fast when it fits; current local regenerable cache\\
+\texttt{mmap} binary
+& demand-paged by the OS
+& cold page faults, low overhead once warm; lowest-overhead out-of-core
+local cache\\
+HDF5, chunked
+& selected chunks can be read
+& chunk cache, copies, and optional decompression; portable metadata and
+subset-oriented workflows\\
+\hline
+\end{tabular}
+\end{center}
+
+For a cache larger than RAM, the speed-oriented design is a small metadata
+index plus a fixed-layout, key-major \texttt{Float32} matrix file mapped
+read-only with \texttt{Mmap.mmap}.  Matrices can be built and written one key
+at a time, so neither saving nor loading requires a second full resident copy.
+The compiled operation plan described above would store matrix offsets rather
+than dictionary-owned arrays.  This design is not implemented in the current
+repository.
+
+Memory mapping does not make disk I/O disappear.  A full cascade touches
+almost every enrolled matrix, so a cold out-of-core sweep is limited by
+storage bandwidth and page faults; a resident table remains faster when RAM
+is sufficient.  Mapping is most valuable because it permits a file larger
+than RAM, avoids all-at-once deserialization, and lets the operating system
+retain the hottest pages.
+
+HDF5 is preferable when portability, rich metadata, compression, or reading
+only a filtered subset matters more than minimum hot-loop overhead.  A
+reasonable chunk keeps all modes of one key together, for example
+$(G,G,M,1)$ in a key-major dataset, rather than splitting a matrix.  Splitting
+the arithmetic itself into smaller $p_T$ chunks would add loop and I/O
+overhead while every update still needs the complete dense matrix.  Thus
+\emph{storage-level} chunking or sharding is useful; chunking the in-memory
+cascade multiply is not the first speed optimization.  Compression must be
+benchmarked against the matrices: smaller disk traffic can help a cold load,
+but decompression and copying can slow repeated full sweeps.
+
+\subsection{Filtering, validation, and regression evidence}
+
+Filtering changes the channel topology but retains all species, so a full
+table can apply any filtered subset without rebuilding.  A lean table built
+from a filtered list cannot apply a later superset: every required key must
+already exist, otherwise the current apply raises a missing-key error.
+Likewise, the \texttt{primary} callback must return one grid-length vector per
+species and mode; excluding a primary requires \texttt{zeros(length(grid))},
+not a scalar zero.
+
+The particle-list parser distinguishes 12-field particle headers from
+8-field channel rows, accepts declared multiplicities from one through five,
+and rejects a nonzero daughter identifier in padding beyond the declared
+multiplicity.  It does not currently verify the header's stated channel count,
+duplicate particle identifiers, or finiteness and positivity of every parsed
+numeric field.  Those remain input-data responsibilities.
+
+\texttt{validate(dl)} is a separate, explicit input check; table construction
+does not call it automatically.  It checks daughter resolution, charge and
+baryon conservation, individual and summed branching ratios, and reports
+strangeness/charm changes and subthreshold rows.  It does not establish
+acyclicity, table coverage, or the one-body self-row convention, and it does
+not validate mass/width finiteness, grid monotonicity, or quadrature orders.
+
+The cascade regression tests currently verify:
+\begin{itemize}
+\item direct two-/three-body composition and repeated-daughter multiplicity
+agree with the table sweep to better than $10^{-5}$;
+\item save/load round-trips reproduce the spectra bitwise;
+\item adding a channel builds only its two new observed-slot keys and
+\texttt{prune!} removes those two orphans;
+\item an all-pass filter is bitwise identical to the unfiltered apply, while a
+two-body filter reuses the full table and removes only the excluded feed-down;
+\item a broad parent changes the daughter feed-down relative to its sharp
+counterpart, and a synthetic tail-reopened parent is ordered before its
+heavier daughter so downstream feed-down remains nonzero.
+\end{itemize}
+
+\section{Rapidity-dependent sources: the block-Toeplitz structure}
 \label{sec:rapidity}
+
+This section derives the rapidity-dependent extension.  The executable
+regression evidence in Sec.~\ref{sec:validation} applies to the currently
+implemented \texttt{MassAverage} functor and boost-invariant matrix path; it
+does not claim an implementation test of the Toeplitz construction below.
 
 \subsection{The kernel as a rapidity convolution}
 \label{sec:conv}
@@ -1235,29 +1713,11 @@ need not be symmetric in rapidity; the \emph{profile} is.)
 \end{enumerate}
 For $N_{p_T}=39$, $N_q=121$, $N_\eta=61$, $h_\eta=0.05$,
 $L\approx40$: dense $W$ is
-$(39\cdot61)\times(121\cdot61)\approx1.4\times10^{8}$ entries
+$(39\cdot61)\times(121\cdot61)\approx1.76\times10^{7}$ entries
 ($\sim$140\,MB), the tensor is $39\times121\times41\approx1.9\times10^{5}$
 entries ($\sim$1.5\,MB) --- a factor $\sim10^{2}$, at zero accuracy cost,
 because it encodes exact symmetries (translation invariance and parity of
 the profile) rather than a numerical truncation.
-
-Two further exact properties shrink the tensor:
-\begin{enumerate}
-\item \textbf{Banded:} the $\Theta$-support limits
-$|\Delta\eta|\le\operatorname{arccosh}\!\big[(C+Q)/M\big]$, in practice
-$1$--$2$ units of rapidity, so $B_d=0$ for $|d|>L$ with
-$L=\lceil\Delta\eta_{\max}/h_\eta\rceil$; only $2L+1$ offsets exist.
-\item \textbf{Even in $d$:} the kernel weight depends on $\Delta\eta$
-only through $\cosh\Delta\eta$, so $w[k,j,d]=w[k,j,-d]$ and only $d\ge0$
-need be stored.  (The \emph{source} need not be symmetric; the
-\emph{profile} is.)
-\end{enumerate}
-For $N_{p_T}=39$, $N_q=121$, $N_\eta=61$, $h_\eta=0.05$,
-$L\approx40$: dense $W$ is
-$(39\cdot61)\times(121\cdot61)\approx1.4\times10^{8}$ entries
-($\sim$140\,MB), the tensor is $39\times121\times41\approx1.9\times10^{5}$
-entries ($\sim$1.5\,MB) --- a factor $\sim10^{2}$, at zero accuracy cost,
-because it encodes an exact symmetry rather than a numerical truncation.
 
 \subsection{Assembly}
 \label{sec:toeplitz-assembly}
@@ -1359,22 +1819,277 @@ appropriate for the same reason as in Sec.~\ref{sec:matrix} (rounding
 $6\times10^{-8}$, far below the quadrature setting), halving the
 $\sim1$--$3$\,MB per decay and mode.
 
+\section{Implementation validation and domain of applicability}
+\label{sec:validation}
+
+The results in this section concern the implemented boost-invariant path.
+That implementation has two distinct numerical layers.  A
+\texttt{MassAverage} evaluates the continuous decay integral directly, while
+\texttt{DecayMatrix} or \texttt{decaymatrices} additionally interpolates the
+parent spectrum from a finite $q_T$ grid.  A useful validation therefore
+checks the integral before checking the matrix: otherwise interpolation and
+grid-truncation errors can be mistaken for errors in the decay kernel.
+
+\subsection{Validated operating domain}
+
+For every sharp two-body kernel contained in a two-, three-, or four-body
+average, the numerically supported domain is the \emph{strictly open} physical
+region
+\begin{equation}
+ m_a > m_b+\sum_{i\ne b}m_i,\qquad
+ m_b>0,\qquad m_i\ge 0 .
+ \label{eq:strict-domain}
+\end{equation}
+The strict inequality matters.  At equality the rest-frame daughter momentum
+$p_b$ vanishes.  The two-body prefactor contains $1/p_b$, and the normalization
+of a multi-body phase-space average also vanishes.  The limiting decay
+distribution can be discussed analytically, but it is not represented by the
+fixed-order formulas implemented here.  Branching ratios should be finite and
+non-negative, and all quadrature orders
+$n_q,n_\theta,n_\mu,n_\sigma,n_{m_a}$ must be positive integers.  The observed
+daughter is required to have nonzero mass; a photon may occur among the
+unobserved partners, but the present $(p_T,\eta)$ kernel does not return a
+massless observed spectrum.
+
+For a finite-width parent the tested Breit--Wigner setup additionally obeys
+\begin{equation}
+ m_R>0,\qquad \Gamma>0,\qquad
+ 0<m_{\min}<m_{\max},
+ \label{eq:bw-domain}
+\end{equation}
+normally with $m_{\min}<m_R<m_{\max}$.  The spectral average is normalized on
+the full window $[m_{\min},m_{\max}]$, whereas decay-kernel nodes are placed
+only in the open portion of that window.  Consequently a channel that is
+closed at the pole but open in the high-mass tail retains the correct
+open-spectral-weight suppression.
+
+The bundled cascade applies two additional guards before constructing a
+matrix: a sharp channel is enrolled only if
+$m_a>\sum_i m_i+10^{-6}\,\mathrm{GeV}$, and a broad parent's lower support is
+clipped to
+\begin{equation}
+ m_{\min}=\max(m_R-4\Gamma,\;0.05\,\mathrm{GeV}).
+\end{equation}
+Thus the exact-threshold and non-positive-support cases discussed below are
+excluded by the standard cascade path.  They remain relevant to users calling
+the exported decay constructors directly.
+
+\subsection{Independent numerical checks}
+
+For the invariant number functional
+\begin{equation}
+ {\cal N}[F]=\int_0^\infty q_T\,\mathrm{d}q_T
+             \int_{-\infty}^{\infty}\mathrm{d}\eta
+             \int_0^{2\pi}\mathrm{d}\phi\,F(q_T,\eta,\phi),
+ \label{eq:number-functional}
+\end{equation}
+an isotropic channel must give ${\cal N}[F_b]=B{\cal N}[F_a]$.  This is a
+particularly strong test because it integrates the returned spectrum over the
+entire daughter phase space.  The current \texttt{runtests.jl} suite, evaluated
+with Julia~1.12.6, gives:
+\begin{center}
+\begin{tabular}{p{0.34\linewidth}p{0.30\linewidth}p{0.24\linewidth}}
+\hline
+check & observable & measured result \\
+\hline
+$\rho\to\pi\pi$, sharp two-body
+  & ${\cal N}_b/(B{\cal N}_a)$ & $0.999999$ \\
+$\omega\to3\pi$, three-body
+  & ${\cal N}_b/(B{\cal N}_a)$ & $1.000069$ \\
+$1.3\,\mathrm{GeV}\to4\pi$, four-body
+  & ${\cal N}_b/(B{\cal N}_a)$ & $1.000001$ \\
+broad $\rho\to\pi\pi$
+  & ${\cal N}_b/(B{\cal N}_a)$ & $1.00009$ \\
+direct azimuthal result vs.\ $n=0,\pm2$ reconstruction
+  & relative difference & at most $10^{-6}$ \\
+functor orders doubled
+  & two- and three-body relative difference & below $5\times10^{-7}$ \\
+\hline
+\end{tabular}
+\end{center}
+These tests use an independent adaptive outer integration of a static
+Boltzmann source.  Four-body permutations of the three unobserved cluster
+masses also agree within the regression tolerance, checking the nested
+Dalitz-area integral rather than merely its normalization.
+
+The sampled matrix is compared separately with the continuous functor.  On
+$q_T\in[0,4.2]$ with 121 parent-grid points and fourth-order local Lagrange
+interpolation, the maximum relative differences are
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+channel and mode & $\rho,\ n=0$ & $\rho,\ n=2$ & $\omega,\ n=0$ \\
+\hline
+maximum relative difference
+ & $2.6\times10^{-5}$ & $2.7\times10^{-4}$ & $3.1\times10^{-5}$ \\
+\hline
+\end{tabular}
+\end{center}
+This comparison includes interpolation and the finite parent-grid cutoff; it
+is therefore expected to be less precise than the direct quadrature
+comparison.  Matrix assembly for the tested modes is deterministic:
+\texttt{threaded=true} and \texttt{threaded=false} produce bitwise-identical
+matrices.  Negative Fourier indices reuse the even Chebyshev kernel
+($W_{-n}=W_n$), and the regression suite also checks non-default integer mode
+types such as \texttt{Int8} and \texttt{Int32}.  These results exercise selected
+thermal sources and kinematic points; they are regression evidence, not a
+proof for every possible input function or grid.
+
+\subsection{Production-order sampled convergence}
+
+The preceding continuous checks use the conservative functor defaults, while
+the cascade builds at $(n_q,n_\theta,n_\mu,n_\sigma,n_{m_a})=(32,8,8,8,8)$.
+To measure that distinction directly, the bundled list was divided into the
+six two-/three-/four-body, sharp/broad strata.  Six reproducibly selected
+keys from each stratum were evaluated on the production 134-point
+$q_T\in[0,4]$ grid and ten daughter momenta from $0.1$ to $2.0$\,GeV.  The
+source was a $T=0.145$\,GeV transverse Boltzmann spectrum with parent
+$v_2=0.05$.  Production matrices were compared with
+$(128,32,32,32,32)$ matrices of the same grid and interpolation order.
+
+For mode zero, let $\epsilon_0$ be the maximum absolute spectrum difference
+normalized by the reference peak.  For mode two, a relative error can become
+arbitrarily large when the true response crosses zero, so the physical metric
+is instead the maximum absolute error in the daughter
+$v_2=F_2/F_0$:
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\hline
+key stratum
+& median $\epsilon_0$ & max.\ $\epsilon_0$
+& median $|\Delta v_2|$ & max.\ $|\Delta v_2|$\\
+\hline
+two-body, sharp   & $1.05{\times}10^{-4}$ & $1.81{\times}10^{-4}$ & $8.35{\times}10^{-6}$ & $1.39{\times}10^{-5}$\\
+two-body, broad   & $5.81{\times}10^{-4}$ & $8.66{\times}10^{-3}$ & $8.28{\times}10^{-4}$ & $2.77{\times}10^{-3}$\\
+three-body, sharp & $2.43{\times}10^{-3}$ & $2.39{\times}10^{-2}$ & $1.63{\times}10^{-3}$ & $7.27{\times}10^{-3}$\\
+three-body, broad & $4.02{\times}10^{-3}$ & $1.37{\times}10^{-2}$ & $1.93{\times}10^{-3}$ & $4.66{\times}10^{-3}$\\
+four-body, sharp  & $2.62{\times}10^{-2}$ & $9.50{\times}10^{-2}$ & $9.14{\times}10^{-3}$ & $1.43{\times}10^{-2}$\\
+four-body, broad  & $1.25{\times}10^{-2}$ & $2.22{\times}10^{-2}$ & $4.46{\times}10^{-3}$ & $7.11{\times}10^{-3}$\\
+\hline
+\end{tabular}
+\end{center}
+These are small per-stratum samples, not a population-weighted full-cascade
+error bar.  Nevertheless,
+checking the worst sampled key in each stratum against
+$(256,64,64,64,64)$ left only $2.4\,10^{-6}$--$8.8\,10^{-6}$ residual
+mode-zero error and at most $5.2\,10^{-4}$ residual absolute $v_2$ error, so
+the observed production-order differences are not reference noise.
+
+Rounding each matrix to \texttt{Float32} is not the limitation: over all 72
+sampled key--mode applications its median effect was $5.9\,10^{-9}$ and its
+maximum was $2.5\,10^{-8}$.  The convergence study instead isolates
+$n_\mu=8$ as the main three-/four-body limitation and $n_{m_a}=8$ as the
+additional broad-parent limitation; increasing $n_q$, $n_\theta$, or
+$n_\sigma$ alone had little effect in the difficult sampled cases.
+
+A selective candidate
+$(n_q,n_\theta,n_\mu,n_\sigma,n_{m_a})=(32,8,16,8,16)$ was checked on the
+worst sampled mode-zero key of every stratum.  The largest mode-zero error
+fell from $9.50\,10^{-2}$ to $8.51\,10^{-4}$, and the largest absolute
+daughter-$v_2$ error fell from $1.39\,10^{-2}$ to $3.38\,10^{-3}$.
+This changes only one-time construction work; matrix size and cascade-apply
+speed are unchanged.  It is therefore the first accuracy setting to try when
+multi-body anisotropy matters, followed by an order-doubling check for the
+specific observables.
+
+There is still no single independently measured ``full-cascade percentage'':
+the answer depends on branching ratios, the primary spectra, cancellations,
+and how errors propagate through successive generations.  The current
+cascade-vs-direct regression uses the same low-order kernels on both sides,
+so it validates branching ratios, multiplicity, ordering, persistence, and
+\texttt{Float32} wiring rather than production quadrature accuracy.  A
+high-order end-to-end cascade comparison remains desirable.
+
+\subsection{Finite-width threshold stress test}
+
+The difficult finite-width case is a narrow open sliver: the pole lies below
+threshold and only the upper end of the spectral window can decay.  Sampling
+the whole window with ordinary nodes and discarding closed nodes can miss this
+sliver completely.  The implementation instead splits the parent-mass
+quadrature at threshold and places all decay nodes in the open interval.  For
+the deliberately severe test
+\begin{equation}
+ [m_{\min},m_{\max}]=[0.6,1.4]\,\mathrm{GeV},\qquad
+ m_{\mathrm{threshold}}=1.3\,\mathrm{GeV},
+\end{equation}
+\texttt{nma=8} now gives a nonzero matrix.  Relative to an
+\texttt{nma=96} reference, the integrated matrix deviation decreases from
+approximately $0.15$ at \texttt{nma=8} to $0.04$ at \texttt{nma=32}.
+Therefore threshold splitting fixes the silent-zero failure, but does not make
+a very small open fraction cheap to resolve.  For custom decay lists with such
+channels, \texttt{nma} should be increased until the result is stable; the
+default is intended for ordinary, well-open windows.  The bundled decay list
+currently enrolls no tail-reopened channels; the stress case is retained to
+protect custom lists and future data updates.
+
+\subsection{Known boundary behavior and recommended safeguards}
+
+Two classes of input are now rejected by the library itself, at construction.
+The sharp constructors test openness strictly, so exact equality in
+\eqref{eq:strict-domain} raises rather than producing an infinite two-body
+coefficient or a \texttt{NaN} three- or four-body normalization; and
+\texttt{BreitWigner} requires finite arguments with $m_R>0$, $\Gamma>0$ and
+$0\le m_{\min}<m_{\max}$, as in \eqref{eq:bw-domain}, while the five quadrature
+orders are required to be at least one.  These were not cosmetic omissions: a
+non-positive width, a non-positive pole mass or a reversed interval each
+yielded an \emph{empty} parent-mass average, that is a channel whose matrix is
+identically zero, which feeds nothing downstream and reports nothing.  A
+negative width additionally inverted the support interval on its own.  The
+keyword form still clamps a negative $m_{\min}$ to zero, which is a legitimate
+case: fourteen states in the QM2016 list are broad enough for the default
+$m_R-k\Gamma$ to fall below zero.
+
+The following remain outside the validated domain and must be handled by the
+calling application:
+\begin{enumerate}
+\item The arrays inside \texttt{MassAverage} --- its node lists, and the
+quadrature rules reached through \texttt{kern} --- are treated as immutable by
+the library and are shared between every channel built from the same
+\texttt{Rules}.  Sharing makes them safe for concurrent reads, and they are
+built eagerly before any task starts, so no reader can observe a partial one;
+but the objects are exported, and user code must not mutate them.  Mutating one
+would corrupt every channel that shares it, not only the channel at hand.
+\item For a broad channel whose open part is only a small fraction of its
+support, convergence in \texttt{nma} must be checked separately from
+convergence in $n_q,n_\theta,n_\mu,n_\sigma$.  Increasing the kernel orders
+cannot repair an under-resolved parent-mass average.
+\item A matrix represents the parent source only on its supplied $q_T$ grid.
+The interpolation convention is zero outside that grid, so its upper endpoint
+must be placed where the omitted parent tail is negligible.  This is a matrix
+domain choice, not an error of the continuous decay functor.
+\end{enumerate}
+
+Of the checks a robust production setup needs, the library now performs those
+it can state locally: masses against the strict threshold, widths and support
+bounds through \texttt{BreitWigner}, the quadrature orders, and the rejection
+of any non-finite coefficient arising from a near-threshold node of a broad
+parent.  What it cannot check is what only the caller knows --- that the
+branching ratios are the intended ones, that the $q_T$ grid extends past the
+parent tail, and that \texttt{nma} has been converged separately for a narrowly
+reopened channel.  Number conservation and matrix--functor agreement should be
+kept as regression tests regardless.  None of this touches the fast path: once
+valid matrices have been built, feed-down remains a sequence of in-place
+matrix--vector products.
+
 \section{Summary}
 
 \begin{center}
-\begin{tabular}{lll}
+\begin{tabular}{
+>{\raggedright\arraybackslash}p{0.21\linewidth}
+>{\raggedright\arraybackslash}p{0.29\linewidth}
+>{\raggedright\arraybackslash}p{0.38\linewidth}}
 \hline
 case & object & size / cost \\
 \hline
 $\eta$-independent, per mode $n$ & dense $W_n\in\mathbb R^{N_{p_T}\times N_q}$ &
-$\sim$40\,KB, apply $\sim\mu$s \\
+$\sim$38\,KiB for $39\times121$ \texttt{Float64}
+($\sim$70\,KiB for $134^2$ \texttt{Float32}); apply $\sim\mu$s \\
+full cascade, current defaults & $18{,}299$ keys, two modes on $134^2$ &
+$2.448$\,GiB raw matrix payload; recorded apply $\sim2$\,s \\
 $\eta$-dependent, per mode $n$ & tensor $w[k,j,d]$, $|d|\le L$, $d\ge0$ &
-$\sim$1\,MB, apply $\sim$ms \\
+$\sim$0.8\,MiB for $39\times121\times41$ \texttt{Float32}; apply $\sim$ms \\
 \hline
 \end{tabular}
 \end{center}
-Decay chains compose by matrix multiplication (and, in the Toeplitz case,
-by convolution of profiles), so the total feed-down of a hadron list is
-itself a precomputed linear map.
 
 \end{document}
