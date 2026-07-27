@@ -572,12 +572,14 @@ node — so `M(Fan)` reproduces `decay(...)` applied to the interpolant of
 Restrictions: the parent spectrum must be η-independent (boost-invariant) —
 the η dependence was folded into W. Quadrature nodes falling outside `qgrid`
 are treated as F_a = 0, i.e. the source must be negligible beyond the grid.
-`qgrid` may be an `AbstractRange` (uniform) or a sorted vector (non-uniform).
+`qgrid` may be a Float64 `AbstractRange` (uniform) or a sorted vector
+(non-uniform). Float64 ranges are stored as ranges; other inputs are copied
+to `Vector{Float64}`. The same storage rule applies independently to `pTs`.
 """
-struct DecayMatrix
+struct DecayMatrix{PT<:AbstractVector{Float64},QT<:AbstractVector{Float64}}
     n::Int
-    pT::Vector{Float64}
-    q::Vector{Float64}
+    pT::PT
+    q::QT
     W::Matrix{Float64}
 end
 
@@ -587,13 +589,11 @@ end
 _stencil(x, g::AbstractRange, P) = lagrangeweights(x, first(g), step(g), length(g), P)
 _stencil(x, g::AbstractVector, P) = lagrangeweights(x, g, P)
 
-# The stencil order must reach `_stencil` as a Val. With a plain Integer,
-# lagrangeweights converts per call and its NTuple{P,Float64} width is not
-# inferable, so the innermost loop goes dynamic — measured 310 ms against
-# 2.38 ms, with identical output. Normalized once at the entry point, where
-# `fillrows!` is the function barrier that re-specializes on the result.
-valorder(P::Val) = P
-valorder(P::Integer) = Val(Int(P))
+# Keep the compact, immutable representation that unlocks the uniform-grid
+# stencil. Every other iterable is copied exactly as Float64 values, preserving
+# the old mutation isolation and the actual samples of non-Float64 ranges.
+_normalizegrid(g::AbstractRange{Float64}) = g
+_normalizegrid(g) = collect(Float64, g)
 
 # ---------------------------------------------------------------------------
 # Fused multi-mode assembly: every Fourier mode in one quadrature sweep. The
@@ -669,14 +669,18 @@ Every entry is written, so the destination need not be zeroed and its contents
 on entry are irrelevant; `Ws` may be a reused staging buffer or an `Mmap`-backed
 matrix — anything supporting `setindex!`.
 
-With a `scratch` from [`rowscratch`](@ref) the serial path (`threaded = false`)
-allocates nothing at all. `scratch` is ignored when `threaded`, which allocates
-one set per task — and a `Task` per chunk besides, so it can never reach zero.
+The axes are trusted, used read-only, and never scanned: `qgrid` must be finite,
+nonnegative, strictly increasing, and contain at least `P` points.
+
+With a `scratch` from [`rowscratch`](@ref), the serial path
+(`threaded = false`) allocates nothing at all. `scratch` is ignored when
+`threaded`, which allocates one set per task — and a `Task` per chunk besides,
+so it can never reach zero.
 
 [`decaymatrices`](@ref) is this with freshly allocated output.
 """
 function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
-                        P = Val(4), threaded = true, scratch = nothing)
+                        P::Val = Val(4), threaded = true, scratch = nothing)
     npT, nq = length(pTs), length(qgrid)
     length(Ws) == length(mt) ||
         throw(DimensionMismatch("got $(length(Ws)) output matrices for $(length(mt)) modes"))
@@ -685,12 +689,11 @@ function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
     scratch === nothing ||
         (length(scratch) == length(mt) && all(r -> length(r) == nq, scratch)) ||
         throw(DimensionMismatch("scratch needs $(length(mt)) buffers of length $nq"))
-    Pv = valorder(P)          # Integer -> Val; see valorder (129x if skipped)
     mtv = map(Int, mt)                             # the assembly is Int-typed (chebT,
                                                    # scatterrows!); accept any Integer mode
-    # used read-only (pTv[k], eachindex) and never copied, so any AbstractVector
-    # serves — a Vector is aliased, a range is indexed in place. Same convention
-    # `qgrid` already follows; callers must not mutate either during the build.
+    # Used read-only (pTv[k], eachindex) and never copied: a Vector is aliased,
+    # a range is indexed in place. Callers must not mutate either axis during
+    # the build.
     pTv = pTs
     npT == 0 && return Ws                          # no rows to write (and cld(0, 0) throws)
     # One task per chunk of rows, each with its own buffer set for the task's
@@ -701,17 +704,18 @@ function decaymatrices!(Ws, d::MassAverage, mt::Tuple, pTs, qgrid;
     if threaded
         nt = min(Threads.nthreads(), npT)
         @sync for ks in Iterators.partition(eachindex(pTv), cld(npT, nt))
-            Threads.@spawn fillrows!(Ws, ks, d, mtv, pTv, qgrid, Pv, rowscratch(mt, nq))
+            Threads.@spawn fillrows!(Ws, ks, d, mtv, pTv, qgrid, P, rowscratch(mt, nq))
         end
     else
-        fillrows!(Ws, eachindex(pTv), d, mtv, pTv, qgrid, Pv,
+        fillrows!(Ws, eachindex(pTv), d, mtv, pTv, qgrid, P,
                   scratch === nothing ? rowscratch(mt, nq) : scratch)
     end
     return Ws
 end
 
 function decaymatrices(d::MassAverage, mt::Tuple, pTs, qgrid;
-                       P = Val(4), threaded = true, T::Type = Float64, scratch = nothing)
+                       P::Val = Val(4), threaded = true, T::Type = Float64,
+                       scratch = nothing)
     # `zeros`, not `undef`, even though decaymatrices! writes every entry: the
     # memset measures 1.12 µs per matrix, 0.04 s over a full cascade build (0.03%),
     # which does not pay for making full coverage load-bearing here. Zeroed
@@ -730,17 +734,18 @@ end
 # The >16 fallback builds one mode at a time, so it takes neither `scratch` nor
 # `threaded` — as with `threaded`, a `scratch` is simply unused there.
 function decaymatrices(d::MassAverage, modes::AbstractVector{<:Integer}, pTs, qgrid;
-                       P = Val(4), threaded = true, T::Type = Float64,
+                       P::Val = Val(4), threaded = true, T::Type = Float64,
                        scratch = nothing)::Vector{Matrix{T}}
     length(modes) ≤ 16 &&
         return decaymatrices(d, Tuple(modes), pTs, qgrid; P, threaded, T, scratch)
-    return [Matrix{T}(DecayMatrix(d, n, pTs, qgrid; P).W) for n in modes]
+    return [Matrix{T}(decaymatrices(d, (Int(n),), pTs, qgrid; P, T)[1])
+            for n in modes]
 end
 
-# Single-mode public API: one DecayMatrix struct, via the fused core with (n,).
-DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P = Val(4)) =
-    DecayMatrix(n, collect(Float64, pTs), collect(Float64, qgrid),
-                decaymatrices(d, (n,), pTs, qgrid; P)[1])
+function DecayMatrix(d::MassAverage, n::Integer, pTs, qgrid; P::Val = Val(4))
+    pTv, qv = _normalizegrid(pTs), _normalizegrid(qgrid)
+    return DecayMatrix(Int(n), pTv, qv, decaymatrices(d, (Int(n),), pTv, qv; P)[1])
+end
 
 # Tₙ(Z) = cos(n·acos Z) by the Chebyshev recurrence (Eq. 40): the assembly
 # needs only this polynomial, never the angle itself, so no acos/cos here.

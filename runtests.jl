@@ -252,9 +252,18 @@ d2 = maximum(abs.(M2(q -> FBIρ(q)) ./
 dω = maximum(abs.(Mω(FBIω) ./ [ω((q, η, ϕ) -> FBIω(q), pT, 0.0, 0.0) for pT in pT6] .- 1))
 @printf("   max rel dev:  ρ n=0 %.1e   ρ n=2 %.1e   ω n=0 %.1e\n", d0, d2, dω)
 @assert d0 < 5e-4 && d2 < 5e-4 && dω < 5e-4
-# range grid and vector grid must assemble the identical matrix
-Mv = DecayMatrix(ρ, 0, pT6, collect(qg6))
+# Float64 ranges stay compact and select the uniform stencil. An equivalent
+# vector takes the general non-uniform stencil, whose last bits may differ.
+@assert M0.pT === pT6 && M0.q === qg6
+qv6 = collect(qg6)
+Mv = DecayMatrix(ρ, 0, pT6, qv6)
+@assert Mv.q isa Vector{Float64} && Mv.q == qv6 && Mv.q !== qv6
 @assert maximum(abs.(M0.W .- Mv.W)) < 1e-10 * maximum(abs.(M0.W))
+# A genuinely non-uniform grid remains supported and is stored as a copied vector.
+qn6 = [0.0, 0.03, 0.11, 0.26, 0.50, 0.85, 1.30, 2.0, 3.0, 4.2]
+Mn = DecayMatrix(ρ, 0, range(0.1, 0.3, length = 3), qn6)
+@assert Mn.q isa Vector{Float64} && Mn.q == qn6 && Mn.q !== qn6
+@assert size(Mn.W) == (3, length(qn6)) && all(isfinite, Mn.W)
 println("   PASS")
 
 # ---------------------------------------------------------------- test 7
@@ -295,6 +304,7 @@ ord7 = (nq = 32, nθ = 8, nµ = 8)
 tabfile = tempname()
 tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
 @assert length(tab7.W) == 3            # ρ→π|π, ω→π|(πϖ), ω→ϖ|(ππ)
+@assert tab7.grid === g7 && tab7.grid isa AbstractRange{Float64}
 
 prim7(p, n, grid) = (n == 0 ? 1.0 : 0.05) * [exp(-hypot(p.mass, q) / T) for q in grid]
 res7 = runcascade(tab7, dl7; primary = prim7)
@@ -315,8 +325,12 @@ for (m, n) in ((1, 0), (2, 2))
 end
 
 # round trip: loading must reproduce exactly
+tab7native = loadtables(tabfile)
+@assert typeof(tab7native.grid) === typeof(tab7.grid)
+@assert tab7native.grid == tab7.grid && tab7native.W == tab7.W
 tab7b = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfile)
 res7b = runcascade(tab7b, dl7; primary = prim7)
+@assert tab7b.grid isa AbstractRange{Float64}
 @assert res7b.F[2][1] == res7.F[2][1] && res7b.F[2][2] == res7.F[2][2]
 
 # lenient update: a new channel builds only its missing key; prune removes it
@@ -430,18 +444,28 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
     # single-mode DecayMatrix wraps the fused core: .W ≡ decaymatrices((n,))[1]
     M = DecayMatrix(ρ8, 0, pT8, g)
     @assert M.W isa Matrix{Float64} && size(M.W) == (length(pT8), length(g))
-    @assert M.n == 0 && M.pT == pT8 && M.q == collect(g)
+    @assert M.n == 0 && M.pT == pT8 && M.pT !== pT8 && M.q === g
     @assert M.W == decaymatrices(ρ8, (0,), pT8, g)[1]
+
+    # Non-Float64 ranges are copied element-by-element rather than reconstructed
+    # from endpoints, preserving their actual rounded sample values.
+    pT32 = 0.1f0:0.1f0:0.3f0
+    qi = 0:1:4
+    Mi = DecayMatrix(ρ8, 0, pT32, qi; P = Val(2))
+    @assert Mi.pT isa Vector{Float64} && Mi.pT == collect(Float64, pT32)
+    @assert Mi.q isa Vector{Float64} && Mi.q == collect(Float64, qi)
+    @assert Mi.W == decaymatrices(ρ8, (0,), pT32, qi; P = Val(2))[1]
+    Wi = (zeros(length(pT32), length(qi)),)
+    decaymatrices!(Wi, ρ8, (0,), pT32, qi; P = Val(2))
+    @assert Wi[1] == Mi.W
+    W17 = decaymatrices(ρ8, collect(0:16), pT32, qi; P = Val(2))
+    @assert W17[1] == decaymatrices(ρ8, [0], pT32, qi; P = Val(2))[1]
 
     # the parallel assembly is deterministic: threaded ≡ serial, bitwise
     @assert decaymatrices(ω8, [0, 2], pT8, g; threaded = true) ==
             decaymatrices(ω8, [0, 2], pT8, g; threaded = false)
 
-    # stencil order: an Integer P must behave exactly like the Val form. It used
-    # to reach lagrangeweights unconverted, whose NTuple{P,Float64} width is then
-    # not inferable — the innermost loop went dynamic and ran 129x slower for an
-    # identical answer. decaymatrices now normalizes P to a Val at the entry.
-    @assert decaymatrices(ρ8, [0, 2], pT8, g; P = 4) == decaymatrices(ρ8, [0, 2], pT8, g; P = Val(4))
+    # Val keeps the stencil width known to the compiler in the innermost loop.
     @assert size(decaymatrices(ρ8, [0], pT8, g; P = Val(6))[1]) == (length(pT8), length(g))
 
     # mode argument is robust: any Integer eltype is accepted (was a MethodError

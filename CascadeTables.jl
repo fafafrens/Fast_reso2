@@ -38,13 +38,14 @@ export DecayList, ChannelKey, CascadeTable, runcascade, prune!, validate, DEFAUL
        fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
        parentstrangeness, strangeparent, charmparent, parentisospin
 
-const FORMAT = 6                       # bump on any layout OR matrix-value change
+const FORMAT = 7                       # bump on any layout OR matrix-value change
                                        # (2: 4-body key + nσ; 3: Chebyshev–Gauss Z-integral;
                                        #  4: parent-width key Γ + nma order;
                                        #  5: ChannelKey field reorder — Γ before mc/md/me;
                                        #  6: parent-mass quadrature split at the channel
                                        #     threshold — affects every broad key whose BW
-                                       #     window dips below it, ~70% of them)
+                                       #     window dips below it, ~70% of them;
+                                       #  7: cascade grids are stored as ranges)
 
 # Finite parent width (BroadParent): parents broader than WIDTHCUT get the
 # spectral-function mass average, truncated to ±WIDTHK·Γ; narrower ones stay
@@ -170,8 +171,8 @@ end
 # Tables
 # ---------------------------------------------------------------------------
 
-struct CascadeTable
-    grid::Vector{Float64}
+struct CascadeTable{G<:AbstractRange{Float64}}
+    grid::G
     orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma),Tuple{Int,Int,Int,Int,Int}}
     modes::Vector{Int}
     meta::Dict{Symbol,Any}
@@ -370,18 +371,21 @@ orders, modes), else build and save. `orders` may be any subset of
 [`DEFAULT_ORDERS`](@ref) — the rest are filled in. A decay-list hash mismatch
 keeps the tables (lenient policy — keys self-invalidate through their masses)
 but warns and builds any missing keys on demand.
+
+`grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
+uses the uniform-grid interpolation kernel without validation scans.
 """
 function CascadeTable(dl::DecayList;
-                      grid = range(0.0, 4.0, length = 134), orders = DEFAULT_ORDERS,
+                      grid::AbstractRange{Float64} = range(0.0, 4.0, length = 134),
+                      orders = DEFAULT_ORDERS,
                       modes = [0, 2], cache = nothing, rebuild = false)
-    gridv = collect(Float64, grid)
     # any subset is accepted; an unknown key makes the NamedTuple the wrong shape
     # for CascadeTable.orders and fails loudly rather than being silently ignored
     ordersnt = merge(DEFAULT_ORDERS, orders)
     modesv = collect(Int, modes)
     if cache !== nothing && !rebuild
         t = loadtables(cache)
-        if t !== nothing && t.grid == gridv && t.orders == ordersnt && t.modes == modesv
+        if t !== nothing && t.grid == grid && t.orders == ordersnt && t.modes == modesv
             t.meta[:sha] == dl.sha ||
                 @warn "decay list changed since tables were built; building missing keys on demand (prune! removes orphans)"
             nbuilt = ensure!(t, dl)
@@ -389,7 +393,7 @@ function CascadeTable(dl::DecayList;
             return t
         end
     end
-    t = CascadeTable(gridv, ordersnt, modesv, metafor(dl),
+    t = CascadeTable(grid, ordersnt, modesv, metafor(dl),
                      Dict{ChannelKey,Vector{Matrix{Float32}}}())
     ensure!(t, dl)
     cache !== nothing && savetables(t, cache)
@@ -412,6 +416,7 @@ function loadtables(path::AbstractString)
     end
     data isa Tuple && length(data) == 6 && data[1] == FORMAT || return nothing
     _, grid, orders, modes, meta, W = data
+    grid isa AbstractRange{Float64} || return nothing
     return CascadeTable(grid, orders, modes, meta, W)
 end
 
@@ -425,8 +430,10 @@ end
 Single mass-descending sweep: every species' spectrum is complete before it
 decays; each channel adds `BR · W_n · F_parent,n` into each daughter, per
 mode. `primary(p::ParticleInfo, n, grid)` supplies the mode-`n` primary
-spectrum of species `p` on the grid. Returns per-species vectors of
-per-mode spectra (`F[id][m]` for mode `t.modes[m]`), total and primary.
+spectrum of species `p` on `grid::AbstractVector{Float64}`. The grid may be
+an immutable range and must be treated as read-only. Returns per-species
+vectors of per-mode spectra (`F[id][m]` for mode `t.modes[m]`), total and
+primary.
 """
 function runcascade(t::CascadeTable, dl::DecayList; primary)
     F = Dict(id => [Vector{Float64}(primary(p, n, t.grid)) for n in t.modes]

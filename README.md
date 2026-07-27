@@ -80,6 +80,11 @@ builds it (~16 s on 8 threads at the default orders, nµ = nma = 16, incl.
 finite parent widths) and saves it (~2.5 GB Float32); later runs load it
 (~7 s), and the cascade sweep itself takes ~2 s.
 
+`CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
+that input. This keeps the grid compact and selects the uniform interpolation
+kernel without validation scans. Standalone `DecayMatrix` objects still accept
+non-uniform vectors.
+
 The test suite covers number conservation (2-/3-/4-body), Fourier-mode
 reconstruction, quadrature and Lagrange-weight convergence (incl. 1st/2nd
 derivatives), matrix-vs-functor agreement, the cascade round-trip, and channel
