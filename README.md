@@ -113,7 +113,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
 | `CascadeTables.jl`  | Persistent per-channel packed matrices, filtering, feeder-first cascade, compiled flat plans |
 | `RowBandMatrix.jl`  | Offset-backed row-band `AbstractMatrix` storage |
-| `CascadeLinearAlgebra.jl` | Mixed `Float32`/`Float64` row-band `mul!` and short scatter kernels |
+| `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible legacy-vs-plan deterministic full-apply benchmark |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |

@@ -20,19 +20,23 @@
 end
 
 function mul!(
-        destination::AbstractVector{Float64},
-        matrix::RowBandMatrix{Float32},
-        source::AbstractVector{Float64},
+        destination::AbstractVector{DestinationValue},
+        matrix::RowBandMatrix{MatrixValue},
+        source::AbstractVector{SourceValue},
         α::Number,
         β::Number,
-    )
+    ) where {
+        DestinationValue <: Number,
+        MatrixValue <: Number,
+        SourceValue <: Number,
+    }
     Base.require_one_based_indexing(destination, matrix, source)
     row_count, column_count =
         _mul_dimensions(destination, matrix, source)
 
     if iszero(α) || iszero(column_count)
         if iszero(β)
-            fill!(destination, 0.0)
+            fill!(destination, zero(DestinationValue))
         elseif !isone(β)
             @inbounds @simd for row in eachindex(destination)
                 destination[row] *= β
@@ -41,15 +45,18 @@ function mul!(
         return destination
     end
 
+    product_type = Base.promote_op(*, MatrixValue, SourceValue)
+    accumulator_type = Base.promote_op(+, product_type, product_type)
+
     if iszero(β)
         @inbounds for row in 1:row_count
             first_value = Int(matrix.value_offsets[row])
             next_value = Int(matrix.value_offsets[row + 1])
             first_column = Int(matrix.column_starts[row])
-            accumulator = 0.0
+            accumulator = zero(accumulator_type)
             @simd for value_index in first_value:(next_value - 1)
                 accumulator = muladd(
-                    Float64(matrix.values[value_index]),
+                    matrix.values[value_index],
                     source[first_column + value_index - first_value],
                     accumulator,
                 )
@@ -67,10 +74,10 @@ function mul!(
             first_value = Int(matrix.value_offsets[row])
             next_value = Int(matrix.value_offsets[row + 1])
             first_column = Int(matrix.column_starts[row])
-            accumulator = 0.0
+            accumulator = zero(accumulator_type)
             @simd for value_index in first_value:(next_value - 1)
                 accumulator = muladd(
-                    Float64(matrix.values[value_index]),
+                    matrix.values[value_index],
                     source[first_column + value_index - first_value],
                     accumulator,
                 )

@@ -800,9 +800,9 @@ function assert_plan_matches(candidate, reference)
     return nothing
 end
 
-# The packed matrix kernel retains Float64 accumulation while reading Float32.
-# Exercise overwrite, accumulation, scaling, and scatter paths directly before
-# checking them through the complete executors.
+# The packed matrix kernel derives its accumulator from matrix and source
+# arithmetic. Exercise generic numeric types plus the production
+# Float32-matrix/Float64-spectrum path before checking complete executors.
 let
     matrix = Float32[
         0.25 -0.5 0.75 1.0
@@ -864,6 +864,65 @@ let
         rtol = 2.0e-14,
         atol = 2.0e-14,
     )
+
+    generic_matrix = [
+        1 0 -2
+        0 3 0
+        4 0 5
+    ]
+    generic_source = [2, -1, 3]
+    generic_initial = [5, -2, 1]
+    for (matrix_type, source_type, destination_type) in (
+            (Float32, Float32, Float32),
+            (Float64, Float32, Float64),
+            (Float32, Float64, Float64),
+            (Float32, ComplexF64, ComplexF64),
+            (ComplexF64, Float64, ComplexF64),
+            (Int, Int, Int),
+            (BigInt, BigInt, BigInt),
+            (Rational{Int}, Rational{Int}, Rational{Int}),
+        )
+        dense = matrix_type.(generic_matrix)
+        packed = CascadeTables.RowBandMatrix(dense)
+        typed_source = source_type.(generic_source)
+        expected = destination_type.(generic_initial)
+        actual = copy(expected)
+        mul!(expected, dense, typed_source, 2, -1)
+        @assert mul!(actual, packed, typed_source, 2, -1) === actual
+        @assert actual ≈ expected
+        @assert packed * typed_source ≈ dense * typed_source
+    end
+
+    generic_float32_matrix =
+        CascadeTables.RowBandMatrix(Float32.(generic_matrix))
+    generic_float32_source = Float32.(generic_source)
+    generic_float32_destination = zeros(Float32, 3)
+    generic_complex_source = ComplexF64.(generic_source)
+    generic_complex_destination = zeros(ComplexF64, 3)
+    mul!(
+        generic_float32_destination,
+        generic_float32_matrix,
+        generic_float32_source,
+    )
+    mul!(
+        generic_complex_destination,
+        generic_float32_matrix,
+        generic_complex_source,
+    )
+    @assert @allocated(
+        mul!(
+            generic_float32_destination,
+            generic_float32_matrix,
+            generic_float32_source,
+        )
+    ) == 0
+    @assert @allocated(
+        mul!(
+            generic_complex_destination,
+            generic_float32_matrix,
+            generic_complex_source,
+        )
+    ) == 0
 
     source_buffer = [0.0; source; 0.0]
     destination_buffer = zeros(length(initial) + 2)
