@@ -1449,10 +1449,13 @@ At $G=134$ and $M=2$, the dense baseline is
 \end{equation}
 The measured support census gives a current packed estimate of
 $1.1012$\,GiB, or $44.98\%$ of that dense baseline.
-Both \texttt{F} and \texttt{Fprim} together contain only
-$6{,}509{,}184$ bytes ($6.21$\,MiB) of spectrum values.  The full apply
-executes $89{,}286$ mode-specific matrix--vector products in the keyed
-slot sweep.  Grouping in \texttt{CascadePlan} reduces this to $78{,}150$,
+With \texttt{output=:all}, \texttt{F} and \texttt{Fprim} together contain
+$6{,}509{,}184$ bytes ($6.21$\,MiB) of spectrum values.  The default stable
+output retains only $24$ species, or $102{,}912$ bytes (about
+$100.5$\,KiB), while unstable spectra remain internal for the duration of the
+cascade.  The full apply executes $89{,}286$ mode-specific matrix--vector
+products in the keyed slot sweep.  Grouping in \texttt{CascadePlan} reduces
+this to $78{,}150$,
 corresponding to $5.23$\,GiB of logical dense matrix traffic before cache
 reuse, not current physical packed traffic.  At $G=268$ the dense baseline
 would be $9.79$\,GiB; packed scaling depends on the new support spans.  Adding

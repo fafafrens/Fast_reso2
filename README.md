@@ -94,8 +94,12 @@ into the source is diluted to 1.7% at pT = 0 — soft feed-down pions are
 emitted off-axis — recovering to 3.8% by 2 GeV.
 
 `res.F[id]` is the spectrum per Fourier mode after feed-down and `res.Fprim[id]`
-the primary part alone, both on `qs`, keyed by PDG id. The `primary` callback
-is where the physics goes: return `zero(qs)` for a species to exclude it.
+the primary part alone, both on `qs`, keyed by PDG id. Results contain only
+stable particles by default; `stableparticles(plan)` lists their
+`ParticleInfo` records in ID order. Pass `output = :all` to `runcascade` only
+when intermediate-resonance spectra are needed for diagnostics. The `primary`
+callback is where the physics goes: return `zero(qs)` for a species to exclude
+it.
 
 For production, pass `cache = "Wtables.jls"` so the packed matrices are built
 once and reloaded. At the default 134-point grid, dense `Float32` storage would
@@ -174,7 +178,7 @@ A cascade run has three orthogonal knobs, which live in three different places:
 |------|----------|-------|
 | **source** | which species emit primaries? | the `primary` callback (return `0` to exclude) |
 | **topology** | which decays are allowed? | `filter(pred, dl)` |
-| **sink** | which daughters do I read out? | index `res.F[id]` afterward — trivial |
+| **sink** | which daughters do I read out? | stable particles by default; `output = :all` for diagnostics |
 
 Filtering acts on the `DecayList` ("before" the cascade), not inside
 `runcascade`, so one filtered list governs **both** the table build and the

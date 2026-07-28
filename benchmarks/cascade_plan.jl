@@ -91,9 +91,12 @@ end
 
 function measure_apply(plan, primary, parallel; samples = SAMPLES)
     function fresh_spectra()
-        _, _, spectra_by_mode =
-            CascadeTables._initialize_plan_spectra(plan, primary)
-        return spectra_by_mode
+        initialized = CascadeTables._initialize_plan_spectra(
+            plan,
+            primary,
+            eachindex(plan.ids),
+        )
+        return initialized[3]
     end
 
     warm = fresh_spectra()
@@ -152,9 +155,10 @@ primary(particle, mode, momenta) = begin
     ]
 end
 
-reference = runcascade(table, decay_list; primary)
-serial = runcascade(plan; primary)
-threaded = runcascade(plan; primary, parallel = :modes)
+reference = runcascade(table, decay_list; primary, output = :all)
+serial = runcascade(plan; primary, output = :all)
+threaded =
+    runcascade(plan; primary, parallel = :modes, output = :all)
 serial_error = normalized_error(serial, reference)
 threaded_error = normalized_error(threaded, reference)
 serial.F == threaded.F ||
@@ -164,11 +168,17 @@ max(serial_error, threaded_error) ≤ 1.0e-12 ||
 
 compile_measurement = measure(() -> CascadePlan(table, decay_list))
 legacy_measurement = measure(
-    () -> runcascade(table, decay_list; primary),
+    () -> runcascade(table, decay_list; primary, output = :all),
 )
-serial_measurement = measure(() -> runcascade(plan; primary))
+serial_measurement =
+    measure(() -> runcascade(plan; primary, output = :all))
 threaded_measurement = measure(
-    () -> runcascade(plan; primary, parallel = :modes),
+    () -> runcascade(
+        plan;
+        primary,
+        parallel = :modes,
+        output = :all,
+    ),
 )
 serial_apply = measure_apply(plan, primary, :serial)
 threaded_apply = measure_apply(plan, primary, :modes)

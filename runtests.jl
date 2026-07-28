@@ -581,7 +581,27 @@ table_matrix_type7 = typeof(first(first(values(tab7.W))))
 )
 
 prim7(p, n, grid) = (n == 0 ? 1.0 : 0.05) * [exp(-hypot(p.mass, q) / T) for q in grid]
-res7 = runcascade(tab7, dl7; primary = prim7)
+primary_calls7 = Ref(0)
+counted_prim7(p, n, grid) = begin
+    primary_calls7[] += 1
+    return prim7(p, n, grid)
+end
+res7 = runcascade(tab7, dl7; primary = counted_prim7)
+@assert primary_calls7[] == length(parts7) * length(tab7.modes)
+@assert dl7.stable_ids == [2, 4]
+@assert [particle.id for particle in stableparticles(dl7)] == [2, 4]
+@assert Set(keys(res7.F)) == Set([2, 4])
+@assert Set(keys(res7.Fprim)) == Set([2, 4])
+
+res7allparticles =
+    runcascade(tab7, dl7; primary = prim7, output = :all)
+@assert Set(keys(res7allparticles.F)) == Set(keys(parts7))
+@assert Set(keys(res7allparticles.Fprim)) == Set(keys(parts7))
+for particle_id in dl7.stable_ids
+    @assert res7.F[particle_id] == res7allparticles.F[particle_id]
+    @assert res7.Fprim[particle_id] ==
+        res7allparticles.Fprim[particle_id]
+end
 
 # direct reference with Main.DecaySpectra (independent module instance)
 gv = collect(g7)
@@ -762,8 +782,9 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     @assert findfirst(==(1), ord_) < findfirst(==(2), ord_)   # P processed before D
     tab = CascadeTable(dl; grid = g, orders = ord, modes = [0], cache = nothing)
     prim(p, n, gr) = (n == 0 && p.id == 1) ? [exp(-hypot(p.mass, q) / 0.15) for q in gr] : zeros(length(gr))
-    res = runcascade(tab, dl; primary = prim)
-    planned = runcascade(CascadePlan(tab, dl); primary = prim)
+    res = runcascade(tab, dl; primary = prim, output = :all)
+    planned =
+        runcascade(CascadePlan(tab, dl); primary = prim, output = :all)
     for particle_id in keys(res.F), mode_index in eachindex(tab.modes)
         reference = res.F[particle_id][mode_index]
         error = maximum(abs.(planned.F[particle_id][mode_index] .- reference)) /
@@ -1065,6 +1086,13 @@ plan7 = CascadePlan(tab7, dl7)
 planned7 = runcascade(plan7; primary = prim7)
 assert_plan_matches(planned7, res7)
 @assert plan7.ids == sort!(collect(keys(dl7.parts)))
+@assert plan7.ids[plan7.stable_indices] == dl7.stable_ids
+@assert [particle.id for particle in stableparticles(plan7)] ==
+    dl7.stable_ids
+assert_plan_matches(
+    runcascade(plan7; primary = prim7, output = :all),
+    res7allparticles,
+)
 @assert [index for step in plan7.steps for index in step.groups] ==
     collect(eachindex(plan7.groups))
 @assert [index for group in plan7.groups for index in group.targets] ==
@@ -1086,6 +1114,15 @@ matrix_pool7 = [
 threaded7 = runcascade(plan7; primary = prim7, parallel = :modes)
 @assert threaded7.F == planned7.F
 @assert threaded7.Fprim == planned7.Fprim
+assert_plan_matches(
+    runcascade(
+        plan7;
+        primary = prim7,
+        parallel = :modes,
+        output = :all,
+    ),
+    res7allparticles,
+)
 
 # Reuse with a different callback must not retain or mutate run state.
 prim7alt(p, n, grid) =
@@ -1108,6 +1145,7 @@ concurrent7a, concurrent7b = fetch(task7a), fetch(task7b)
 
 # A filtered topology compiles against the already-built full table.
 two_body7 = filter(nbody(2), dl7)
+@assert two_body7.stable_ids == dl7.stable_ids
 two_body_plan7 = CascadePlan(tab7, two_body7)
 assert_plan_matches(
     runcascade(two_body_plan7; primary = prim7),
@@ -1121,6 +1159,10 @@ empty_plan7 = CascadePlan(tab7, empty_decay_list7)
 @assert isempty(empty_plan7.targets)
 empty_result7 = runcascade(empty_plan7; primary = prim7)
 @assert empty_result7.F == empty_result7.Fprim
+empty_all_result7 =
+    runcascade(empty_plan7; primary = prim7, output = :all)
+@assert empty_all_result7.F == empty_all_result7.Fprim
+@assert Set(keys(empty_all_result7.F)) == Set(keys(dl7.parts))
 
 # Execution no longer consults the keyed table after plan construction.
 snapshot_table7 = CascadeTable(
@@ -1181,12 +1223,13 @@ assert_plan_matches(
 ).F == one_mode_serial7.F
 
 # Invalid execution options fail before the callback is invoked.
+never_primary7(_args...) = error("primary must not be called")
 for invalid_parallel in (:threads, "modes", 2)
     let threw = false
         try
             runcascade(
                 plan7;
-                primary = (_args...) -> error("primary must not be called"),
+                primary = never_primary7,
                 parallel = invalid_parallel,
             )
         catch error
@@ -1195,6 +1238,33 @@ for invalid_parallel in (:threads, "modes", 2)
                 occursin(":serial or :modes", sprint(showerror, error))
         end
         @assert threw
+    end
+end
+
+for invalid_output in (:leaves, "stable", 2)
+    for run in (
+            () -> runcascade(
+                plan7;
+                primary = never_primary7,
+                output = invalid_output,
+            ),
+            () -> runcascade(
+                tab7,
+                dl7;
+                primary = never_primary7,
+                output = invalid_output,
+            ),
+        )
+        let threw = false
+            try
+                run()
+            catch error
+                threw =
+                    error isa ArgumentError &&
+                    occursin(":stable or :all", sprint(showerror, error))
+            end
+            @assert threw
+        end
     end
 end
 
@@ -1326,8 +1396,8 @@ let
         (n == 0 ? 1.0 : 0.04) *
         [exp(-hypot(p.mass, q) / T) for q in gr]
     assert_plan_matches(
-        runcascade(plan; primary),
-        runcascade(table, decay_list; primary),
+        runcascade(plan; primary, output = :all),
+        runcascade(table, decay_list; primary, output = :all),
     )
 end
 
@@ -1366,10 +1436,10 @@ let
     @assert length(plan.groups) == 4
     primary(p, _n, gr) = fill(p.id == 101 ? 1.0 : 0.1, length(gr))
     reference = with_logger(SimpleLogger(IOBuffer(), Logging.Error)) do
-        runcascade(table, decay_list; primary)
+        runcascade(table, decay_list; primary, output = :all)
     end
     assert_plan_matches(
-        runcascade(plan; primary),
+        runcascade(plan; primary, output = :all),
         reference,
     )
 end

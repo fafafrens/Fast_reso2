@@ -20,14 +20,16 @@ plan = CascadePlan(table, selected)
 result = runcascade(plan; primary, parallel = :modes)
 ```
 
-The existing result remains
+The result remains
 
 ```julia
 (F = Dict(id => spectra), Fprim = Dict(id => primary_spectra))
 ```
 
-so callers do not need to change how they read spectra.  Dictionaries are
-used at the API boundary, but not in the numerical loop.
+and contains stable particles by default, so callers do not need to change
+how they read final spectra. `output = :all` retains intermediate resonances
+for diagnostics. Dictionaries are used at the API boundary, but not in the
+numerical loop.
 
 This plan has four goals:
 
@@ -176,7 +178,8 @@ tie-break.
 
 At the beginning of each run:
 
-1. create the normal output dictionaries;
+1. initialize every species needed by the numerical sweep and create public
+   output dictionaries for stable particles;
 2. create a dense vector whose entries reference the same spectrum vectors;
 3. copy `Fprim`;
 4. allocate run-local scratch storage.

@@ -6,7 +6,7 @@ Structured, persistent decay-matrix tables for the full resonance cascade.
     dl = DecayList("decays_QM2016Plus_massorder.dat")
     t  = CascadeTable(dl; cache = "Wtables.jls")     # load, or build + save
     plan = CascadePlan(t, dl)                        # compile topology once
-    res = runcascade(plan; primary = myprimaries)    # per-species, per-mode
+    res = runcascade(plan; primary = myprimaries)    # stable species, per mode
 
 Design (see matrix_notes.pdf for details):
   * decay matrices are serialized; source identity and bytes remain in the
@@ -35,6 +35,7 @@ include("CascadeLinearAlgebra.jl")
 export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
     prune!, validate, DEFAULT_ORDERS,
     savetables, loadtables, ParticleInfo, DecayChannel,
+    stableparticles,
     isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
     ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
     fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
@@ -58,8 +59,40 @@ const DEFAULT_ORDERS = (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)
 struct DecayList
     parts::Dict{Int, ParticleInfo}
     byparent::Dict{Int, Vector{DecayChannel}}
+    stable_ids::Vector{Int}
     path::String
     sha::String
+end
+
+function _stableparticleids(particles, channels_by_parent)
+    stable_ids = Int[]
+    for particle_id in keys(particles)
+        channels = get(channels_by_parent, particle_id, nothing)
+        if channels === nothing || all(
+                channel ->
+                length(channel.daughters) == 1 &&
+                    only(channel.daughters) == particle_id,
+                channels,
+            )
+            push!(stable_ids, particle_id)
+        end
+    end
+    return sort!(stable_ids)
+end
+
+function DecayList(
+        particles::Dict{Int, ParticleInfo},
+        channels_by_parent::Dict{Int, Vector{DecayChannel}},
+        path::AbstractString,
+        sha::AbstractString,
+    )
+    return DecayList(
+        particles,
+        channels_by_parent,
+        _stableparticleids(particles, channels_by_parent),
+        String(path),
+        String(sha),
+    )
 end
 
 function DecayList(path::AbstractString)
@@ -69,6 +102,17 @@ function DecayList(path::AbstractString)
         bytes2hex(sha256(read(path)))
     )
 end
+
+"""
+    stableparticles(decay_list::DecayList) -> Vector{ParticleInfo}
+
+Return particles marked terminal by the decay list in ascending particle-ID
+order. Terminal particles use one-body self-channels in file-backed lists;
+particles without a channel block are also treated as terminal for
+programmatically constructed lists.
+"""
+stableparticles(decay_list::DecayList) =
+    [decay_list.parts[particle_id] for particle_id in decay_list.stable_ids]
 
 # ---------------------------------------------------------------------------
 # Channel filtering
@@ -105,11 +149,12 @@ end
 """
     filter(f::ChannelFilter, dl::DecayList) -> DecayList
 
-Restrict `dl` to the channels satisfying `f`, keeping every species (so all
-daughters still resolve and appear as cascade leaves) but pruning `byparent`.
-The result flows unchanged through `CascadeTable` and `runcascade`; since the
-masses are unchanged, its decay-matrix keys are a subset of the full list's, so
-filtering an *apply* reuses a full cached table with no rebuild.
+Restrict `dl` to the channels satisfying `f`, keeping every species so all
+daughters still resolve but pruning `byparent`. The original terminal-particle
+set is preserved. The result flows unchanged through `CascadeTable` and
+`runcascade`; since the masses are unchanged, its decay-matrix keys are a
+subset of the full list's, so filtering an *apply* reuses a full cached table
+with no rebuild.
 """
 function Base.filter(selection::ChannelFilter, dl::DecayList)
     channels_by_parent = Dict{Int, Vector{DecayChannel}}()
@@ -137,7 +182,13 @@ function Base.filter(selection::ChannelFilter, dl::DecayList)
         end
     end
 
-    return DecayList(dl.parts, channels_by_parent, dl.path, dl.sha)
+    return DecayList(
+        dl.parts,
+        channels_by_parent,
+        dl.stable_ids,
+        dl.path,
+        dl.sha,
+    )
 end
 
 # --- channel properties ----------------------------------------------------
@@ -347,10 +398,18 @@ struct CascadePlan{
     table::T
     ids::Vector{Int}
     particles::Vector{ParticleInfo}
+    stable_indices::Vector{Int}
     steps::Vector{CascadeStep}
     groups::Vector{CascadeGroup{N, M}}
     targets::Vector{CascadeTarget}
 end
+
+"""
+    stableparticles(plan::CascadePlan) -> Vector{ParticleInfo}
+
+Return the plan's terminal particles in ascending particle-ID order.
+"""
+stableparticles(plan::CascadePlan) = plan.particles[plan.stable_indices]
 
 mutable struct _CascadeGroupBuilder{N, M <: RowBandMatrix{Float32}}
     matrices::NTuple{N, M}
@@ -565,6 +624,9 @@ function CascadePlan(
     dense_index = Dict(
         particle_id => index for (index, particle_id) in pairs(ids)
     )
+    stable_indices = [
+        dense_index[particle_id] for particle_id in decay_list.stable_ids
+    ]
 
     # These dictionaries exist only while compiling the topology. Builders
     # preserve first-seen group/target order; the finalized plan below contains
@@ -666,6 +728,7 @@ function CascadePlan(
         table,
         ids,
         particles,
+        stable_indices,
         steps,
         groups,
         targets,
@@ -937,16 +1000,32 @@ _restoretable(_grid, _orders, _modes, _metadata, _matrices) = nothing
 # ---------------------------------------------------------------------------
 
 """
-    runcascade(t, dl; primary) -> (F, Fprim)
+    runcascade(t, dl; primary, output = :stable) -> (F, Fprim)
 
 Single feeder-before-fed sweep: every species' spectrum is complete before it
 decays. Each channel adds `BR · W_n · F_parent,n` to each daughter and mode.
 `primary(p::ParticleInfo, n, grid)` supplies the mode-`n` primary spectrum of
 species `p` on `table.grid`, which may be an immutable range and must be treated
-as read-only. Returns per-species vectors of total and primary spectra;
-index `i` corresponds to Fourier mode `table.modes[i]`.
+as read-only. Returns stable-species vectors of total and primary spectra;
+index `i` corresponds to Fourier mode `table.modes[i]`. Use `output = :all`
+to retain intermediate resonances for diagnostics.
 """
-function runcascade(table::CascadeTable, decay_list::DecayList; primary)
+function runcascade(
+        table::CascadeTable,
+        decay_list::DecayList;
+        primary,
+        output = :stable,
+    )
+    output === :stable || output === :all ||
+        throw(
+        ArgumentError(
+            "output must be :stable or :all, got $(repr(output))",
+        )
+    )
+    output_ids = output === :stable ?
+        decay_list.stable_ids :
+        sort!(collect(keys(decay_list.parts)))
+
     spectra = Dict(
         particle_id => [
                 Vector{Float64}(primary(particle, mode, table.grid))
@@ -954,10 +1033,13 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
             ]
             for (particle_id, particle) in decay_list.parts
     )
-    primary_spectra = Dict(
-        particle_id => [copy(mode_spectrum) for mode_spectrum in mode_spectra]
-            for (particle_id, mode_spectra) in spectra
-    )
+    primary_spectra = Dict{Int, Vector{Vector{Float64}}}()
+    sizehint!(primary_spectra, length(output_ids))
+    for particle_id in output_ids
+        primary_spectra[particle_id] = [
+            copy(mode_spectrum) for mode_spectrum in spectra[particle_id]
+        ]
+    end
 
     parent_order = cascadeorder(decay_list)
     eachchannelkey(decay_list; order = parent_order) do parent_id, channel, daughter_id, key
@@ -976,19 +1058,25 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
         end
     end
 
-    return (F = spectra, Fprim = primary_spectra)
+    if output === :all
+        output_spectra = spectra
+    else
+        output_spectra = Dict{Int, Vector{Vector{Float64}}}()
+        sizehint!(output_spectra, length(output_ids))
+        for particle_id in output_ids
+            output_spectra[particle_id] = spectra[particle_id]
+        end
+    end
+    return (F = output_spectra, Fprim = primary_spectra)
 end
 
 function _initialize_plan_spectra(
         plan::CascadePlan{T, N, M},
         primary,
+        output_indices,
     ) where {T, N, M}
     species_count = length(plan.ids)
     grid_length = length(plan.table.grid)
-    spectra = Dict{Int, Vector{Vector{Float64}}}()
-    primary_spectra = Dict{Int, Vector{Vector{Float64}}}()
-    sizehint!(spectra, species_count)
-    sizehint!(primary_spectra, species_count)
 
     # Each mode task receives one dense particle-indexed vector, avoiding a
     # particle→mode container lookup in the numerical loop.
@@ -1000,8 +1088,6 @@ function _initialize_plan_spectra(
     for dense_index in eachindex(plan.ids)
         particle_id = plan.ids[dense_index]
         particle = plan.particles[dense_index]
-        mode_spectra = Vector{Vector{Float64}}(undef, N)
-        primary_modes = Vector{Vector{Float64}}(undef, N)
 
         for mode_index in 1:N
             mode = plan.table.modes[mode_index]
@@ -1014,13 +1100,22 @@ function _initialize_plan_spectra(
                         "length $(length(spectrum)); expected $grid_length",
                 )
             )
-            mode_spectra[mode_index] = spectrum
-            primary_modes[mode_index] = copy(spectrum)
             spectra_by_mode[mode_index][dense_index] = spectrum
         end
+    end
 
+    output_count = length(output_indices)
+    spectra = Dict{Int, Vector{Vector{Float64}}}()
+    primary_spectra = Dict{Int, Vector{Vector{Float64}}}()
+    sizehint!(spectra, output_count)
+    sizehint!(primary_spectra, output_count)
+    for dense_index in output_indices
+        particle_id = plan.ids[dense_index]
+        mode_spectra = [
+            spectra_by_mode[mode_index][dense_index] for mode_index in 1:N
+        ]
         spectra[particle_id] = mode_spectra
-        primary_spectra[particle_id] = primary_modes
+        primary_spectra[particle_id] = copy.(mode_spectra)
     end
     return spectra, primary_spectra, spectra_by_mode
 end
@@ -1098,18 +1193,22 @@ function _apply_plan!(
 end
 
 """
-    runcascade(plan::CascadePlan; primary, parallel = :serial) -> (F, Fprim)
+    runcascade(plan::CascadePlan; primary, parallel = :serial,
+               output = :stable) -> (F, Fprim)
 
 Run a compiled plan without topology traversal, key construction, or dictionary
 lookup in the numerical loop. `parallel = :modes` assigns each Fourier mode to
 an independent task when multiple Julia threads and modes are available.
 Primary callbacks are always initialized serially. A plan is read-only and may
 be shared by concurrent calls whose callbacks and outputs are independent.
+Only stable particles are returned by default; use `output = :all` to retain
+intermediate resonances for diagnostics.
 """
 function runcascade(
         plan::CascadePlan;
         primary,
         parallel = :serial,
+        output = :stable,
     )
     parallel === :serial || parallel === :modes ||
         throw(
@@ -1117,8 +1216,17 @@ function runcascade(
             "parallel must be :serial or :modes, got $(repr(parallel))",
         )
     )
+    output === :stable || output === :all ||
+        throw(
+        ArgumentError(
+            "output must be :stable or :all, got $(repr(output))",
+        )
+    )
+    output_indices = output === :stable ?
+        plan.stable_indices :
+        eachindex(plan.ids)
     spectra, primary_spectra, spectra_by_mode =
-        _initialize_plan_spectra(plan, primary)
+        _initialize_plan_spectra(plan, primary, output_indices)
     _apply_plan!(spectra_by_mode, plan, parallel::Symbol)
     return (F = spectra, Fprim = primary_spectra)
 end
