@@ -1,7 +1,7 @@
 # Full resonance-decay cascade via CascadeTables: persistent per-channel
-# decay matrices (modes n = 0 and n = 2), lenient mass-keyed caching, single
-# mass-descending sweep. First run builds and saves the tables (~2.5 GB,
-# Float32); later runs load them and the cascade itself takes ~2 s.
+# packed Float32 row bands (modes n = 0 and n = 2), lenient mass-keyed caching,
+# and one feeder-before-fed sweep. The first run builds and saves the packed
+# cache; later runs load it.
 
 isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
 

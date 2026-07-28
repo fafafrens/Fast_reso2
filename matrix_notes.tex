@@ -899,16 +899,17 @@ each row is supported (up to the stencil halo) inside its band.
 For light daughters the band is wide ($\propto m_b^{-2}$), so in practice
 the $\rho\to\pi\pi$ and $\omega\to\pi\pi\pi$ examples are effectively
 dense (measured fill $65$--$76\%$) and numerically full rank.  They are not,
-however, representative of every production key.  A deterministic
-300-key sample from the bundled list had $32.2\%$ exact nonzeros, while the
-contiguous support span of each row occupied $43.7\%$ of a dense row and was
-$73.6\%$ filled internally.  Generic compressed sparse-column storage with
-64-bit indices is near its memory break-even at this density, but a custom
-row-banded format (start column plus contiguous values per row) is a credible
-storage and bandwidth optimization that still requires a full-cascade
-benchmark.  The current implementation remains dense.  At
-$N_{p_T}\times N_q\sim 39\times121$ a matrix is $\sim37$\,KB and applies
-in microseconds.
+however, representative of every production key.  A full census of the
+$18{,}299$ production keys found $33.583\%$ exact nonzeros.  The contiguous
+support spans occupied $44.234\%$ of dense storage and were $75.921\%$ filled
+internally.  \texttt{CascadeTable} now stores each row's contiguous span in
+an offset-backed \texttt{RowBandMatrix}: one start column per row, one
+sentinel offset vector, and one flat \texttt{Float32} value payload.  At
+$G=134$ the full packed payload is estimated at $1.1012$\,GiB, or $44.98\%$
+of the $2.4481$\,GiB dense baseline.  On $128$ representative real matrices,
+packed storage was $44.56\%$ of dense and the packed \texttt{mul!} kernel was
+$1.70$ times faster, with zero steady-state allocations and a maximum
+normalized difference of $1.177\times10^{-15}$.
 \item The integrand has an integrable $\ln|q_T-q_T^{*}|$ singularity at
 $q_T^{*}=-q_T^-$, where the $\Delta\eta$ domain splits; the interval is
 divided there.  All $1/\sqrt{\phantom{x}}$ endpoint singularities (in
@@ -1207,10 +1208,12 @@ A \texttt{CascadeTable} contains
 \mathcal W:\kappa\longmapsto
 \{W_{\kappa,n}\}_{n\in{\rm modes}} .
 \end{equation}
-With the default common grid, every $W_{\kappa,n}$ is a
-$134\times134$ \texttt{Float32} matrix.  Each row is accumulated at
-\texttt{Float64} precision and rounded once into its final storage, while
-cascade spectra and their accumulated feed-down remain \texttt{Float64}.
+With the default common grid, every logical $W_{\kappa,n}$ is a
+$134\times134$ \texttt{Float32} operator stored as an offset-backed
+\texttt{RowBandMatrix}.  Assembly accumulates each row at \texttt{Float64}
+precision into a temporary dense \texttt{Float32} matrix, then packs its
+contiguous support span.  Cascade spectra and their accumulated feed-down
+remain \texttt{Float64}.
 
 Unique keys are independent build tasks.  The implementation first warms the
 shared quadrature-node caches, then uses
@@ -1219,17 +1222,11 @@ because the recorded per-key cost ranges from roughly $0.5$\,ms for a sharp
 two-body key to $5.5$\,ms for a broad three-body key.  All requested Fourier
 modes are fused within a key.  The inner matrix assembly is left serial
 (\texttt{threaded=false}) because the outer key loop already occupies the
-thread pool; nested threading would oversubscribe it.  Results first land in
-a preallocated vector, and the dictionary is filled serially afterward, so
-the build needs no dictionary lock.
-
-One custom-order caveat remains.  The build currently warms
-$n_q,n_\theta,n_\mu,n_\sigma$ but not a distinct $n_{m_a}$.  The default has
-$n_{m_a}=n_\sigma=8$ and is already warm.  If a threshold-cut broad channel
-uses a custom $n_{m_a}$ unequal to every other order, its first cosine-node
-cache insertion can occur inside the threaded key build.  Robust custom-order
-code should warm $n_{m_a}$ before launching threads (or extend
-\texttt{warmnodes!} to include it).
+thread pool; nested threading would oversubscribe it.  Each worker holds dense
+matrices only for its current key, packs them immediately, and releases the
+dense temporaries.  Packed results accumulate in a preallocated vector, and
+the dictionary is filled serially afterward, so the build needs no dictionary
+lock and never retains a second dense copy of the complete table.
 
 Cache compatibility requires exact agreement of the format version, grid,
 orders, and modes.  The decay-list SHA is provenance rather than a hard
@@ -1271,55 +1268,53 @@ which is not implemented.
 \subsection{The hot apply path and the role of dictionaries}
 
 The current representation keeps matrices in a dictionary from
-\texttt{ChannelKey} to one vector of \texttt{Float32} matrices, and spectra
-in dictionaries from particle identifier to one \texttt{Float64} vector per
-mode.  These dictionaries organize the graph;
+\texttt{ChannelKey} to one vector of concrete
+\texttt{RowBandMatrix\{Float32\}} objects, and spectra in dictionaries from
+particle identifier to one \texttt{Float64} vector per mode.  These
+dictionaries organize the graph;
 they are not consulted inside the $p_T$ element loop.  Each enrolled slot
 performs a few dictionary lookups and then, for every mode, the five-argument
 operation
 \begin{equation}
-\texttt{\_cascade\_mul!(Fd, W, Fp, Bc, 1.0)}
+\texttt{mul!(Fd, W, Fp, Bc, 1.0)}
 \quad\Longleftrightarrow\quad
 F_d\leftarrow B_cWF_p+F_d .
 \end{equation}
 This avoids allocating a temporary $WF_p$ for every channel.  The code also
 excludes $d=a$, so output never aliases the parent input.
 
-The multiply is deliberately mixed precision: a \texttt{Float32} matrix
-times a \texttt{Float64} vector accumulates into a \texttt{Float64} vector.
-This halves the table relative to \texttt{Float64} matrices while preserving
-double-precision accumulation through a long decay chain, but it cannot use a
-same-type BLAS GEMV.  The exact production types therefore dispatch to a
-private column-major kernel.  It computes $B_cF_p[j]$ once per column,
-converts each matrix entry to \texttt{Float64}, and uses a SIMD
-\texttt{muladd} loop over contiguous daughter rows.  The overwrite form
-initializes the destination from the first column, avoiding a separate
-zero-fill pass.  Other element and array types fall back to
-\texttt{LinearAlgebra.mul!}.
+The multiply is deliberately mixed precision: packed \texttt{Float32} values
+times a \texttt{Float64} vector accumulate into a \texttt{Float64} vector.
+This preserves double-precision accumulation through a long decay chain but
+cannot use a same-type BLAS GEMV.  Because \texttt{RowBandMatrix} is a
+package-owned \texttt{AbstractMatrix}, it specializes Julia's standard
+five-argument \texttt{LinearAlgebra.mul!} interface without type piracy.  The
+kernel walks each stored row span contiguously, converts values to
+\texttt{Float64}, and accumulates with a SIMD \texttt{muladd} reduction.
 
 The grouped plan also uses a private \texttt{\_cascade\_axpy!} SIMD kernel to
 scatter a shared \texttt{Float64} scratch product to several daughters;
-other types fall back to \texttt{LinearAlgebra.axpy!}.  This keeps the
-optimization local and avoids adding methods to Julia functions for types
-owned by Julia.  All-\texttt{Float32} SGEMV was faster in a cache-hot test but
+other types fall back to \texttt{LinearAlgebra.axpy!}.  All-\texttt{Float32}
+SGEMV was faster in a cache-hot test but
 introduced errors of order $3\times10^{-7}$ per multiply.  All-\texttt{Float64}
-DGEMV did not improve the tested kernel and doubles the matrix payload to
-about $4.90$\,GiB.  Neither is used by the cascade.
+DGEMV did not improve the tested dense kernel and would increase the value
+payload.  Neither is used by the cascade.
 
 For the bundled list there are only $44{,}643$ slot-level operation records
-but about $1.60\times10^9$ matrix-element multiply--adds in a two-mode sweep.
-Without cache reuse those operations stream about $6.41$\,GB of
-\texttt{Float32} matrix values.
-Removing a dictionary lookup does not remove any of those arithmetic or
-memory accesses.  Consequently, the dictionaries are neither the dominant
-RAM cost nor the main apply bottleneck.
+but a hypothetical dense two-mode sweep would perform about
+$1.60\times10^9$ matrix-element multiply--adds and stream about $6.41$\,GB of
+\texttt{Float32} values without cache reuse.  The packed kernel visits only
+stored row spans; the production payload census is $44.98\%$ of dense.
+Removing a dictionary lookup does not remove that remaining numerical work.
+Consequently, the dictionaries are neither the dominant RAM cost nor the
+inner-loop bottleneck.
 
-\paragraph{Measured cascade speed.}
+\paragraph{Historical dense-table cascade speed (superseded).}
 On 25 July 2026, an Apple M2 running Julia~1.12.6 with four Julia threads
 and one BLAS thread gave the following warmed measurements at the production
 grid and mode settings.  The machine had only $0.06$--$0.08$\,GiB reported
-free, so the $2.448$\,GiB serialized full table was deliberately not
-deserialized.  Instead, two deterministic parent samples measured resident
+free, so the $2.448$\,GiB raw dense matrix payload was deliberately not
+materialized.  Instead, two deterministic parent samples measured resident
 matrix application without risking a swap-dominated or out-of-memory run:
 \begin{center}
 \begin{tabular}{rrrrrr}
@@ -1350,27 +1345,22 @@ earlier in-place \texttt{mul!} change reduced historical whole-apply
 allocations from roughly $152$ to $45$\,MB and improved time by about $4\%$,
 while changing results only at the $4\times10^{-14}$ level.
 
-\paragraph{Specialized-kernel benchmark.}
-On 28 July 2026, the same Apple M2 and Julia~1.12.6 were used with one BLAS
-thread.  Streaming $256$ distinct $134\times134$ matrices through the
-five-argument mixed multiply took $1.475$\,ms with Julia's generic
-\texttt{mul!} and $1.158$\,ms with \texttt{\_cascade\_mul!}, a factor
-$1.274$ improvement.  The maximum absolute difference was
-$5.33\times10^{-15}$.  For a length-$134$ scatter, the corresponding
-\texttt{axpy!} and \texttt{\_cascade\_axpy!} costs were $56.3$ and
-$42.9$\,ns per call, a factor $1.314$ improvement, with identical sampled
-output.  Both specialized operations allocated zero bytes after compilation.
+\paragraph{Packed row-band benchmark.}
+On 28 July 2026, $128$ real production matrices at $G=134$ were sampled from
+$64$ evenly spaced keys.  Nine alternating measurements, each applying all
+matrices $40$ times, gave $20.45$\,ms for the former dense mixed kernel and
+$12.05$\,ms for standard \texttt{mul!} on \texttt{RowBandMatrix}, a factor
+$1.70$ improvement.  Packed storage was $3.906$\,MiB versus $8.768$\,MiB
+dense ($44.56\%$).  The maximum normalized output difference was
+$1.177\times10^{-15}$ and the warmed packed call allocated zero bytes.
 
-The full $G=134$, two-mode, $1{,}518$-particle deterministic workload contains
-all $18{,}299$ keys and a $2.448$\,GiB raw matrix payload.  A same-process
-serial-plan comparison using seven alternating samples took $1.414$\,s with
-the former \texttt{mul!}/\texttt{axpy!} loop and $1.326$\,s with the private
-kernels, a factor $1.067$ improvement.  The maximum absolute output change
-was $1.08\times10^{-19}$.  In a separate three-sample public benchmark, the
-specialized plan took $1.440$\,s serially and $1.024$\,s with the two Fourier
-modes assigned to separate Julia tasks.  The keyed/plan normalized difference
-was $1.85\times10^{-13}$, and serial and threaded plan results were bitwise
-equal.
+A separate complete-topology deterministic benchmark used all $18{,}299$
+keys, $1{,}518$ particles, two modes, $G=16$, two Julia threads, and one BLAS
+thread.  The flat plan took $23.121$\,ms serially and $12.240$\,ms with modes
+threaded; isolated apply times were $21.213$ and $10.640$\,ms.  The keyed/plan
+normalized difference was $1.443\times10^{-15}$ and serial/threaded outputs
+were bitwise equal.  This validates orchestration and the standard-dispatch
+packed path, but is not a production-grid full-cache timing.
 
 A separate build estimate sampled $24$ keys from each of the six combinations
 of multiplicity (two, three, or four bodies) and parent treatment (sharp or
@@ -1405,28 +1395,34 @@ projection or $2\%$ of the historical full sweep.  The implementation
 therefore keeps the keyed dictionary for building, invalidation, and
 filtering, and compiles a separate plan for repeated applies.
 
-The production sparsity sample above suggests a potentially larger
-speed/memory experiment: pack only each row's contiguous support band and
-multiply that band by the corresponding parent slice.  This could remove
-roughly half of the matrix-value traffic without the index cost of a generic
-sparse matrix.  It is a benchmark candidate, not a demonstrated replacement
-for the dense path.
+The row-band experiment is now implemented: each row stores only its
+contiguous support span.  The full-production payload estimate is
+$1.1012$\,GiB ($44.98\%$ of dense), while the representative real-matrix
+kernel used $44.56\%$ of dense storage and ran $1.70$ times faster.
 
 \pagebreak
 \subsection{Memory scaling}
 
 Let $K$ be the number of unique keys, $M$ the number of modes, $G$ the common
-grid length, and $S$ the number of species.  Ignoring small object and
-dictionary headers, the two dominant payload estimates are
+grid length, $S$ the number of species, and $L_{\kappa nr}$ the stored span
+length of row $r$.  Ignoring small object and dictionary headers, the payload
+estimates are
 \begin{align}
-\mathcal M_W &\simeq
+\mathcal M_W^{\rm dense} &=
 K\,M\,G^2\,\operatorname{sizeof}(\texttt{Float32}),\\
+\mathcal M_W^{\rm packed} &\simeq
+\sum_{\kappa,n}\left[
+4\sum_{r=1}^{G}L_{\kappa nr}
++G\,\operatorname{sizeof}(I)
++(G+1)\,\operatorname{sizeof}(O)\right],\\
 \mathcal M_{F+F^{\rm prim}} &\simeq
 2S\,M\,G\,\operatorname{sizeof}(\texttt{Float64}).
 \label{eq:cascade-memory}
 \end{align}
-The quadratic dependence on $G$, rather than the dictionaries, controls
-whether the table fits in RAM.
+Here $I$ stores each row's first column and $O$ stores sentinel value offsets;
+at $G=134$ they are \texttt{UInt8} and \texttt{UInt16}.  Packed storage still
+has a quadratic worst case, but its actual size follows the support spans
+rather than the dictionary count alone.
 
 For the current bundled \texttt{decays\_QM2016Plus\_massorder.dat}, a
 read-only enumeration gives:
@@ -1445,33 +1441,37 @@ closed/reopened/unresolved/five-body channels & $0/0/0/0$\\
 \hline
 \end{tabular}
 \end{center}
-At $G=134$ and $M=2$, the raw matrix payload is therefore
+At $G=134$ and $M=2$, the dense baseline is
 \begin{equation}
 18{,}299\times2\times134^2\times4
 =2{,}628{,}614{,}752\ {\rm bytes}
 =2.448\ {\rm GiB}.
 \end{equation}
+The measured support census gives a current packed estimate of
+$1.1012$\,GiB, or $44.98\%$ of that dense baseline.
 Both \texttt{F} and \texttt{Fprim} together contain only
 $6{,}509{,}184$ bytes ($6.21$\,MiB) of spectrum values.  The full apply
-executes $89{,}286$ mode-specific dense matrix--vector products in the keyed
+executes $89{,}286$ mode-specific matrix--vector products in the keyed
 slot sweep.  Grouping in \texttt{CascadePlan} reduces this to $78{,}150$,
 corresponding to $5.23$\,GiB of logical dense matrix traffic before cache
-reuse.  Doubling the grid to $G=268$ would quadruple the matrix payload to
-about $9.79$\,GiB; adding modes grows it linearly.
+reuse, not current physical packed traffic.  At $G=268$ the dense baseline
+would be $9.79$\,GiB; packed scaling depends on the new support spans.  Adding
+modes grows either representation linearly.
 
-The repository's recorded full-list timings are roughly $10$\,s to build on
+The superseded dense cache recorded roughly $10$\,s to build on
 eight threads, $7$\,s to load the approximately $2.5$\,GB cache, and $2$\,s
-for the two-mode sweep.  These are hardware- and filesystem-dependent
-reference numbers, not algorithmic guarantees.
+for the two-mode sweep.  Packed-cache end-to-end timings remain to be measured.
 
 \subsection{Persistence when the cache approaches or exceeds RAM}
 
 The current cache uses Julia's standard \texttt{Serialization}.  Saving
-streams the object graph to one file, but the complete dictionary of matrices
-must already be resident in memory.  Loading calls \texttt{deserialize} on
-the entire file before validating its format tuple, so it reconstructs the
-whole table; it cannot selectively page one key.  The format is therefore a
-regenerable Julia-local cache, not a portable long-term data format.
+streams the object graph to one file, but the complete packed dictionary must
+already be resident in memory.  A raw magic/version prefix is checked before
+deserialization, so a legacy dense cache is rejected without materializing
+its multi-gigabyte payload.  A matching cache is still reconstructed in full
+and its row offsets are validated before use; individual keys cannot be
+paged selectively.  The format is therefore a regenerable Julia-local cache,
+not a portable long-term data format.
 
 The current writer also opens the final path directly in write mode.  An
 interrupted save may leave a truncated file; loading catches the failure and
@@ -1485,8 +1485,10 @@ system-memory information:
 \begin{verbatim}
 G, M = length(grid), length(modes)
 K = length(CascadeTables.neededkeys(dl)[1])
-raw = K * M * G^2 * sizeof(Float32)
-@show raw / 2.0^30                 # predicted matrix GiB
+dense_upper = K * M * G^2 * sizeof(Float32)
+packed_estimate = 0.4498 * dense_upper
+@show dense_upper / 2.0^30         # dense upper bound
+@show packed_estimate / 2.0^30     # production-census estimate
 @show Sys.total_memory() / 2.0^30
 @show Sys.free_memory() / 2.0^30
 @show Sys.maxrss() / 2.0^30
@@ -1525,12 +1527,12 @@ subset-oriented workflows\\
 \end{center}
 
 For a cache larger than RAM, the speed-oriented design is a small metadata
-index plus a fixed-layout, key-major \texttt{Float32} matrix file mapped
-read-only with \texttt{Mmap.mmap}.  Matrices can be built and written one key
-at a time, so neither saving nor loading requires a second full resident copy.
-The compiled operation plan described above would store matrix offsets rather
-than dictionary-owned arrays.  This design is not implemented in the current
-repository.
+index plus key-major mapped arrays for \texttt{column\_starts},
+\texttt{value\_offsets}, and the flat \texttt{Float32} values.  Keys can be
+built and written one at a time, so neither saving nor loading requires a
+second full resident copy.  The compiled operation plan described above would
+store matrix offsets rather than dictionary-owned arrays.  This design is not
+implemented in the current repository.
 
 Memory mapping does not make disk I/O disappear.  A full cascade touches
 almost every enrolled matrix, so a cold out-of-core sweep is limited by
@@ -1541,13 +1543,13 @@ retain the hottest pages.
 
 HDF5 is preferable when portability, rich metadata, compression, or reading
 only a filtered subset matters more than minimum hot-loop overhead.  A
-reasonable chunk keeps all modes of one key together, for example
-$(G,G,M,1)$ in a key-major dataset, rather than splitting a matrix.  Splitting
-the arithmetic itself into smaller $p_T$ chunks would add loop and I/O
-overhead while every update still needs the complete dense matrix.  Thus
+reasonable layout groups the three row-band arrays for every key and mode,
+with chunks aligned to whole keys or useful key batches.  Splitting the
+arithmetic itself into smaller $p_T$ chunks would add loop and I/O overhead
+while every update still consumes each stored row span.  Thus
 \emph{storage-level} chunking or sharding is useful; chunking the in-memory
 cascade multiply is not the first speed optimization.  Compression must be
-benchmarked against the matrices: smaller disk traffic can help a cold load,
+benchmarked against the payload: smaller disk traffic can help a cold load,
 but decompression and copying can slow repeated full sweeps.
 
 \subsection{Filtering, validation, and regression evidence}
@@ -2115,11 +2117,13 @@ matrix--vector products.
 \hline
 case & object & size / cost \\
 \hline
-$\eta$-independent, per mode $n$ & dense $W_n\in\mathbb R^{N_{p_T}\times N_q}$ &
+$\eta$-independent, per mode $n$ & logical dense operator $W_n$ with
+row-band cascade storage &
 $\sim$38\,KiB for $39\times121$ \texttt{Float64}
 ($\sim$70\,KiB for $134^2$ \texttt{Float32}); apply $\sim\mu$s \\
 full cascade, current defaults & $18{,}299$ keys, two modes on $134^2$ &
-$2.448$\,GiB raw matrix payload; recorded apply $\sim2$\,s \\
+$2.4481$\,GiB dense baseline; $1.1012$\,GiB estimated packed payload
+($44.98\%$); production full-apply timing pending \\
 $\eta$-dependent, per mode $n$ & tensor $w[k,j,d]$, $|d|\le L$, $d\ge0$ &
 $\sim$0.8\,MiB for $39\times121\times41$ \texttt{Float32}; apply $\sim$ms \\
 \hline

@@ -27,17 +27,21 @@ GRID_LENGTH ≥ 2 || error("CASCADE_BENCH_GRID must be at least 2")
 SAMPLES ≥ 1 || error("CASCADE_BENCH_SAMPLES must be positive")
 
 function deterministic_table(decay_list, grid)
-    matrices = Dict{ChannelKey,Vector{Matrix{Float32}}}()
+    matrix_type = CascadeTables._tablematrixtype(length(grid))
+    matrices = Dict{ChannelKey, Vector{matrix_type}}()
     transfer_count = Ref(0)
 
     CascadeTables.eachchannelkey(decay_list) do _parent_id, _channel, _daughter_id, key
         transfer_count[] += 1
         get!(matrices, key) do
             key_index = length(matrices) + 1
-            scale = Float32(1e-5 * (1 + key_index % 13))
+            scale = Float32(1.0e-5 * (1 + key_index % 13))
             mode_zero = fill(scale, length(grid), length(grid))
             mode_two = fill(-0.07f0 * scale, length(grid), length(grid))
-            Matrix{Float32}[mode_zero, mode_two]
+            matrix_type[
+                CascadeTables._packtablematrix(matrix_type, mode_zero),
+                CascadeTables._packtablematrix(matrix_type, mode_two),
+            ]
         end
     end
 
@@ -45,7 +49,7 @@ function deterministic_table(decay_list, grid)
         grid,
         DEFAULT_ORDERS,
         MODES,
-        Dict{Symbol,Any}(:kind => "deterministic benchmark"),
+        Dict{Symbol, Any}(:kind => "deterministic benchmark"),
         matrices,
     )
     return table, transfer_count[]
@@ -60,7 +64,7 @@ function normalized_error(candidate, reference)
             max_error = max(
                 max_error,
                 maximum(abs.(actual .- expected)) /
-                max(maximum(abs.(expected)), 1.0),
+                    max(maximum(abs.(expected)), 1.0),
             )
             candidate.Fprim[particle_id][mode_index] ==
                 reference.Fprim[particle_id][mode_index] ||
@@ -124,10 +128,10 @@ function print_measurement(label, measurement; relative_to = nothing)
     speedup =
         relative_to === nothing ? "" :
         @sprintf("  %6.2fx", relative_to.time / measurement.time)
-    @printf(
+    return @printf(
         "  %-26s %9.3f ms  %9.3f MiB%s\n",
         label,
-        1e3 * measurement.time,
+        1.0e3 * measurement.time,
         measurement.bytes / 2.0^20,
         speedup,
     )
@@ -143,8 +147,8 @@ primary(particle, mode, momenta) = begin
     mode_scale = mode == 0 ? 1.0 : 0.05
     [
         mode_scale * particle.degeneracy *
-        exp(-hypot(particle.mass, momentum) / 0.145)
-        for momentum in momenta
+            exp(-hypot(particle.mass, momentum) / 0.145)
+            for momentum in momenta
     ]
 end
 
@@ -155,7 +159,7 @@ serial_error = normalized_error(serial, reference)
 threaded_error = normalized_error(threaded, reference)
 serial.F == threaded.F ||
     error("serial and mode-threaded plan results are not bitwise equal")
-max(serial_error, threaded_error) ≤ 1e-12 ||
+max(serial_error, threaded_error) ≤ 1.0e-12 ||
     error("plan/reference normalized error exceeds 1e-12")
 
 compile_measurement = measure(() -> CascadePlan(table, decay_list))

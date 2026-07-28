@@ -35,17 +35,17 @@ This plan has four goals:
    and dictionary lookup from repeated cascades;
 2. combine repeated applications of the same decay matrix;
 3. allow safe partial multithreading;
-4. preserve the current table/cache representation and numerical accuracy.
+4. preserve keyed-table semantics and numerical accuracy.
 
-It does not initially change the decay-matrix representation, cache format, or
-physics kernels.
+The original plan work did not require a storage change. The table has since
+moved to packed row bands without changing the plan architecture.
 
 ## 2. Why a separate plan
 
 `CascadeTable.W` is a good construction and storage representation:
 
 ```julia
-Dict{ChannelKey, Vector{Matrix{Float32}}}
+Dict{ChannelKey, Vector{M}} where M <: RowBandMatrix{Float32}
 ```
 
 It supports filtered decay lists, incremental `ensure!`, and `prune!`.
@@ -73,8 +73,8 @@ struct CascadeTarget
     weight::Float64
 end
 
-struct CascadeGroup{N}
-    matrices::NTuple{N,Matrix{Float32}}
+struct CascadeGroup{N,M<:RowBandMatrix{Float32}}
+    matrices::NTuple{N,M}
     targets::UnitRange{Int}
 end
 
@@ -83,12 +83,12 @@ struct CascadeStep
     groups::UnitRange{Int}
 end
 
-struct CascadePlan{T<:CascadeTable,N}
+struct CascadePlan{T<:CascadeTable,N,M<:RowBandMatrix{Float32}}
     table::T
     ids::Vector{Int}
     particles::Vector{ParticleInfo}
     steps::Vector{CascadeStep}
-    groups::Vector{CascadeGroup{N}}
+    groups::Vector{CascadeGroup{N,M}}
     targets::Vector{CascadeTarget}
 end
 ```
@@ -194,9 +194,9 @@ for step in plan.steps
         if length(group.targets) == 1
             target = plan.targets[first(group.targets)]
             Fd = denseF[target.daughter][mode_index]
-            _cascade_mul!(Fd, W, Fp, target.weight, 1.0)
+            mul!(Fd, W, Fp, target.weight, 1.0)
         else
-            _cascade_mul!(scratch, W, Fp)
+            mul!(scratch, W, Fp)
 
             for target_index in group.targets
                 target = plan.targets[target_index]
@@ -208,11 +208,11 @@ for step in plan.steps
 end
 ```
 
-The singleton path uses an allocation-free, five-argument `_cascade_mul!`.
-A multi-target group computes `W * Fp` once and scatters the result with
-`_cascade_axpy!`.  Both private functions specialize the production
-`Float32`-matrix/`Float64`-spectrum case and retain generic fallbacks to
-`mul!` and `axpy!`.
+The singleton path uses allocation-free five-argument `mul!`. A multi-target
+group computes `W * Fp` once with three-argument `mul!` and scatters with
+`_cascade_axpy!`. `RowBandMatrix` supplies the mixed-precision standard
+`LinearAlgebra.mul!` fast path; the private scatter retains an `axpy!`
+fallback.
 
 The parent spectrum is read-only during all of its outgoing groups.
 `eachchannelkey` already excludes `daughter == parent`, so the input cannot
@@ -233,7 +233,7 @@ For modes `0` and `2`, the count falls from 89,286 to 78,150.
 
 Of the 39,075 groups:
 
-- 35,798 have one destination and use direct `_cascade_mul!`;
+- 35,798 have one destination and use direct five-argument `mul!`;
 - 3,129 have two destinations;
 - 75 have three destinations;
 - 73 have four destinations.
@@ -398,10 +398,10 @@ experiment, not part of the first `CascadePlan`.
 
 ## 8. Threading and BLAS policy
 
-The `Matrix{Float32} * Vector{Float64}` operation is mixed precision and does
-not use the same-type SGEMV/DGEMV fast path.  The private cascade kernel uses
-a column-major SIMD loop and converts matrix entries to `Float64` while
-accumulating.  Nevertheless benchmarks should set
+The `RowBandMatrix{Float32} * Vector{Float64}` operation is mixed precision
+and does not use the same-type SGEMV/DGEMV fast path. Its `LinearAlgebra.mul!`
+method walks each stored row band contiguously, converts values to `Float64`,
+and accumulates with SIMD `muladd`. Nevertheless benchmarks should set
 
 ```julia
 BLAS.set_num_threads(1)
@@ -510,7 +510,8 @@ Interleave serial and threaded trials to reduce cache-state bias.
 Initial acceptance criteria:
 
 - normalized error no larger than `1e-12`, with exact `Fprim`;
-- no copied decay matrices and no cache-format change;
+- no copied decay matrices in a plan; storage migrations use an explicit
+  cache-format bump;
 - reused-plan allocations at least 50% below the reference graph walk;
 - no representative resident workload more than 3% slower;
 - at least 3--5% median improvement on the weighted resident workloads before
@@ -523,21 +524,22 @@ Initial acceptance criteria:
 `benchmarks/cascade_plan.jl` exercises the complete bundled 1,518-particle
 topology with distinct resident matrices, without requiring the production
 cache. On the implementation host with Julia 1.12.6, two Julia threads, one
-BLAS thread, `G = 32`, two modes, and five median samples:
+BLAS thread, `G = 16`, two modes, and three median samples:
 
 | path | median | allocations | speedup vs keyed |
 |---|---:|---:|---:|
-| keyed one-shot | 40.090 ms | 33.295 MiB | 1.00x |
-| flat serial | 19.360 ms | 3.168 MiB | 2.07x |
-| flat mode-threaded | 10.206 ms | 3.170 MiB | 3.93x |
+| keyed one-shot | 59.179 ms | 32.183 MiB | 1.00x |
+| flat serial | 23.121 ms | 2.056 MiB | 2.56x |
+| flat mode-threaded | 12.240 ms | 2.058 MiB | 4.83x |
 
-Plan compilation was 38.868 ms and 67.112 MiB, reported separately because it
+Plan compilation was 72.559 ms and 77.812 MiB, reported separately because it
 is amortized across repeated runs. The isolated compiled apply measured
-18.422 ms serial and 9.026 ms mode-threaded. The normalized error against the
-keyed reference was `4.646e-14`; serial and mode-threaded outputs were bitwise
-equal. These measurements include numerical matrix-vector applications with
-deterministic payloads while excluding matrix construction and cache I/O. They
-are not claims about the multi-gigabyte production cache.
+21.213 ms serial and 10.640 ms mode-threaded, a 1.99x threading gain. The
+normalized error against the keyed reference was `1.443e-15`; serial and
+mode-threaded outputs were bitwise equal. These measurements include
+row-band matrix-vector applications with deterministic payloads while
+excluding construction and cache I/O. They are not a `G = 134`
+production-cache benchmark.
 
 ## 12. Implementation stages
 
@@ -551,8 +553,8 @@ are not claims about the multi-gigabyte production cache.
 
 - coalesce identical `(parent, key, daughter)` transfers;
 - group all destinations of one `(parent, key)`;
-- use direct `_cascade_mul!` for singleton groups and
-  `_cascade_mul!`/`_cascade_axpy!` scratch/scatter otherwise.
+- use direct `mul!` for singleton groups and
+  `mul!`/`_cascade_axpy!` scratch/scatter otherwise.
 
 ### Stage 3: mode-level threading — complete
 

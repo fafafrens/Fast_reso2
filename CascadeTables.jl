@@ -15,7 +15,7 @@ Design (see matrix_notes.pdf for details):
     observed daughter fixed, unobserved partners sorted), allowing physically
     equivalent channels to share an entry;
   * missing keys are built on demand and `prune!` removes unreferenced keys;
-  * matrices are stored as Float32 while spectra accumulate in Float64;
+  * matrices use packed Float32 row bands while spectra accumulate in Float64;
   * table construction parallelizes over independent channel keys;
   * `CascadePlan` resolves keys and topology to flat, dense arrays and can run
     independent Fourier modes on separate Julia tasks.
@@ -24,44 +24,50 @@ module CascadeTables
 
 include("DecaySpectra.jl")
 include("ParticleList.jl")
+include("RowBandMatrix.jl")
 using .DecaySpectra
 using .ParticleList
 using Serialization, SHA, Dates, Printf
-using LinearAlgebra: axpy!, mul!
+using LinearAlgebra: axpy!
+import LinearAlgebra: mul!
+include("CascadeLinearAlgebra.jl")
 
 export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
-       prune!, validate, DEFAULT_ORDERS,
-       savetables, loadtables, ParticleInfo, DecayChannel,
-       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
-       ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
-       fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
-       parentstrangeness, strangeparent, charmparent, parentisospin
+    prune!, validate, DEFAULT_ORDERS,
+    savetables, loadtables, ParticleInfo, DecayChannel,
+    isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
+    ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
+    fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
+    parentstrangeness, strangeparent, charmparent, parentisospin
 
 # Increment when the serialized layout or generated matrix values change.
-const FORMAT = 7
+const FORMAT = 8
+const CACHE_MAGIC = "FastReso.CascadeTables\n"
 
 # Parents wider than WIDTHCUT are averaged within a window of up to ±WIDTHK·Γ.
 const WIDTHCUT = 0.001                 # GeV
-const WIDTHK   = 4.0
+const WIDTHK = 4.0
 
 "Default quadrature orders. `CascadeTable` accepts any subset and fills in the rest."
-const DEFAULT_ORDERS = (nq=32, nθ=8, nµ=16, nσ=8, nma=16)
+const DEFAULT_ORDERS = (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
 # ---------------------------------------------------------------------------
 
 struct DecayList
-    parts::Dict{Int,ParticleInfo}
-    byparent::Dict{Int,Vector{DecayChannel}}
+    parts::Dict{Int, ParticleInfo}
+    byparent::Dict{Int, Vector{DecayChannel}}
     path::String
     sha::String
 end
 
 function DecayList(path::AbstractString)
     particles, channels_by_parent = read_decaylist(path)
-    return DecayList(particles, channels_by_parent, String(path),
-                     bytes2hex(sha256(read(path))))
+    return DecayList(
+        particles, channels_by_parent, String(path),
+        bytes2hex(sha256(read(path)))
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -106,7 +112,7 @@ masses are unchanged, its decay-matrix keys are a subset of the full list's, so
 filtering an *apply* reuses a full cached table with no rebuild.
 """
 function Base.filter(selection::ChannelFilter, dl::DecayList)
-    channels_by_parent = Dict{Int,Vector{DecayChannel}}()
+    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
 
     for (parent_id, channels) in dl.byparent
         parent = dl.parts[parent_id]
@@ -137,18 +143,24 @@ end
 # --- channel properties ----------------------------------------------------
 "Keep channels whose daughter count is one of `multiplicities`."
 nbody(multiplicities::Integer...) =
-    ChannelFilter((_parent, channel, _daughters) ->
-        length(channel.daughters) in multiplicities)
+    ChannelFilter(
+    (_parent, channel, _daughters) ->
+    length(channel.daughters) in multiplicities
+)
 "Keep channels with branching ratio ≥ `minimum_branching_ratio`."
 brabove(minimum_branching_ratio) =
-    ChannelFilter((_parent, channel, _daughters) ->
-        channel.br ≥ minimum_branching_ratio)
+    ChannelFilter(
+    (_parent, channel, _daughters) ->
+    channel.br ≥ minimum_branching_ratio
+)
 
 # --- parent properties -----------------------------------------------------
 "Keep channels whose parent mass lies in `[minimum_mass, maximum_mass]`."
 parentmass(minimum_mass, maximum_mass) =
-    ChannelFilter((parent, _channel, _daughters) ->
-        minimum_mass ≤ parent.mass ≤ maximum_mass)
+    ChannelFilter(
+    (parent, _channel, _daughters) ->
+    minimum_mass ≤ parent.mass ≤ maximum_mass
+)
 "Keep channels whose parent name is one of `names`."
 fromparent(names::AbstractString...) =
     ChannelFilter((parent, _channel, _daughters) -> parent.name in names)
@@ -163,8 +175,10 @@ mesonicparent() =
     ChannelFilter((parent, _channel, _daughters) -> ismeson(parent))
 "Keep channels whose parent strangeness is one of `strangenesses`."
 parentstrangeness(strangenesses::Integer...) =
-    ChannelFilter((parent, _channel, _daughters) ->
-        parent.strangeness in strangenesses)
+    ChannelFilter(
+    (parent, _channel, _daughters) ->
+    parent.strangeness in strangenesses
+)
 "Keep channels whose parent carries nonzero strangeness."
 strangeparent() =
     ChannelFilter((parent, _channel, _daughters) -> isstrange(parent))
@@ -174,23 +188,31 @@ charmparent() =
 "Keep channels whose parent isospin is one of `isospins` (physical values)."
 function parentisospin(isospins::Real...)
     twice_isospins = map(isospin -> round(Int, 2 * isospin), isospins)
-    return ChannelFilter((parent, _channel, _daughters) ->
-        parent.twiceisospin in twice_isospins)
+    return ChannelFilter(
+        (parent, _channel, _daughters) ->
+        parent.twiceisospin in twice_isospins
+    )
 end
 
 # --- daughter properties ---------------------------------------------------
 "Keep channels whose daughter masses all lie in `[minimum_mass, maximum_mass]`."
 daughtermass(minimum_mass, maximum_mass) =
-    ChannelFilter((_parent, _channel, daughters) ->
-        all(daughter -> minimum_mass ≤ daughter.mass ≤ maximum_mass, daughters))
+    ChannelFilter(
+    (_parent, _channel, daughters) ->
+    all(daughter -> minimum_mass ≤ daughter.mass ≤ maximum_mass, daughters)
+)
 "Keep channels with at least one daughter named in `names`."
 todaughter(names::AbstractString...) =
-    ChannelFilter((_parent, _channel, daughters) ->
-        any(daughter -> daughter.name in names, daughters))
+    ChannelFilter(
+    (_parent, _channel, daughters) ->
+    any(daughter -> daughter.name in names, daughters)
+)
 "Keep channels with at least one daughter id in `ids`."
 toid(ids::Integer...) =
-    ChannelFilter((_parent, _channel, daughters) ->
-        any(daughter -> daughter.id in ids, daughters))
+    ChannelFilter(
+    (_parent, _channel, daughters) ->
+    any(daughter -> daughter.id in ids, daughters)
+)
 
 "Wrap a raw predicate `(parent, channel, daughters) -> Bool` as a `ChannelFilter`."
 channelfilter(predicate) = ChannelFilter(predicate)
@@ -211,9 +233,11 @@ struct ChannelKey
     me::Float64
 end
 
-function ChannelKey(parent_mass::Real, observed_mass::Real,
-                    partner_masses::AbstractVector{<:Real},
-                    parent_width::Real = 0.0)
+function ChannelKey(
+        parent_mass::Real, observed_mass::Real,
+        partner_masses::AbstractVector{<:Real},
+        parent_width::Real = 0.0
+    )
     partner_count = length(partner_masses)
     1 ≤ partner_count ≤ 3 ||
         throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
@@ -221,20 +245,75 @@ function ChannelKey(parent_mass::Real, observed_mass::Real,
     sorted_partners = sort!(collect(Float64, partner_masses))
     padded_partners =
         ntuple(index -> index ≤ partner_count ? sorted_partners[index] : 0.0, 3)
-    return ChannelKey(Int8(partner_count + 1), parent_mass, observed_mass,
-                      parent_width, padded_partners...)
+    return ChannelKey(
+        Int8(partner_count + 1), parent_mass, observed_mass,
+        parent_width, padded_partners...
+    )
 end
 
 # ---------------------------------------------------------------------------
 # Tables
 # ---------------------------------------------------------------------------
 
-struct CascadeTable{G<:AbstractRange{Float64},N}
+struct CascadeTable{
+        G <: AbstractRange{Float64},
+        N,
+        M <: RowBandMatrix{Float32},
+    }
     grid::G
-    orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma),Tuple{Int,Int,Int,Int,Int}}
-    modes::NTuple{N,Int}
-    meta::Dict{Symbol,Any}
-    W::Dict{ChannelKey,Vector{Matrix{Float32}}}   # one matrix per mode
+    orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma), Tuple{Int, Int, Int, Int, Int}}
+    modes::NTuple{N, Int}
+    meta::Dict{Symbol, Any}
+    W::Dict{ChannelKey, Vector{M}}
+end
+
+function _tablematrixtype(grid_length::Int)
+    column_type = _rowbandcolumntype(grid_length)
+    offset_type =
+        _rowbandoffsettype(Base.checked_mul(grid_length, grid_length))
+    return RowBandMatrix{Float32, column_type, offset_type}
+end
+
+function _packtablematrix(
+        ::Type{RowBandMatrix{Float32, I, O}},
+        matrix::AbstractMatrix{Float32},
+    ) where {I <: Integer, O <: Integer}
+    return RowBandMatrix(matrix, I, O)
+end
+
+function _packtablematrices(
+        grid,
+        matrices::Dict{ChannelKey, Vector{Matrix{Float32}}},
+    )
+    matrix_type = _tablematrixtype(length(grid))
+    packed = Dict{ChannelKey, Vector{matrix_type}}()
+    sizehint!(packed, length(matrices))
+
+    for (key, mode_matrices) in matrices
+        packed_modes = Vector{matrix_type}(undef, length(mode_matrices))
+        for mode_index in eachindex(mode_matrices)
+            packed_modes[mode_index] =
+                _packtablematrix(matrix_type, mode_matrices[mode_index])
+        end
+        packed[key] = packed_modes
+    end
+    return packed
+end
+
+function CascadeTable(
+        grid,
+        orders,
+        modes,
+        metadata,
+        matrices::Dict{ChannelKey, Vector{Matrix{Float32}}},
+    )
+    return CascadeTable(
+        grid,
+        orders,
+        modes,
+        metadata,
+        _packtablematrices(grid, matrices),
+    )
 end
 
 struct CascadeTarget
@@ -242,8 +321,8 @@ struct CascadeTarget
     weight::Float64
 end
 
-struct CascadeGroup{N}
-    matrices::NTuple{N,Matrix{Float32}}
+struct CascadeGroup{N, M <: RowBandMatrix{Float32}}
+    matrices::NTuple{N, M}
     targets::UnitRange{Int}
 end
 
@@ -260,19 +339,23 @@ direct matrix references, and flat step/group/target arrays. The table remains
 the keyed construction and cache representation; a plan is an in-memory
 snapshot for repeated [`runcascade`](@ref) calls.
 """
-struct CascadePlan{T<:CascadeTable,N}
+struct CascadePlan{
+        T <: CascadeTable,
+        N,
+        M <: RowBandMatrix{Float32},
+    }
     table::T
     ids::Vector{Int}
     particles::Vector{ParticleInfo}
     steps::Vector{CascadeStep}
-    groups::Vector{CascadeGroup{N}}
+    groups::Vector{CascadeGroup{N, M}}
     targets::Vector{CascadeTarget}
 end
 
-mutable struct _CascadeGroupBuilder{N}
-    matrices::NTuple{N,Matrix{Float32}}
+mutable struct _CascadeGroupBuilder{N, M <: RowBandMatrix{Float32}}
+    matrices::NTuple{N, M}
     daughters::Vector{Int}
-    weights::Dict{Int,Float64}
+    weights::Dict{Int, Float64}
 end
 
 """
@@ -284,8 +367,10 @@ multiplicity, threshold, width-tail, unresolved-daughter, nonpositive-mass, and
 self-slot rules. Returns enrollment and skip statistics.
 """
 function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
-    enrollment_stats = Dict(:self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
-                            :γdaughter => 0, :unknown => 0)
+    enrollment_stats = Dict(
+        :self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
+        :γdaughter => 0, :unknown => 0
+    )
 
     for parent_id in order
         if !haskey(dl.byparent, parent_id)
@@ -317,10 +402,10 @@ function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
             daughter_masses = [
                 dl.parts[daughter_id].mass for daughter_id in daughter_ids
             ]
-            threshold = sum(daughter_masses) + 1e-6
+            threshold = sum(daughter_masses) + 1.0e-6
             open_at_pole = parent_mass > threshold
             open_in_tail = broad_parent &&
-                           parent_mass + WIDTHK * parent_width > threshold
+                parent_mass + WIDTHK * parent_width > threshold
 
             if !open_at_pole && !open_in_tail
                 enrollment_stats[:closed] += 1
@@ -345,8 +430,8 @@ function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
 
                 partner_masses = [
                     daughter_masses[index]
-                    for index in eachindex(daughter_masses)
-                    if index != daughter_index
+                        for index in eachindex(daughter_masses)
+                        if index != daughter_index
                 ]
                 key = ChannelKey(
                     parent_mass,
@@ -385,7 +470,7 @@ exact single-sweep order exists; append all parents blocked by that cycle in
 descending mass order and warn that their cross feed-down is approximate.
 """
 function cascadeorder(dl::DecayList)
-    dependencies = Tuple{Int,Int}[]
+    dependencies = Tuple{Int, Int}[]
 
     # An enrolled parent → daughter slot is a dependency only when the daughter
     # has a parent block in the cascade sweep.
@@ -413,7 +498,7 @@ function _cascadeorder(dl::DecayList, dependencies)
     while !isempty(unprocessed)
         ready_parents = [
             parent_id for parent_id in unprocessed
-            if incoming_count[parent_id] == 0
+                if incoming_count[parent_id] == 0
         ]
 
         if isempty(ready_parents)
@@ -444,31 +529,35 @@ function _cascadeorder(dl::DecayList, dependencies)
 end
 
 function _planmatrices(
-    table::CascadeTable{G,N},
-    key::ChannelKey,
-) where {G,N}
+        table::CascadeTable{G, N, M},
+        key::ChannelKey,
+    ) where {G, N, M}
     matrices = table.W[key]
     length(matrices) == N ||
-        throw(DimensionMismatch(
+        throw(
+        DimensionMismatch(
             "table key $key has $(length(matrices)) matrices for $N modes",
-        ))
+        )
+    )
 
     grid_length = length(table.grid)
     expected_size = (grid_length, grid_length)
     for (mode_index, matrix) in pairs(matrices)
         size(matrix) == expected_size ||
-            throw(DimensionMismatch(
+            throw(
+            DimensionMismatch(
                 "table key $key mode index $mode_index has size $(size(matrix)); " *
-                "expected $expected_size",
-            ))
+                    "expected $expected_size",
+            )
+        )
     end
     return ntuple(mode_index -> matrices[mode_index], Val(N))
 end
 
 function CascadePlan(
-    table::CascadeTable{G,N},
-    decay_list::DecayList,
-) where {G,N}
+        table::CascadeTable{G, N, M},
+        decay_list::DecayList,
+    ) where {G, N, M}
     # Particle IDs remain the public API, while the numerical loop uses these
     # stable dense indices for direct vector access.
     ids = sort!(collect(keys(decay_list.parts)))
@@ -481,23 +570,23 @@ function CascadePlan(
     # preserve first-seen group/target order; the finalized plan below contains
     # only flat vectors, ranges, and dense indices.
     group_builders =
-        Dict{Int,Vector{_CascadeGroupBuilder{N}}}()
-    group_positions = Dict{Int,Dict{ChannelKey,Int}}()
+        Dict{Int, Vector{_CascadeGroupBuilder{N, M}}}()
+    group_positions = Dict{Int, Dict{ChannelKey, Int}}()
     # Equal keys share one tuple of references to table matrices. ntuple in
     # _planmatrices copies references, never the matrix payload.
     matrix_cache =
-        Dict{ChannelKey,NTuple{N,Matrix{Float32}}}()
-    dependencies = Set{Tuple{Int,Int}}()
+        Dict{ChannelKey, NTuple{N, M}}()
+    dependencies = Set{Tuple{Int, Int}}()
 
     # A deterministic traversal makes group order and construction failures
     # independent of Dict insertion order.
     compile_order = sort!(collect(keys(decay_list.byparent)))
     eachchannelkey(decay_list; order = compile_order) do parent_id, channel, daughter_id, key
         builders = get!(group_builders, parent_id) do
-            _CascadeGroupBuilder{N}[]
+            _CascadeGroupBuilder{N, M}[]
         end
         positions = get!(group_positions, parent_id) do
-            Dict{ChannelKey,Int}()
+            Dict{ChannelKey, Int}()
         end
 
         group_index = get(positions, key, 0)
@@ -507,10 +596,10 @@ function CascadePlan(
             end
             push!(
                 builders,
-                _CascadeGroupBuilder{N}(
+                _CascadeGroupBuilder{N, M}(
                     matrices,
                     Int[],
-                    Dict{Int,Float64}(),
+                    Dict{Int, Float64}(),
                 ),
             )
             group_index = length(builders)
@@ -540,7 +629,7 @@ function CascadePlan(
     # Flatten the temporary parent/group/target hierarchy in cascade order.
     # UnitRanges retain the hierarchy without allocating nested vectors.
     steps = CascadeStep[]
-    groups = CascadeGroup{N}[]
+    groups = CascadeGroup{N, M}[]
     targets = CascadeTarget[]
 
     for parent_id in parent_order
@@ -558,7 +647,7 @@ function CascadePlan(
             end
             push!(
                 groups,
-                CascadeGroup{N}(
+                CascadeGroup{N, M}(
                     builder.matrices,
                     target_start:length(targets),
                 ),
@@ -573,7 +662,7 @@ function CascadePlan(
         )
     end
 
-    return CascadePlan{typeof(table),N}(
+    return CascadePlan{typeof(table), N, M}(
         table,
         ids,
         particles,
@@ -587,16 +676,20 @@ function decayfor(key::ChannelKey, rules::Rules)
     if key.Γ > 0
         minimum_mass = max(key.ma - WIDTHK * key.Γ, 0.05)
         maximum_mass = key.ma + WIDTHK * key.Γ
-        mass_distribution = BreitWigner(key.ma, key.Γ;
-                                        mmin = minimum_mass,
-                                        mmax = maximum_mass)
+        mass_distribution = BreitWigner(
+            key.ma, key.Γ;
+            mmin = minimum_mass,
+            mmax = maximum_mass
+        )
         if key.nbody == 2
             return BroadParent(key.mb, key.mc, mass_distribution, rules)
         elseif key.nbody == 3
             return BroadParent(key.mb, key.mc, key.md, mass_distribution, rules)
         else
-            return BroadParent(key.mb, key.mc, key.md, key.me,
-                               mass_distribution, rules)
+            return BroadParent(
+                key.mb, key.mc, key.md, key.me,
+                mass_distribution, rules
+            )
         end
     end
 
@@ -610,33 +703,41 @@ function decayfor(key::ChannelKey, rules::Rules)
 end
 
 function buildkeys!(
-    table::CascadeTable{G,N},
-    keys_to_build::Vector{ChannelKey},
-) where {G,N}
+        table::CascadeTable{G, N, M},
+        keys_to_build::Vector{ChannelKey},
+    ) where {G, N, M}
     modes = table.modes
     rules = Rules(; table.orders...)
     grid_length = length(table.grid)
 
     # Tasks can migrate between threads, so scratch storage belongs to each task.
-    scratch_for_task = OncePerTask{NTuple{N,Vector{Float64}}}(
+    scratch_for_task = OncePerTask{NTuple{N, Vector{Float64}}}(
         () -> rowscratch(modes, grid_length),
     )
-    matrices_per_key = [
-        map(_mode -> zeros(Float32, grid_length, grid_length), modes)
-        for _ in eachindex(keys_to_build)
-    ]
+    matrices_per_key = Vector{Vector{M}}(undef, length(keys_to_build))
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
         decay = decayfor(keys_to_build[key_index], rules)
+        dense_matrices =
+            map(_mode -> zeros(Float32, grid_length, grid_length), modes)
         # The outer key loop already uses the thread pool.
-        decaymatrices!(matrices_per_key[key_index], decay, modes,
-                       table.grid, table.grid; threaded = false,
-                       scratch = scratch_for_task())
+        decaymatrices!(
+            dense_matrices, decay, modes,
+            table.grid, table.grid; threaded = false,
+            scratch = scratch_for_task()
+        )
+
+        packed_matrices = Vector{M}(undef, N)
+        for mode_index in 1:N
+            packed_matrices[mode_index] =
+                _packtablematrix(M, dense_matrices[mode_index])
+        end
+        matrices_per_key[key_index] = packed_matrices
     end
 
     # Dict mutation is kept serial because Dict is not thread-safe.
     for (key, mode_matrices) in zip(keys_to_build, matrices_per_key)
-        table.W[key] = collect(mode_matrices)
+        table.W[key] = mode_matrices
     end
     return length(keys_to_build)
 end
@@ -663,7 +764,7 @@ end
 
 function _table_metadata(decay_list::DecayList)
     source_bytes = isfile(decay_list.path) ? read(decay_list.path) : UInt8[]
-    return Dict{Symbol,Any}(
+    return Dict{Symbol, Any}(
         :sha => decay_list.sha,
         :path => decay_list.path,
         :file => source_bytes,
@@ -688,10 +789,12 @@ so its length specializes the fused matrix build.
 `grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
 uses the uniform-grid interpolation kernel without validation scans.
 """
-function CascadeTable(decay_list::DecayList;
-                      grid::AbstractRange{Float64} = range(0.0, 4.0, length = 134),
-                      orders = DEFAULT_ORDERS,
-                      modes = [0, 2], cache = nothing, rebuild = false)
+function CascadeTable(
+        decay_list::DecayList;
+        grid::AbstractRange{Float64} = range(0.0, 4.0, length = 134),
+        orders = DEFAULT_ORDERS,
+        modes = [0, 2], cache = nothing, rebuild = false
+    )
     resolved_orders = merge(DEFAULT_ORDERS, orders)
     selected_modes = Tuple(collect(Int, modes))
 
@@ -704,7 +807,10 @@ function CascadeTable(decay_list::DecayList;
             cached_table.modes == selected_modes
 
         if cache_matches
-            if cached_table.meta[:sha] != decay_list.sha
+            if !isequal(
+                    get(cached_table.meta, :sha, nothing),
+                    decay_list.sha,
+                )
                 @warn "decay list changed since tables were built; building missing keys on demand (prune! removes orphans)"
             end
             built_count = ensure!(cached_table, decay_list)
@@ -715,12 +821,13 @@ function CascadeTable(decay_list::DecayList;
         end
     end
 
+    matrix_type = _tablematrixtype(length(grid))
     table = CascadeTable(
         grid,
         resolved_orders,
         selected_modes,
         _table_metadata(decay_list),
-        Dict{ChannelKey,Vector{Matrix{Float32}}}(),
+        Dict{ChannelKey, Vector{matrix_type}}(),
     )
     ensure!(table, decay_list)
     if cache !== nothing
@@ -734,11 +841,20 @@ end
 # ---------------------------------------------------------------------------
 
 function savetables(table::CascadeTable, path::AbstractString)
-    # Keep modes as a vector on disk so FORMAT-7 caches remain compatible.
-    stored_data = (FORMAT, table.grid, table.orders, collect(table.modes),
-                   table.meta, table.W)
     return open(path, "w") do io
-        serialize(io, stored_data)
+        write(io, CACHE_MAGIC)
+        write(io, UInt8(FORMAT))
+        # Keep modes as a vector so the serialized payload is independent of N.
+        serialize(
+            io,
+            (
+                table.grid,
+                table.orders,
+                collect(table.modes),
+                table.meta,
+                table.W,
+            ),
+        )
     end
 end
 
@@ -746,124 +862,79 @@ function loadtables(path::AbstractString)
     isfile(path) || return nothing
 
     stored_data = try
-        deserialize(path)
+        open(path, "r") do io
+            magic = read(io, ncodeunits(CACHE_MAGIC))
+            magic == codeunits(CACHE_MAGIC) || return nothing
+            read(io, UInt8) == FORMAT || return nothing
+            return deserialize(io)
+        end
     catch
         return nothing
     end
-    valid_format =
-        stored_data isa Tuple &&
-        length(stored_data) == 6 &&
-        stored_data[1] == FORMAT
-    valid_format || return nothing
-
-    _, grid, orders, modes, metadata, matrices = stored_data
+    stored_data isa Tuple && length(stored_data) == 5 || return nothing
+    grid, orders, modes, metadata, matrices = stored_data
     grid isa AbstractRange{Float64} || return nothing
-    modes isa Union{AbstractVector,Tuple} || return nothing
+    modes isa Union{AbstractVector, Tuple} || return nothing
     all(mode -> mode isa Integer, modes) || return nothing
-    return CascadeTable(
+    metadata isa Dict{Symbol, Any} || return nothing
+    normalized_modes = try
+        Tuple(collect(Int, modes))
+    catch
+        return nothing
+    end
+    return _restoretable(
         grid,
         orders,
-        Tuple(collect(Int, modes)),
+        normalized_modes,
         metadata,
         matrices,
     )
 end
 
+function _restoretable(
+        grid,
+        orders,
+        modes::NTuple{N, Int},
+        metadata,
+        matrices::Dict{ChannelKey, Vector{M}},
+    ) where {N, M <: RowBandMatrix{Float32}}
+    matrix_type = try
+        _tablematrixtype(length(grid))
+    catch
+        return nothing
+    end
+    M === matrix_type || return nothing
+    expected_size = (length(grid), length(grid))
+    try
+        for mode_matrices in values(matrices)
+            length(mode_matrices) == N || return nothing
+            for matrix in mode_matrices
+                size(matrix) == expected_size || return nothing
+                _validate_rowband_storage(
+                    matrix.column_count,
+                    matrix.column_starts,
+                    matrix.value_offsets,
+                    matrix.values,
+                )
+            end
+        end
+        return CascadeTable(
+            grid,
+            orders,
+            modes,
+            metadata,
+            matrices,
+        )
+    catch
+        return nothing
+    end
+end
+
+_restoretable(_grid, _orders, _modes, _metadata, _matrices) = nothing
+
 # ---------------------------------------------------------------------------
 # The cascade
 # ---------------------------------------------------------------------------
-
-# Julia's mixed Float32-matrix/Float64-vector multiply uses a generic path.
-# Keep the production specialization private and preserve ordinary fallbacks.
-@inline _cascade_mul!(destination, matrix, source) =
-    mul!(destination, matrix, source)
-
-@inline _cascade_mul!(destination, matrix, source, α, β) =
-    mul!(destination, matrix, source, α, β)
-
-@inline _cascade_mul!(
-    destination::Vector{Float64},
-    matrix::Matrix{Float32},
-    source::Vector{Float64},
-) = _cascade_mul!(destination, matrix, source, 1.0, 0.0)
-
-function _cascade_mul!(
-    destination::Vector{Float64},
-    matrix::Matrix{Float32},
-    source::Vector{Float64},
-    α::Float64,
-    β::Float64,
-)
-    row_count, column_count = size(matrix)
-    length(destination) == row_count ||
-        throw(DimensionMismatch(
-            "matrix has $row_count rows but destination has " *
-            "length $(length(destination))",
-        ))
-    length(source) == column_count ||
-        throw(DimensionMismatch(
-            "matrix has $column_count columns but source has " *
-            "length $(length(source))",
-        ))
-
-    first_column = 1
-    if iszero(β)
-        if iszero(α) || iszero(column_count)
-            fill!(destination, 0.0)
-            return destination
-        end
-
-        # Initialize from the first column instead of clearing in a separate pass.
-        scaled_source = α * source[1]
-        @inbounds @simd for row in 1:row_count
-            destination[row] = Float64(matrix[row]) * scaled_source
-        end
-        first_column = 2
-    else
-        if !isone(β)
-            @inbounds @simd for row in eachindex(destination)
-                destination[row] *= β
-            end
-        end
-        iszero(α) && return destination
-    end
-
-    for column in first_column:column_count
-        matrix_offset = (column - 1) * row_count
-        scaled_source = α * source[column]
-        @inbounds @simd for row in 1:row_count
-            destination[row] = muladd(
-                Float64(matrix[matrix_offset + row]),
-                scaled_source,
-                destination[row],
-            )
-        end
-    end
-    return destination
-end
-
-# Avoid fixed BLAS call overhead for the plan's short Float64 scatters.
-@inline _cascade_axpy!(α, source, destination) =
-    axpy!(α, source, destination)
-
-function _cascade_axpy!(
-    α::Float64,
-    source::Vector{Float64},
-    destination::Vector{Float64},
-)
-    length(source) == length(destination) ||
-        throw(DimensionMismatch(
-            "source has length $(length(source)) but destination has " *
-            "length $(length(destination))",
-        ))
-    iszero(α) && return destination
-
-    @inbounds @simd for index in eachindex(source, destination)
-        destination[index] =
-            muladd(α, source[index], destination[index])
-    end
-    return destination
-end
 
 """
     runcascade(t, dl; primary) -> (F, Fprim)
@@ -878,14 +949,14 @@ index `i` corresponds to Fourier mode `table.modes[i]`.
 function runcascade(table::CascadeTable, decay_list::DecayList; primary)
     spectra = Dict(
         particle_id => [
-            Vector{Float64}(primary(particle, mode, table.grid))
-            for mode in table.modes
-        ]
-        for (particle_id, particle) in decay_list.parts
+                Vector{Float64}(primary(particle, mode, table.grid))
+                for mode in table.modes
+            ]
+            for (particle_id, particle) in decay_list.parts
     )
     primary_spectra = Dict(
         particle_id => [copy(mode_spectrum) for mode_spectrum in mode_spectra]
-        for (particle_id, mode_spectra) in spectra
+            for (particle_id, mode_spectra) in spectra
     )
 
     parent_order = cascadeorder(decay_list)
@@ -895,7 +966,7 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
         daughter_spectra = spectra[daughter_id]
 
         for mode_index in eachindex(table.modes)
-            _cascade_mul!(
+            mul!(
                 daughter_spectra[mode_index],
                 decay_matrices[mode_index],
                 parent_spectra[mode_index],
@@ -909,13 +980,13 @@ function runcascade(table::CascadeTable, decay_list::DecayList; primary)
 end
 
 function _initialize_plan_spectra(
-    plan::CascadePlan{T,N},
-    primary,
-) where {T,N}
+        plan::CascadePlan{T, N, M},
+        primary,
+    ) where {T, N, M}
     species_count = length(plan.ids)
     grid_length = length(plan.table.grid)
-    spectra = Dict{Int,Vector{Vector{Float64}}}()
-    primary_spectra = Dict{Int,Vector{Vector{Float64}}}()
+    spectra = Dict{Int, Vector{Vector{Float64}}}()
+    primary_spectra = Dict{Int, Vector{Vector{Float64}}}()
     sizehint!(spectra, species_count)
     sizehint!(primary_spectra, species_count)
 
@@ -937,10 +1008,12 @@ function _initialize_plan_spectra(
             spectrum =
                 Vector{Float64}(primary(particle, mode, plan.table.grid))
             length(spectrum) == grid_length ||
-                throw(DimensionMismatch(
+                throw(
+                DimensionMismatch(
                     "primary spectrum for particle $particle_id, mode $mode has " *
-                    "length $(length(spectrum)); expected $grid_length",
-                ))
+                        "length $(length(spectrum)); expected $grid_length",
+                )
+            )
             mode_spectra[mode_index] = spectrum
             primary_modes[mode_index] = copy(spectrum)
             spectra_by_mode[mode_index][dense_index] = spectrum
@@ -953,11 +1026,11 @@ function _initialize_plan_spectra(
 end
 
 function _apply_plan_mode!(
-    mode_spectra::Vector{Vector{Float64}},
-    plan::CascadePlan{T,N},
-    mode_index::Int,
-    scratch::Vector{Float64},
-) where {T,N}
+        mode_spectra::Vector{Vector{Float64}},
+        plan::CascadePlan{T, N, M},
+        mode_index::Int,
+        scratch::Vector{Float64},
+    ) where {T, N, M}
     @inbounds for step in plan.steps
         parent_spectrum = mode_spectra[step.parent]
 
@@ -968,7 +1041,7 @@ function _apply_plan_mode!(
             if length(group.targets) == 1
                 target = plan.targets[first(group.targets)]
                 daughter_spectrum = mode_spectra[target.daughter]
-                _cascade_mul!(
+                mul!(
                     daughter_spectrum,
                     matrix,
                     parent_spectrum,
@@ -976,7 +1049,7 @@ function _apply_plan_mode!(
                     1.0,
                 )
             else
-                _cascade_mul!(scratch, matrix, parent_spectrum)
+                mul!(scratch, matrix, parent_spectrum)
                 for target_index in group.targets
                     target = plan.targets[target_index]
                     daughter_spectrum = mode_spectra[target.daughter]
@@ -993,10 +1066,10 @@ function _apply_plan_mode!(
 end
 
 function _apply_plan!(
-    spectra_by_mode::NTuple{N,Vector{Vector{Float64}}},
-    plan::CascadePlan{T,N},
-    parallel::Symbol,
-) where {T,N}
+        spectra_by_mode::NTuple{N, Vector{Vector{Float64}}},
+        plan::CascadePlan{T, N, M},
+        parallel::Symbol,
+    ) where {T, N, M}
     grid_length = length(plan.table.grid)
     if parallel === :modes && Threads.nthreads() > 1 && N > 1
         @sync for mode_index in 1:N
@@ -1034,14 +1107,16 @@ Primary callbacks are always initialized serially. A plan is read-only and may
 be shared by concurrent calls whose callbacks and outputs are independent.
 """
 function runcascade(
-    plan::CascadePlan;
-    primary,
-    parallel = :serial,
-)
+        plan::CascadePlan;
+        primary,
+        parallel = :serial,
+    )
     parallel === :serial || parallel === :modes ||
-        throw(ArgumentError(
+        throw(
+        ArgumentError(
             "parallel must be :serial or :modes, got $(repr(parallel))",
-        ))
+        )
+    )
     spectra, primary_spectra, spectra_by_mode =
         _initialize_plan_spectra(plan, primary)
     _apply_plan!(spectra_by_mode, plan, parallel::Symbol)
@@ -1079,10 +1154,10 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
     charm_change_count = 0
     subthreshold_count = 0
 
-    charge_violations = Tuple{Int,Vector{Int}}[]
-    baryon_violations = Tuple{Int,Vector{Int}}[]
-    multiplicity_counts = Dict{Int,Int}()
-    branching_ratio_sums = Dict{Int,Float64}()
+    charge_violations = Tuple{Int, Vector{Int}}[]
+    baryon_violations = Tuple{Int, Vector{Int}}[]
+    multiplicity_counts = Dict{Int, Int}()
+    branching_ratio_sums = Dict{Int, Float64}()
 
     for (parent_id, channels) in decay_list.byparent
         parent = decay_list.parts[parent_id]
@@ -1104,11 +1179,13 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
             channel_count += 1
             branching_ratio_sum += channel.br
 
-            if !(0.0 ≤ channel.br ≤ 1 + 1e-6)
+            if !(0.0 ≤ channel.br ≤ 1 + 1.0e-6)
                 invalid_branching_ratio_count += 1
             end
-            if !all(daughter_id -> haskey(decay_list.parts, daughter_id),
-                    daughter_ids)
+            if !all(
+                    daughter_id -> haskey(decay_list.parts, daughter_id),
+                    daughter_ids
+                )
                 unresolved_count += 1
                 continue
             end
@@ -1128,7 +1205,7 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
             if sum(daughter -> daughter.charm, daughters) != parent.charm
                 charm_change_count += 1
             end
-            if parent.mass + 1e-6 < sum(daughter -> daughter.mass, daughters)
+            if parent.mass + 1.0e-6 < sum(daughter -> daughter.mass, daughters)
                 subthreshold_count += 1
             end
         end
@@ -1140,10 +1217,10 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
 
     branching_ratio_deviations = [
         abs(branching_ratio_sum - 1)
-        for branching_ratio_sum in values(branching_ratio_sums)
+            for branching_ratio_sum in values(branching_ratio_sums)
     ]
     maximum_branching_deviation = isempty(branching_ratio_deviations) ?
-                                  0.0 : maximum(branching_ratio_deviations)
+        0.0 : maximum(branching_ratio_deviations)
     stats = (
         particles = length(decay_list.parts),
         channels = channel_count,
@@ -1161,40 +1238,60 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
     )
 
     if verbose
-        _print_validation_report(decay_list, stats, charge_violations,
-                                 baryon_violations, branching_ratio_sums, brtol)
+        _print_validation_report(
+            decay_list, stats, charge_violations,
+            baryon_violations, branching_ratio_sums, brtol
+        )
     end
     return stats
 end
 
-function _print_validation_report(decay_list, stats, charge_violations,
-                                  baryon_violations, branching_ratio_sums,
-                                  branching_ratio_tolerance)
+function _print_validation_report(
+        decay_list, stats, charge_violations,
+        baryon_violations, branching_ratio_sums,
+        branching_ratio_tolerance
+    )
     particle_name(particle_id) = haskey(decay_list.parts, particle_id) ?
-                                 decay_list.parts[particle_id].name :
-                                 "?$particle_id"
+        decay_list.parts[particle_id].name :
+        "?$particle_id"
     count_status(count) = count == 0 ? "OK" : "*** $count ***"
 
     println("── decay-list validation ", repeat("─", 44))
-    @printf("  %d particles, %d decay channels (%d stable), multiplicities %s\n",
-            stats.particles, stats.channels, stats.selfstable, string(stats.multiplicity))
+    @printf(
+        "  %d particles, %d decay channels (%d stable), multiplicities %s\n",
+        stats.particles, stats.channels, stats.selfstable, string(stats.multiplicity)
+    )
     println("  conservation (must be zero):")
-    @printf("    charge violations ........ %s\n",
-            count_status(stats.charge_violations))
-    @printf("    baryon-number violations . %s\n",
-            count_status(stats.baryon_violations))
-    @printf("    unresolved daughters ..... %s\n",
-            count_status(stats.unresolved))
-    @printf("    BR out of [0,1] .......... %s\n",
-            count_status(stats.br_out_of_range))
-    @printf("  branching ratios: max |ΣBR-1| = %.2e,  %s parents beyond %.0f%%\n",
-            stats.br_maxdev, count_status(stats.br_norm_outliers),
-            100 * branching_ratio_tolerance)
-    @printf("  informational: %d strangeness-changing, %d charm-changing (weak decays),  %d closed-at-pole\n",
-            stats.strangeness_changing, stats.charm_changing, stats.subthreshold)
+    @printf(
+        "    charge violations ........ %s\n",
+        count_status(stats.charge_violations)
+    )
+    @printf(
+        "    baryon-number violations . %s\n",
+        count_status(stats.baryon_violations)
+    )
+    @printf(
+        "    unresolved daughters ..... %s\n",
+        count_status(stats.unresolved)
+    )
+    @printf(
+        "    BR out of [0,1] .......... %s\n",
+        count_status(stats.br_out_of_range)
+    )
+    @printf(
+        "  branching ratios: max |ΣBR-1| = %.2e,  %s parents beyond %.0f%%\n",
+        stats.br_maxdev, count_status(stats.br_norm_outliers),
+        100 * branching_ratio_tolerance
+    )
+    @printf(
+        "  informational: %d strangeness-changing, %d charm-changing (weak decays),  %d closed-at-pole\n",
+        stats.strangeness_changing, stats.charm_changing, stats.subthreshold
+    )
 
-    for (label, violations) in (("charge", charge_violations),
-                                ("baryon", baryon_violations))
+    for (label, violations) in (
+            ("charge", charge_violations),
+            ("baryon", baryon_violations),
+        )
         if isempty(violations)
             continue
         end
@@ -1202,8 +1299,10 @@ function _print_validation_report(decay_list, stats, charge_violations,
         for (parent_id, daughter_ids) in first(violations, 3)
             daughter_names =
                 (particle_name(daughter_id) for daughter_id in daughter_ids)
-            @printf("    %s -> %s\n",
-                    particle_name(parent_id), join(daughter_names, " "))
+            @printf(
+                "    %s -> %s\n",
+                particle_name(parent_id), join(daughter_names, " ")
+            )
         end
     end
 
@@ -1218,11 +1317,13 @@ function _print_validation_report(decay_list, stats, charge_violations,
     if has_outlier
         println("  parents with worst ΣBR:")
         for (parent_id, branching_ratio_sum) in first(worst_branching_sums, 3)
-            @printf("    %-12s ΣBR = %.3f\n",
-                    particle_name(parent_id), branching_ratio_sum)
+            @printf(
+                "    %-12s ΣBR = %.3f\n",
+                particle_name(parent_id), branching_ratio_sum
+            )
         end
     end
-    println(repeat("─", 70))
+    return println(repeat("─", 70))
 end
 
 end # module

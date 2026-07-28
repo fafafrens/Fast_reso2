@@ -33,9 +33,9 @@ everything with `--project`:
 julia --project -e 'using Pkg; Pkg.instantiate()'
 ```
 
-The core (`DecaySpectra.jl`, `CascadeTables.jl`) needs only
-`FastGaussQuadrature` plus the standard library (`Serialization`, `SHA`,
-`Dates`, `Printf`); the tests add `QuadGK`; the figure scripts add `Plots`.
+The core needs only `FastGaussQuadrature` plus the standard libraries
+`LinearAlgebra`, `Serialization`, `SHA`, `Dates`, and `Printf`; the tests add
+`QuadGK`, and the figure scripts add `Plots`.
 
 ## Quick start
 
@@ -97,11 +97,11 @@ emitted off-axis — recovering to 3.8% by 2 GeV.
 the primary part alone, both on `qs`, keyed by PDG id. The `primary` callback
 is where the physics goes: return `zero(qs)` for a species to exclude it.
 
-Two things to change for production. Pass `cache = "Wtables.jls"` to
-`CascadeTable`, so the matrices are built once and reloaded afterwards — at
-this grid that turns a 13 s build into a 0.8 s load of a 0.55 GB file. And drop
-`grid = qs` for the default 134-point grid, which costs ~18 s to build and
-~2.5 GB to store (~7 s to reload).
+For production, pass `cache = "Wtables.jls"` so the packed matrices are built
+once and reloaded. At the default 134-point grid, dense `Float32` storage would
+occupy 2.4481 GiB; the production row-band census estimates 1.1012 GiB of
+packed matrix payload (44.98% of dense). The serialized file size and packed
+cache build/load timings depend on the system and should be measured there.
 
 ## Files
 
@@ -111,7 +111,9 @@ produces a figure (script **and** its output) lives in `figures/`.
 | File | Role |
 |------|------|
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
-| `CascadeTables.jl`  | Persistent per-channel matrices, filtering, feeder-first cascade, compiled flat plans |
+| `CascadeTables.jl`  | Persistent per-channel packed matrices, filtering, feeder-first cascade, compiled flat plans |
+| `RowBandMatrix.jl`  | Offset-backed row-band `AbstractMatrix` storage |
+| `CascadeLinearAlgebra.jl` | Mixed `Float32`/`Float64` row-band `mul!` and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible legacy-vs-plan deterministic full-apply benchmark |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
@@ -121,7 +123,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
 | `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
 | `tools/gen_heavy_flavour.py` | Regenerates the charm+bottom list from the PDG database (`pip install pdg`) |
-| `figures/cascade.jl` | Full cascade driver (builds/loads `Wtables.jls`, ~2.5 GB cache) → `cascade.png` |
+| `figures/cascade.jl` | Full cascade driver (builds/loads the packed `Wtables.jls` cache) → `cascade.png` |
 | `figures/physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
 | `figures/physics_charm.jl` | Charm feed-down (D⁰/D⁺/D_s/Λc) from excited charm, SHM thermal primaries → `feeddown_charm.png` |
 | `figures/demo.jl`   | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
@@ -149,10 +151,10 @@ channels and fuses all Fourier modes into a single quadrature sweep. It is
 also required for `runcascade(plan; parallel = :modes)` to execute modes
 concurrently.
 
-The `Wtables.jls` cache is regenerable and git-ignored: the first `cascade.jl`
-builds it (~16 s on 8 threads at the default orders, nµ = nma = 16, incl.
-finite parent widths) and saves it (~2.5 GB Float32); later runs load it
-(~7 s), and the cascade sweep itself takes ~2 s.
+The `Wtables.jls` cache is regenerable and git-ignored. It serializes packed
+`Float32` row bands; at the default grid their estimated matrix payload is
+1.1012 GiB, versus 2.4481 GiB for dense storage. The previous ~7 s load and
+~2 s sweep measurements describe the superseded dense cache.
 
 `CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
 that input. This keeps the grid compact and selects the uniform interpolation
