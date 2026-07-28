@@ -831,6 +831,119 @@ matrix assembly (Sec.~\ref{sec:matrix}) --- which reads only the per-node
 $(m_a^{(i)},E_b^{(i)},c_i)$ --- consumes them identically, distinguishing
 nothing.
 
+\subsection{What the width shape controls, and what it does not}
+\label{sec:widthshape}
+
+Two properties of $\varrho_i$ are frequently conflated: its behavior at
+threshold, fixed by the mass dependence of $\Gamma_i(m)$, and the weight in
+its high-mass tail, fixed by the truncation window.  They are independent,
+and only the first is repaired by \eqref{eq:massdep-width}.
+
+For a two-body S-wave decay ($\ell=0$, $B_0\equiv1$)
+\eqref{eq:massdep-width} reduces to
+\begin{equation}
+\Gamma_i(m)=\Gamma_i\,\frac{m_i}{m}\,\frac{q(m)}{q(m_i)},
+\qquad
+q(m)=\tfrac12\sqrt{m^{2}-4m_\pi^{2}}\ \ \text{for }i\to\pi\pi ,
+\label{eq:swave-width}
+\end{equation}
+which vanishes at $m=2m_\pi$ as promised.  Its large-$m$ behavior is the
+part that surprises: $q(m)\to m/2$ cancels the $m_i/m$ prefactor, so
+\begin{equation}
+\Gamma_i(m)\;\xrightarrow[m\to\infty]{}\;\Gamma_i\,\frac{m_i}{2\,q(m_i)}
+\;\equiv\;\Gamma_i^{\infty},
+\label{eq:swave-asymptote}
+\end{equation}
+a \emph{constant}, and for a broad low-mass state $\Gamma_i^{\infty}$
+exceeds $\Gamma_i$.  Since $\varrho_i\sim\Gamma_i(m)/m^{2}$ at large $m$
+either way, the S-wave mass-dependent width leaves the tail exponent
+unchanged and mildly \emph{increases} its coefficient.  Only for $\ell\ge1$,
+where $q^{2\ell+1}$ outruns the propagator, does \eqref{eq:massdep-width}
+suppress the tail.
+
+Take the $\sigma$ as the extreme case: $m_i=0.475$, $\Gamma_i=0.550$,
+$q(m_i)=0.192$, hence $\Gamma_i^{\infty}=0.680>\Gamma_i$.  With the window
+$[\,m_i-k\Gamma_i,\;m_i+k\Gamma_i\,]$ at $k=4$ the weight distributes as
+
+\begin{center}
+\begin{tabular}{lrr}
+\hline
+weight in & constant $\Gamma_i$ & $\Gamma_i(m)$ of \eqref{eq:swave-width}\\
+\hline
+below $2m_\pi$        & $2.56\%$  & $0.00\%$\\
+$0.279$--$1.0$\,GeV   & $69.85\%$ & $68.53\%$\\
+$1.0$--$2.0$\,GeV     & $22.73\%$ & $25.78\%$\\
+$2.0$--$2.675$\,GeV   & $4.86\%$  & $5.69\%$\\
+\hline
+peak of $\varrho_i$   & $0.588$\,GeV & $0.592$\,GeV\\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent
+The mass dependence removes the sub-threshold weight exactly and moves the
+peak by $4$\,MeV; the tail grows slightly.  This matters because of the
+normalization convention of Sec.~\ref{sec:width}: the \emph{full} window
+normalizes $\varrho_i$ while only its open part carries decay nodes.  That
+is the correct choice for channel reopening --- a channel closed at the pole
+keeps its open-tail fraction --- but with a constant width it also means the
+$2.56\%$ lying below $2m_\pi$, where no decay exists, is normalized in and
+emits nothing.  A state parametrized this way yields slightly fewer than two
+pions per decay.
+
+The tail, by contrast, is governed entirely by $k$:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\hline
+weight above $1$\,GeV & $k=1$ & $k=2$ & $k=4$ & $k=8$\\
+\hline
+constant $\Gamma_i$   & $1.7\%$ & $19.2\%$ & $27.6\%$ & $31.8\%$\\
+$\Gamma_i(m)$         & $2.0\%$ & $22.1\%$ & $31.5\%$ & $36.1\%$\\
+\hline
+\end{tabular}
+\end{center}
+
+\noindent
+A factor of sixteen in the hard-daughter source, set by a truncation
+constant rather than by $(m_i,\Gamma_i)$.  For narrow states this is
+irrelevant --- the window closes long before anything interesting --- but
+for $\Gamma_i\sim m_i$ it is the dominant modelling choice, and it should be
+recognized as one.  Where a broad state's tail overlaps other entries of the
+decay list that carry the same quantum numbers, the tail also double counts
+them.
+
+The practical consequence is a division of labour: use
+\eqref{eq:massdep-width} to fix threshold behavior, and a support cap or a
+form factor --- not the mass dependence --- to control the tail.
+
+\subsection{A spectral-function interface}
+\label{sec:spectralinterface}
+
+Nothing downstream of the parent-mass average inspects the shape of
+$\varrho_i$.  \texttt{BroadParent} consumes only the triple
+\[
+\big(\{m_a^{(i)}\},\ \{w_i\},\ \mathcal{N}\big)
+\]
+--- nodes, weights, and the full-support normalization --- and
+\eqref{eq:kernelaverage} consumes only $(m_a^{(i)},E_b^{(i)},c_i)$.  A
+spectral function is therefore fixed by a two-method contract: evaluation
+$\varrho(m)$ on its support, and a quadrature rule returning that triple for
+a given threshold.  Any shape satisfying it --- constant-width
+Breit--Wigner, \eqref{eq:massdep-width}, a form-factor-damped variant, or a
+tabulated $\mathrm{d}\delta_I^\ell/\mathrm{d}m$ from measured phase shifts
+--- drops in without touching the kernel, the matrix assembly, or the
+cascade.
+
+The quadrature is the only method with any subtlety.  The tan-substitution
+$s=m_i^{2}+m_i\Gamma_i\tan\psi$ of Sec.~\ref{sec:width} flattens the
+Lorentzian \emph{exactly} for a constant width, and is merely a good change
+of variables for a mass-dependent one: the map is built from the pole
+parameters while the integrand carries the true $\varrho_i$, so nodes
+cluster where the weight is, and correctness rests on the quadrature rather
+than on the map being exact.  For the $\sigma$ the peak moves by $4$\,MeV
+between the two shapes, so the same nodes serve both.
+
 \section{The matrix representation: one matrix per mode}
 \label{sec:matrix}
 
