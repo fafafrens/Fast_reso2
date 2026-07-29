@@ -1085,6 +1085,59 @@ end
 plan7 = CascadePlan(tab7, dl7)
 planned7 = runcascade(plan7; primary = prim7)
 assert_plan_matches(planned7, res7)
+
+# The high-level constructor owns its table and forwards all table options.
+convenience_cache7 = tempname()
+convenience_plan7 = CascadePlan(
+    dl7;
+    grid = g7,
+    orders = ord7,
+    modes = [0, 2],
+    cache = convenience_cache7,
+)
+@assert isfile(convenience_cache7)
+@assert convenience_plan7.table.grid === g7
+@assert convenience_plan7.table.modes === (0, 2)
+@assert convenience_plan7.table.orders == tab7.orders
+assert_plan_matches(
+    runcascade(convenience_plan7; primary = prim7),
+    planned7,
+)
+
+# The one-shot wrapper separates table options from execution options.
+direct7 = runcascade(
+    dl7;
+    primary = prim7,
+    grid = g7,
+    orders = ord7,
+    modes = [0, 2],
+    cache = convenience_cache7,
+    parallel = :modes,
+    output = :all,
+)
+assert_plan_matches(direct7, res7allparticles)
+
+# Invalid execution options fail before an expensive table is constructed.
+invalid_direct_cache7 = tempname()
+let threw = false
+    try
+        runcascade(
+            dl7;
+            primary = prim7,
+            grid = g7,
+            cache = invalid_direct_cache7,
+            parallel = :invalid,
+        )
+    catch error
+        threw =
+            error isa ArgumentError &&
+            occursin("parallel", error.msg)
+    end
+    @assert threw
+end
+@assert !isfile(invalid_direct_cache7)
+rm(convenience_cache7; force = true)
+
 @assert plan7.ids == sort!(collect(keys(dl7.parts)))
 @assert plan7.ids[plan7.stable_indices] == dl7.stable_ids
 @assert [particle.id for particle in stableparticles(plan7)] ==

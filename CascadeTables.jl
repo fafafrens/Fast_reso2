@@ -4,9 +4,9 @@
 Structured, persistent decay-matrix tables for the full resonance cascade.
 
     dl = DecayList("decays_QM2016Plus_massorder.dat")
-    t  = CascadeTable(dl; cache = "Wtables.jls")     # load, or build + save
-    plan = CascadePlan(t, dl)                        # compile topology once
-    res = runcascade(plan; primary = myprimaries)    # stable species, per mode
+    res = runcascade(                                 # build, compile, and run
+        dl; primary = myprimaries, cache = "Wtables.jls",
+    )
 
 Design (see matrix_notes.pdf for details):
   * decay matrices are serialized; source identity and bytes remain in the
@@ -899,6 +899,19 @@ function CascadeTable(
     return table
 end
 
+"""
+    CascadePlan(decay_list::DecayList; table_options...)
+
+Build or load the [`CascadeTable`](@ref) and compile `decay_list` into one
+prepared object. All keyword arguments are forwarded to `CascadeTable`.
+Reuse the returned plan across `runcascade` calls with different primary
+callbacks.
+"""
+function CascadePlan(decay_list::DecayList; table_options...)
+    table = CascadeTable(decay_list; table_options...)
+    return CascadePlan(table, decay_list)
+end
+
 # ---------------------------------------------------------------------------
 # Persistence (Serialization stdlib: local cache; format is version-checked)
 # ---------------------------------------------------------------------------
@@ -1192,6 +1205,22 @@ function _apply_plan!(
     return spectra_by_mode
 end
 
+function _check_run_options(parallel, output)
+    parallel === :serial || parallel === :modes ||
+        throw(
+        ArgumentError(
+            "parallel must be :serial or :modes, got $(repr(parallel))",
+        )
+    )
+    output === :stable || output === :all ||
+        throw(
+        ArgumentError(
+            "output must be :stable or :all, got $(repr(output))",
+        )
+    )
+    return nothing
+end
+
 """
     runcascade(plan::CascadePlan; primary, parallel = :serial,
                output = :stable) -> (F, Fprim)
@@ -1210,18 +1239,7 @@ function runcascade(
         parallel = :serial,
         output = :stable,
     )
-    parallel === :serial || parallel === :modes ||
-        throw(
-        ArgumentError(
-            "parallel must be :serial or :modes, got $(repr(parallel))",
-        )
-    )
-    output === :stable || output === :all ||
-        throw(
-        ArgumentError(
-            "output must be :stable or :all, got $(repr(output))",
-        )
-    )
+    _check_run_options(parallel, output)
     output_indices = output === :stable ?
         plan.stable_indices :
         eachindex(plan.ids)
@@ -1229,6 +1247,32 @@ function runcascade(
         _initialize_plan_spectra(plan, primary, output_indices)
     _apply_plan!(spectra_by_mode, plan, parallel::Symbol)
     return (F = spectra, Fprim = primary_spectra)
+end
+
+"""
+    runcascade(decay_list::DecayList; primary,
+               grid = range(0, 4.0, length = 134),
+               orders = DEFAULT_ORDERS, modes = [0, 2],
+               cache = nothing, rebuild = false,
+               parallel = :serial, output = :stable) -> (F, Fprim)
+
+Build or load a table, compile a plan, and run the cascade in one call.
+`grid`, `orders`, `modes`, `cache`, and `rebuild` configure the table;
+`primary`, `parallel`, and `output` configure execution.
+
+This is the convenient one-shot interface. Construct a [`CascadePlan`](@ref)
+explicitly when it will be reused with multiple primary callbacks.
+"""
+function runcascade(
+        decay_list::DecayList;
+        primary,
+        parallel = :serial,
+        output = :stable,
+        table_options...,
+    )
+    _check_run_options(parallel, output)
+    plan = CascadePlan(decay_list; table_options...)
+    return runcascade(plan; primary, parallel, output)
 end
 
 # ---------------------------------------------------------------------------

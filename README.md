@@ -65,9 +65,7 @@ primary(p, n, qs) =                               # thermal source, 4% v₂ on m
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
 
 qs    = range(0.0, 4.0, length = 61)
-table = CascadeTable(dl; grid = qs)               # build every channel matrix (~10 s)
-plan  = CascadePlan(table, dl)                    # compile the topology once
-res   = runcascade(plan; primary, parallel = :modes)
+res   = runcascade(dl; primary, grid = qs, parallel = :modes)
 
 ## 3. Read it out
 π⁺ = 211
@@ -202,6 +200,9 @@ tlean = CascadeTable(two_body; cache = "W2.jls")         # or build only 2-body 
 plan = CascadePlan(t, selected)                           # compile once
 res = runcascade(plan; primary)                           # serial flat execution
 res = runcascade(plan; primary, parallel = :modes)        # one task per mode
+
+# One-shot alternative: build/load, compile, and run in one call
+res = runcascade(selected; primary, grid = t.grid, cache = "Wselected.jls")
 ```
 
 Ready-made filters (all return a `ChannelFilter`):
