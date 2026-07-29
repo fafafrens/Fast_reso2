@@ -28,3 +28,19 @@ jobs:
         run: |
           julia --project=@fastreso-ci -e 'using Pkg; Pkg.add(["FastGaussQuadrature", "QuadGK"])'
           julia --project=@fastreso-ci -t auto runtests.jl
+
+  heavy-flavour-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/requirements-heavy-flavour.txt
+      - name: Test generator helpers and checked-in supplement
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Install pinned PDG data API
+        run: python -m pip install -r tools/requirements-heavy-flavour.txt
+      - name: Check generated supplement
+        run: python tools/gen_heavy_flavour.py --check

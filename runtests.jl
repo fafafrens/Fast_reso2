@@ -1636,4 +1636,51 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
 end
 println("   PASS")
 
+# ---------------------------------------------------------------- test 9
+println("== 9. Heavy-flavour supplement: parser and merged-list invariants ==")
+let
+    base = DecayList(joinpath(@__DIR__, "decays_QM2016Plus_massorder.dat"))
+    supplement = DecayList(joinpath(@__DIR__, "decays_charm_bottom.dat"))
+
+    @assert length(supplement.parts) == 150
+    @assert isempty(intersect(keys(base.parts), keys(supplement.parts)))
+
+    combined = DecayList(
+        merge(base.parts, supplement.parts),
+        merge(base.byparent, supplement.byparent),
+        "base + charm/bottom supplement",
+        string(base.sha, supplement.sha),
+    )
+    stats = validate(combined; verbose = false)
+    @assert stats.unresolved == 0
+    @assert stats.br_out_of_range == 0
+    @assert stats.charge_violations == 0
+    @assert stats.baryon_violations == 0
+    @assert stats.subthreshold == 0
+
+    # Absolute retained PDG probabilities intentionally leave some parent sums
+    # below one. Their normalization outliers are documented data coverage, not
+    # malformed individual probabilities.
+    @assert stats.br_norm_outliers == 30
+
+    required_keys, enrollment = CascadeTables.neededkeys(combined)
+    @assert length(required_keys) == 18841
+    @assert enrollment == Dict(
+        :self => 122,
+        :nd5 => 0,
+        :closed => 0,
+        :reopened => 0,
+        :γdaughter => 1325,
+        :unknown => 0,
+    )
+
+    cycle_log = IOBuffer()
+    parent_order = with_logger(SimpleLogger(cycle_log, Logging.Warn)) do
+        CascadeTables.cascadeorder(combined)
+    end
+    @assert isempty(String(take!(cycle_log)))
+    @assert length(parent_order) == length(combined.byparent)
+end
+println("   PASS")
+
 println("\nAll tests passed.")
