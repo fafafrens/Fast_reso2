@@ -1,16 +1,19 @@
-# Compiled and Partially Threaded Cascade Plan
+# Unified Compiled and Partially Threaded Cascade Plan
 
 Status: implementation and correctness validation complete. Deterministic
 full-topology benchmarks are recorded below; resident production-cache and
-one/two/four-thread scaling measurements remain pending. The keyed one-shot
-executor remains as the compatibility and numerical-reference path.
+one/two/four-thread scaling measurements remain pending. All public entry
+points now converge on one executor: `runcascade(decaylist)` builds or loads a
+table and compiles a plan, `runcascade(table, decaylist)` compiles a plan backed
+by that table, and `runcascade(plan)` executes it.
 
 ## 1. Goal
 
-The cascade table should remain keyed by `ChannelKey` while it is built,
-cached, filtered, and extended.  Repeated execution should use a separate
-compiled plan that resolves the graph, particle identifiers, branching
-weights, and matrix lookups once.
+The cascade table remains keyed by `ChannelKey` while it is built, cached,
+filtered, and extended. Every execution operates on a compiled plan that
+resolves the graph, particle identifiers, branching weights, and matrix
+lookups. Callers construct that plan explicitly when they want to reuse the
+same table and topology.
 
 The intended API is
 
@@ -33,11 +36,11 @@ numerical loop.
 
 This plan has four goals:
 
-1. remove repeated topological sorting, channel enumeration, key construction,
-   and dictionary lookup from repeated cascades;
+1. compile topological sorting, channel enumeration, key construction, and
+   dictionary lookup once per plan;
 2. combine repeated applications of the same decay matrix;
 3. allow safe partial multithreading;
-4. preserve keyed-table semantics and numerical accuracy.
+4. preserve keyed table-storage semantics and numerical accuracy.
 
 The original plan work did not require a storage change. The table has since
 moved to packed row bands without changing the plan architecture.
@@ -55,17 +58,20 @@ Changing it into one positional array would make those operations more
 fragile.
 
 During a cascade, however, the topology and matrix choices do not change.
-The current executor repeats work that can be compiled once:
+A direct executor over the keyed table would repeat work that can be compiled
+once:
 
-- compute `cascadeorder(decaylist)`;
-- walk `eachchannelkey`;
+- enumerate the enrolled daughter slots and their dependency graph;
+- topologically order the decaying parents;
 - reconstruct `ChannelKey` values;
 - look up `table.W[key]`;
 - look up parent and daughter spectra by particle ID.
 
 A `CascadePlan` is therefore an in-memory, topology-specific view of the
 table.  It stores dense particle indices and direct references to the existing
-matrices.  It does not copy matrix payloads and is not serialized.
+matrices. It does not copy matrix payloads and is not serialized. The
+decay-list and table convenience wrappers both compile this representation and
+delegate to its executor rather than maintaining a second numerical loop.
 
 ## 3. Implemented representation
 
@@ -89,6 +95,7 @@ struct CascadePlan{T<:CascadeTable,N,M<:RowBandMatrix{Float32}}
     table::T
     ids::Vector{Int}
     particles::Vector{ParticleInfo}
+    stable_indices::Vector{Int}
     steps::Vector{CascadeStep}
     groups::Vector{CascadeGroup{N,M}}
     targets::Vector{CascadeTarget}
@@ -99,7 +106,9 @@ The fields have the following meanings:
 
 - `ids[i]` is the public particle ID corresponding to dense index `i`;
 - `particles[i]` is the matching `ParticleInfo`, used to initialize primaries;
-- `steps` follows the exact feeder-before-fed order from `cascadeorder`;
+- `stable_indices` selects the terminal particles returned by default;
+- `steps` stores the feeder-before-fed order computed from the enrolled
+  dependency graph during plan construction;
 - one `CascadeGroup` represents one exact `(parent, ChannelKey)` pair;
 - `matrices[m]` is the already-built decay matrix for mode `m`;
 - each target contains a dense daughter index and its total branching weight;
@@ -119,7 +128,8 @@ define both the numerical operations and their dependency graph.
 
 1. collect particles into a stable dense order and build a temporary
    `particle_id => dense_index` dictionary;
-2. traverse the enrolled slot stream with `eachchannelkey` once;
+2. enumerate the enrolled observed-daughter slots once, using the table's
+   finite-width settings;
 3. during that traversal, collect grouped operations and unique
    `parent => decaying daughter` dependency edges;
 4. resolve `table.W[key]` once for each encountered key;
@@ -137,9 +147,9 @@ never reaches `C`.  Dictionary/file order is not a physics contract, and pure
 descending pole mass fails for a broad-tail reopened channel that feeds a
 heavier daughter.  The existing reopened-channel test demonstrates that case.
 
-This dependency work belongs only in plan construction.  Repeated
-`runcascade(plan)` calls walk the already ordered `steps` and never call
-`cascadeorder`.
+Dependency construction and topological ordering belong only in plan
+construction. `runcascade(plan)` walks the already ordered `steps` and never
+rebuilds either.
 
 The daughter weight is
 
@@ -169,10 +179,9 @@ Matrix count and shape are also validated during construction. No key, grid,
 topology, or hash validation belongs in the hot execution path.
 
 The dependency edges should be deduplicated even when several slots or
-channels connect the same parent and daughter.  A dependency cycle has no
-exact single-sweep order; construction warns once and preserves the legacy
-deterministic mass-descending approximate fallback, with particle ID as the
-tie-break.
+channels connect the same parent and daughter. A dependency cycle has no exact
+single-sweep order; construction warns once and uses the deterministic
+mass-descending approximate fallback, with particle ID as the tie-break.
 
 ## 5. Serial execution
 
@@ -217,9 +226,8 @@ group computes `W * Fp` once with three-argument `mul!` and scatters with
 `LinearAlgebra.mul!` fast path; the private scatter retains an `axpy!`
 fallback.
 
-The parent spectrum is read-only during all of its outgoing groups.
-`eachchannelkey` already excludes `daughter == parent`, so the input cannot
-alias an output.
+The parent spectrum is read-only during all of its outgoing groups. Enrollment
+excludes `daughter == parent`, so the input cannot alias an output.
 
 ## 6. Operation-count census
 
@@ -449,9 +457,18 @@ second cache format and pointer/offset validity problems.
 
 ## 10. Correctness tests
 
-Keep the current `runcascade(table, decaylist; primary)` implementation as a
-reference during development.  Compare every species and mode against
-`runcascade(plan; primary)`.
+The table and decay-list wrappers must be checked against the explicit plan to
+which they delegate:
+
+```julia
+plan = CascadePlan(table, decaylist)
+runcascade(table, decaylist; primary) == runcascade(plan; primary)
+```
+
+Because these calls share one executor, wrapper equivalence should be bitwise.
+Grouping itself needs an independent test-only ungrouped slot interpreter,
+direct small-cascade calculations, or pinned expected results; a public wrapper
+that compiles the same plan is not an independent numerical reference.
 
 Required cases:
 
@@ -468,32 +485,31 @@ Required cases:
 10. immediate construction failure when a required table key is missing.
 
 Grouping changes the order of some floating-point scaling/addition operations.
-Legacy-versus-grouped comparison should therefore use
+Ungrouped-reference-versus-grouped comparison should therefore use
 
 ```julia
 norm(Fplan - Fref, Inf) / max(norm(Fref, Inf), 1) <= 1e-12
 ```
 
-rather than bitwise equality.  `Fprim` should remain exact.  Serial and
-mode-threaded execution of the same compiled plan should be bitwise equal
-because each mode retains its serial operation order.
+rather than bitwise equality. `Fprim` should remain exact. Wrapper delegation
+and serial versus mode-threaded execution of the same compiled plan should be
+bitwise equal because each mode retains its serial operation order.
 
 ## 11. Benchmark plan
 
 Compilation and execution must be measured separately:
 
-1. current one-shot/reference cascade;
-2. plan compilation;
-3. serial repeated plan application;
-4. grouped serial application;
-5. grouped `parallel = :modes` application;
-6. parallel independent calls where relevant.
+1. plan compilation against an already resident table;
+2. the table wrapper, which includes plan compilation and one execution;
+3. serial execution of a reused plan;
+4. reused-plan execution with `parallel = :modes`;
+5. the full decay-list one-shot path, including table build/load where relevant;
+6. parallel independent plan calls where relevant.
 
 For every path report:
 
 - median time and allocations after warm-up;
 - slot, transfer, and group counts;
-- effective matrix bytes per second;
 - Julia thread count and BLAS thread count;
 - grid size and active modes;
 - correctness outside the timed region.
@@ -512,37 +528,39 @@ Interleave serial and threaded trials to reduce cache-state bias.
 
 Initial acceptance criteria:
 
-- normalized error no larger than `1e-12`, with exact `Fprim`;
+- wrapper results bitwise equal to their explicitly constructed plan;
+- normalized error against an independent ungrouped or direct reference no
+  larger than `1e-12`, with exact `Fprim`;
 - no copied decay matrices in a plan; storage migrations use an explicit
   cache-format bump;
-- reused-plan allocations at least 50% below the reference graph walk;
 - no representative resident workload more than 3% slower;
-- at least 3--5% median improvement on the weighted resident workloads before
-  replacing the default executor;
+- plan compilation reported separately from reused execution;
 - a measurable mode-threading gain on two-mode workloads, reported without
   assuming ideal two-way scaling.
 
-### Current deterministic benchmark
+### Historical deterministic benchmark
 
-`benchmarks/cascade_plan.jl` exercises the complete bundled 1,518-particle
-topology with distinct resident matrices, without requiring the production
-cache. On the implementation host with Julia 1.12.6, two Julia threads, one
-BLAS thread, `G = 16`, two modes, and three median samples:
+Before the public paths were unified, `benchmarks/cascade_plan.jl` exercised
+the complete bundled 1,518-particle topology with distinct resident matrices
+and used the now-removed direct keyed executor as an independent baseline. On
+the implementation host with Julia 1.12.6, two Julia threads, one BLAS thread,
+`G = 16`, two modes, and three median samples, it recorded:
 
-| path | median | allocations | speedup vs keyed |
+| historical path | median | allocations | speedup vs keyed |
 |---|---:|---:|---:|
-| keyed one-shot | 59.179 ms | 32.183 MiB | 1.00x |
-| flat serial | 23.121 ms | 2.056 MiB | 2.56x |
-| flat mode-threaded | 12.240 ms | 2.058 MiB | 4.83x |
+| removed keyed executor | 59.179 ms | 32.183 MiB | 1.00x |
+| reused plan, serial | 23.121 ms | 2.056 MiB | 2.56x |
+| reused plan, mode-threaded | 12.240 ms | 2.058 MiB | 4.83x |
 
 Plan compilation was 72.559 ms and 77.812 MiB, reported separately because it
 is amortized across repeated runs. The isolated compiled apply measured
 21.213 ms serial and 10.640 ms mode-threaded, a 1.99x threading gain. The
-normalized error against the keyed reference was `1.443e-15`; serial and
-mode-threaded outputs were bitwise equal. These measurements include
-row-band matrix-vector applications with deterministic payloads while
+normalized error against the former keyed reference was `1.443e-15`; serial
+and mode-threaded outputs were bitwise equal. These historical measurements
+include row-band matrix-vector applications with deterministic payloads while
 excluding construction and cache I/O. They are not a `G = 134`
-production-cache benchmark.
+production-cache benchmark. Current measurements should label the table
+wrapper as compile-plus-execute and the reused plan as execution-only.
 
 ## 12. Implementation stages
 
@@ -566,16 +584,13 @@ production-cache benchmark.
 - keep primary initialization serial;
 - add serial/threaded determinism and concurrent-call tests.
 
-### Stage 4: compatibility behavior — complete
+### Stage 4: unified wrappers — complete
 
-The existing
-
-```julia
-runcascade(table, decaylist; primary)
-```
-
-retains its one-shot implementation as a compatibility and numerical-reference
-path. Repeated workloads explicitly construct and reuse `CascadePlan`.
+`runcascade(table, decaylist; primary)` constructs
+`CascadePlan(table, decaylist)` and delegates to the plan executor.
+`runcascade(decaylist; primary, table_options...)` first builds or loads the
+table and then follows the same route. There is no separate keyed numerical
+executor. Repeated workloads construct and reuse `CascadePlan` explicitly.
 
 ### Stage 5: optional wider parallelism
 

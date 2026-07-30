@@ -15,8 +15,9 @@ const v2p = 0.05         # primary elliptic-flow amplitude (all species)
 dl = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
 
 t0 = time()
-tab = CascadeTable(dl; cache = joinpath(ROOT, "Wtables.jls"))
-@printf("tables ready in %.1f s:  %d keys × %d modes, grid %d pts [%.1f, %.1f] GeV\n",
+plan = CascadePlan(dl; cache = joinpath(ROOT, "Wtables.jls"))
+tab = plan.table
+@printf("table + plan ready in %.1f s:  %d keys × %d modes, grid %d pts [%.1f, %.1f] GeV\n",
         time() - t0, length(tab.W), length(tab.modes), length(tab.grid),
         first(tab.grid), last(tab.grid))
 
@@ -27,8 +28,8 @@ primary(p, n, grid) =
              zeros(length(grid))
 
 t0 = time()
-res = runcascade(tab, dl; primary)
-@printf("cascade (both modes) in %.2f s\n\n", time() - t0)
+res = runcascade(plan; primary)
+@printf("compiled cascade (both modes) in %.2f s\n\n", time() - t0)
 
 idx(pT) = argmin(abs.(tab.grid .- pT))
 println("Feed-down enhancement F_tot/F_prim and v₂ after feed-down (primary v₂ = $(v2p)):")

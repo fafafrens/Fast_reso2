@@ -17,7 +17,9 @@ Fourier modes `n = 0, 2`, the full feeder-before-fed cascade, channel
 filtering, and **finite parent widths** (broad resonances averaged over a
 Breit–Wigner spectral function, with channel reopening — applied automatically
 from each species' width in the decay list), plus a compiled, grouped
-`CascadePlan` with optional mode-level threading for repeated cascade runs.
+`CascadePlan` used by every cascade entry point, with optional mode-level
+threading. Construct the plan explicitly when the same table and topology will
+be run more than once.
 **Documented but not yet coded:** rapidity-dependent (η-resolved) sources, and
 the cluster / observed-daughter width cases — see the note.
 
@@ -41,7 +43,7 @@ The core needs only `FastGaussQuadrature` plus the standard libraries
 
 Save this at the repository root as `quickstart.jl` and run
 `julia --project -t auto quickstart.jl`. It goes from a single decay to the
-full 18299-channel cascade and takes about 25 s from a cold start.
+full 18,299-key matrix cascade and takes about 25 s from a cold start.
 
 ```julia
 ## 1. One decay, on its own
@@ -65,6 +67,7 @@ primary(p, n, qs) =                               # thermal source, 4% v₂ on m
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
 
 qs    = range(0.0, 4.0, length = 61)
+# One shot: build/load a table, compile a plan, then execute that plan.
 res   = runcascade(dl; primary, grid = qs, parallel = :modes)
 
 ## 3. Read it out
@@ -93,7 +96,7 @@ emitted off-axis — recovering to 3.8% by 2 GeV.
 
 `res.F[id]` is the spectrum per Fourier mode after feed-down and `res.Fprim[id]`
 the primary part alone, both on `qs`, keyed by PDG id. Results contain only
-stable particles by default; `stableparticles(plan)` lists their
+stable particles by default; `stableparticles(dl)` lists their
 `ParticleInfo` records in ID order. Pass `output = :all` to `runcascade` only
 when intermediate-resonance spectra are needed for diagnostics. The `primary`
 callback is where the physics goes: return `zero(qs)` for a species to exclude
@@ -116,7 +119,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `CascadeTables.jl`  | Persistent per-channel packed matrices, filtering, feeder-first cascade, compiled flat plans |
 | `RowBandMatrix.jl`  | Offset-backed row-band `AbstractMatrix` storage |
 | `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
-| `benchmarks/cascade_plan.jl` | Reproducible legacy-vs-plan deterministic full-apply benchmark |
+| `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
 | `runtests.jl`       | Test suite (see below) |
@@ -175,14 +178,15 @@ A cascade run has three orthogonal knobs, which live in three different places:
 
 | knob | question | where |
 |------|----------|-------|
-| **source** | which species emit primaries? | the `primary` callback (return `0` to exclude) |
-| **topology** | which decays are allowed? | `filter(pred, dl)` |
+| **source** | which species emit primaries? | the `primary` callback (return `zeros(length(grid))` to exclude) |
+| **topology** | which decays are allowed? | `filter(pred, dl)` before `CascadePlan` |
 | **sink** | which daughters do I read out? | stable particles by default; `output = :all` for diagnostics |
 
-Filtering acts on the `DecayList` ("before" the cascade), not inside
-`runcascade`, so one filtered list governs **both** the table build and the
-apply with no change to `runcascade`/`CascadeTable`. Filters are values of a
-composable `ChannelFilter` type (combine with `&`, `|`, `!`):
+Filtering acts on the `DecayList` before plan compilation. A filtered list
+governs table enrollment when building a lean table and always governs the
+topology compiled into `CascadePlan`; numerical execution consumes only that
+plan. Filters are values of a composable `ChannelFilter` type (combine with
+`&`, `|`, `!`):
 
 ```julia
 t = CascadeTable(dl; cache = "Wtables.jls")              # full table, built once
@@ -191,15 +195,20 @@ two_body = filter(nbody(2), dl)
 hadronic = filter(nbody(2, 3) & !todaughter("Gamma"), dl)
 selected = filter(parentmass(0, 1) | fromparent("omega"), dl)
 
-res = runcascade(t, two_body; primary)                    # REUSES the full table
-res = runcascade(t, hadronic; primary)
+two_body_plan = CascadePlan(t, two_body)                  # all plans reuse t
+hadronic_plan = CascadePlan(t, hadronic)
+selected_plan = CascadePlan(t, selected)
+
+res = runcascade(two_body_plan; primary)
+res = runcascade(hadronic_plan; primary)
+res = runcascade(selected_plan; primary, parallel = :modes)
+
+# This convenience wrapper compiles a temporary plan backed by t, then runs it.
 res = runcascade(t, selected; primary)
 
 tlean = CascadeTable(two_body; cache = "W2.jls")         # or build only 2-body matrices
-
-plan = CascadePlan(t, selected)                           # compile once
-res = runcascade(plan; primary)                           # serial flat execution
-res = runcascade(plan; primary, parallel = :modes)        # one task per mode
+leanplan = CascadePlan(tlean, two_body)
+res = runcascade(leanplan; primary)
 
 # One-shot alternative: build/load, compile, and run in one call
 res = runcascade(selected; primary, grid = t.grid, cache = "Wselected.jls")
@@ -220,8 +229,8 @@ parentstrangeness(ss…)  parentisospin(is…)  channelfilter(f)    # raw (p,ch,
 
 Two properties this design buys:
 
-- **Build once, filter freely** — a filtered list's keys are a subset of the
-  cached table, so restricting an *apply* never rebuilds.
+- **Build once, filter freely** — each filtered plan reuses the full table's
+  matrices; compiling a restricted topology does not rebuild them.
 - **Or build lean** — the same filter at construction builds only the matrices
   you will use (give lean tables their own cache path, since a filtered list
   keeps the parent list's hash).
@@ -230,9 +239,10 @@ Parents wider than `width_cut` (GeV) use Breit–Wigner averaging. Its default i
 `1.0e-3`, `Inf` disables width averaging, and `0.0` uses every positive width.
 `width_window = 4.0` sets the finite integration range to at most
 `mass ± width_window * width` (the lower mass is floored at `0.05 GeV`).
-Both are table keywords and cache settings; there are no module-level width
-constants. Disabling four-body channels or widths does not renormalize the
-retained branching fractions.
+Both are `Float64` table keywords and cache settings; their physical ranges
+are caller responsibility, and there are no module-level width constants.
+Disabling four-body channels or widths does not renormalize the retained
+branching fractions.
 
 ## License
 

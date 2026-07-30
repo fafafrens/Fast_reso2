@@ -39,9 +39,10 @@ primary(p, n, grid) =
 
 t0  = time()
 # charm sits at high mass/momentum → extend the grid to 8 GeV (same ~0.03 spacing)
-tab = CascadeTable(dlc; grid = range(0.0, 8.0, length = 268), cache = nothing)
-@printf("charm table built in %.1f s:  %d keys\n", time() - t0, length(tab.W))
-res = runcascade(tab, dlc; primary)
+plan = CascadePlan(dlc; grid = range(0.0, 8.0, length = 268), cache = nothing)
+tab = plan.table
+@printf("charm table + plan ready in %.1f s:  %d keys\n", time() - t0, length(tab.W))
+res = runcascade(plan; primary)
 
 grid = tab.grid
 idx(pT) = argmin(abs.(grid .- pT))

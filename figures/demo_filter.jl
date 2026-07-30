@@ -20,11 +20,14 @@ primary(p, n, grid) =
     n == 0 ? [p.degeneracy * exp(-hypot(p.mass, q) / T) for q in grid] :
              zeros(length(grid))
 
-# three nested decay-topology restrictions, each a filtered cascade on the same table
+# Three nested decay-topology restrictions compile three plans backed by the
+# same table. Matrix payloads are reused; only the topology-specific plan
+# changes.
 topologies = (("2-body",     filter(nbody(2),       dl)),
               ("2+3-body",   filter(nbody(2, 3),    dl)),
               ("2+3+4-body", filter(nbody(2, 3, 4), dl)))
-results = [(lbl, runcascade(tab, d; primary)) for (lbl, d) in topologies]
+plans = [(lbl, CascadePlan(tab, d)) for (lbl, d) in topologies]
+results = [(lbl, runcascade(plan; primary)) for (lbl, plan) in plans]
 
 # ---------------------------------------------------------------------------
 # Plot: F_tot/F_prim vs pT, one panel per species, sequential ramp over topology

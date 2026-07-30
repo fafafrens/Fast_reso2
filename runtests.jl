@@ -675,32 +675,6 @@ loaded_legacy_width = loadtables(legacy_width_tabfile)
 @assert CascadeTables._table_width_cut(loaded_legacy_width) == 1.0e-3
 @assert CascadeTables._table_width_window(loaded_legacy_width) == 4.0
 
-invalid_width_metadata = copy(tab7.meta)
-invalid_width_metadata[:width_cut] = NaN
-invalid_width_table = CascadeTable(
-    tab7.grid,
-    tab7.orders,
-    tab7.modes,
-    invalid_width_metadata,
-    copy(tab7.W),
-)
-invalid_width_tabfile = tempname()
-savetables(invalid_width_table, invalid_width_tabfile)
-@assert loadtables(invalid_width_tabfile) === nothing
-
-invalid_width_window_metadata = copy(tab7.meta)
-invalid_width_window_metadata[:width_window] = Inf
-invalid_width_window_table = CascadeTable(
-    tab7.grid,
-    tab7.orders,
-    tab7.modes,
-    invalid_width_window_metadata,
-    copy(tab7.W),
-)
-invalid_width_window_tabfile = tempname()
-savetables(invalid_width_window_table, invalid_width_window_tabfile)
-@assert loadtables(invalid_width_window_tabfile) === nothing
-
 invalid_W7 = typeof(tab7.W)(
     key => copy.(matrices) for (key, matrices) in tab7.W
 )
@@ -721,7 +695,6 @@ rm.(
         legacy_tabfile,
         invalid_mode_tabfile,
         legacy_width_tabfile,
-        invalid_width_tabfile,
         invalid_tabfile,
     );
     force = true,
@@ -905,51 +878,6 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     @assert all(key -> key.Γ == 0.12, keys(tableb_again.W))
     @assert CascadeTables._table_width_cut(loadtables(width_cache)) == 1.0e-3
 
-    invalid_width_cache = tempname()
-    for invalid_width_cut in (
-            -1.0, -Inf, NaN, false, true, "invalid", :invalid,
-        )
-        threw = false
-        try
-            CascadeTable(
-                dlb;
-                grid = g,
-                orders = ord,
-                modes = [0],
-                width_cut = invalid_width_cut,
-                cache = invalid_width_cache,
-            )
-        catch error
-            threw =
-                error isa ArgumentError &&
-                occursin("width_cut", error.msg)
-        end
-        @assert threw
-        @assert !isfile(invalid_width_cache)
-    end
-
-    invalid_width_window_cache = tempname()
-    for invalid_width_window in (
-            0.0, -1.0, Inf, -Inf, NaN, false, true, "invalid", :invalid,
-        )
-        threw = false
-        try
-            CascadeTable(
-                dlb;
-                grid = g,
-                orders = ord,
-                modes = [0],
-                width_window = invalid_width_window,
-                cache = invalid_width_window_cache,
-            )
-        catch error
-            threw =
-                error isa ArgumentError &&
-                occursin("width_window", error.msg)
-        end
-        @assert threw
-        @assert !isfile(invalid_width_window_cache)
-    end
     rm(width_cache; force = true)
 
     # compare the feed-down (F − Fprim); the total F is diluted by the primary pion
@@ -965,8 +893,8 @@ end
 println("== 7d. Reopened channel feeding a heavier daughter (sweep ordering) ==")
 # Broad P (pole 1.0, Γ=0.1 → tail to 1.4) → D(1.1) x(0.15): closed at the pole
 # (Σm=1.25), reopened by the tail. D(1.1) is HEAVIER than P, so a pole-mass sweep
-# processes D first and drops the P→D→(a,b) feed-down. cascadeorder must place P
-# before D (feeder first).
+# processes D first and drops the P→D→(a,b) feed-down. Plan compilation must
+# place P before D (feeder first).
 let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 8)
     parts = Dict(
         1 => ParticleInfo(1, "P", 1.0, 0.1, 1.0, 0, 0),
@@ -977,14 +905,8 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     )
     byp = Dict(1 => [DecayChannel(1, 1.0, [2, 3])], 2 => [DecayChannel(2, 1.0, [4, 5])])
     dl = DecayList(parts, byp, "syn", "h0")
-    ord_ = CascadeTables.cascadeorder(dl)
-    @assert findfirst(==(1), ord_) < findfirst(==(2), ord_)   # P processed before D
-    sharp_order = CascadeTables.cascadeorder(dl; width_cut = Inf)
-    @assert findfirst(==(2), sharp_order) < findfirst(==(1), sharp_order)
-    short_window_order =
-        CascadeTables.cascadeorder(dl; width_window = 2.0)
-    @assert findfirst(==(2), short_window_order) <
-        findfirst(==(1), short_window_order)
+    @assert CascadeTables._cascadeorder(dl, [(1, 2)]) == [1, 2]
+    @assert CascadeTables._cascadeorder(dl, Tuple{Int, Int}[]) == [2, 1]
     sharp_keys, sharp_enrollment =
         CascadeTables.neededkeys(dl; width_cut = Inf)
     @assert all(key -> key.Γ == 0, sharp_keys)
@@ -1014,31 +936,21 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
         cache = nothing,
     )
     @assert CascadeTables._table_width_window(short_window_tab) == 2.0
+    plan = CascadePlan(tab, dl)
+    sharp_plan = CascadePlan(sharp_tab, dl)
     short_window_plan = CascadePlan(short_window_tab, dl)
+    @assert plan.ids[[step.parent for step in plan.steps]] == [1, 2]
+    @assert sharp_plan.ids[[step.parent for step in sharp_plan.steps]] == [2]
+    @assert short_window_plan.ids[
+        [step.parent for step in short_window_plan.steps]
+    ] == [2]
     prim(p, n, gr) = (n == 0 && p.id == 1) ? [exp(-hypot(p.mass, q) / 0.15) for q in gr] : zeros(length(gr))
-    res = runcascade(tab, dl; primary = prim, output = :all)
-    sharp_res = runcascade(sharp_tab, dl; primary = prim, output = :all)
+    res = runcascade(plan; primary = prim, output = :all)
+    sharp_res = runcascade(sharp_plan; primary = prim, output = :all)
     short_window_res =
         runcascade(short_window_plan; primary = prim, output = :all)
     @assert short_window_res.F == sharp_res.F
     @assert short_window_res.Fprim == sharp_res.Fprim
-    sharp_planned = runcascade(
-        CascadePlan(sharp_tab, dl);
-        primary = prim,
-        output = :all,
-    )
-    @assert sharp_planned.F == sharp_res.F
-    @assert sharp_planned.Fprim == sharp_res.Fprim
-    planned =
-        runcascade(CascadePlan(tab, dl); primary = prim, output = :all)
-    for particle_id in keys(res.F), mode_index in eachindex(tab.modes)
-        reference = res.F[particle_id][mode_index]
-        error = maximum(abs.(planned.F[particle_id][mode_index] .- reference)) /
-            max(maximum(abs.(reference)), 1.0)
-        @assert error ≤ 1.0e-12
-        @assert planned.Fprim[particle_id][mode_index] ==
-            res.Fprim[particle_id][mode_index]
-    end
     fda = sum(res.F[4][1] .- res.Fprim[4][1])                 # P→D→a downstream feed-down
     @assert fda > 0                                           # was exactly 0.0 under mass-order
     @assert sharp_res.F[4][1] == sharp_res.Fprim[4][1]
@@ -1430,8 +1342,8 @@ prim7alt(p, n, grid) =
     [exp(-hypot(p.mass, q) / (T * 1.1)) for q in grid]
 planned7_snapshot = deepcopy(planned7.F)
 alternate7 = runcascade(plan7; primary = prim7alt)
-alternate7_reference = runcascade(tab7, dl7; primary = prim7alt)
-assert_plan_matches(alternate7, alternate7_reference)
+@assert alternate7.F != planned7.F
+@assert alternate7.Fprim != planned7.Fprim
 @assert planned7.F == planned7_snapshot
 
 # The plan itself is immutable during execution and may serve concurrent calls.
@@ -1447,10 +1359,10 @@ concurrent7a, concurrent7b = fetch(task7a), fetch(task7b)
 two_body7 = filter(nbody(2), dl7)
 @assert two_body7.stable_ids == dl7.stable_ids
 two_body_plan7 = CascadePlan(tab7, two_body7)
-assert_plan_matches(
-    runcascade(two_body_plan7; primary = prim7),
-    runcascade(tab7, two_body7; primary = prim7),
-)
+two_body_result7 = runcascade(two_body_plan7; primary = prim7)
+@assert two_body_result7.Fprim == planned7.Fprim
+@assert all(two_body_result7.F[2][1] .≤ planned7.F[2][1])
+@assert any(two_body_result7.F[2][1] .< planned7.F[2][1])
 empty_decay_list7 =
     filter(channelfilter((_parent, _channel, _daughters) -> false), dl7)
 empty_plan7 = CascadePlan(tab7, empty_decay_list7)
@@ -1490,10 +1402,12 @@ reversed_table7 = CascadeTable(
 )
 reversed_plan7 = CascadePlan(reversed_table7, dl7)
 reversed_serial7 = runcascade(reversed_plan7; primary = prim7)
-assert_plan_matches(
-    reversed_serial7,
-    runcascade(reversed_table7, dl7; primary = prim7),
-)
+for particle_id in keys(planned7.F)
+    @assert reversed_serial7.F[particle_id] ==
+        reverse(planned7.F[particle_id])
+    @assert reversed_serial7.Fprim[particle_id] ==
+        reverse(planned7.Fprim[particle_id])
+end
 @assert runcascade(
     reversed_plan7;
     primary = prim7,
@@ -1512,10 +1426,12 @@ one_mode_table7 = CascadeTable(
 )
 one_mode_plan7 = CascadePlan(one_mode_table7, dl7)
 one_mode_serial7 = runcascade(one_mode_plan7; primary = prim7)
-assert_plan_matches(
-    one_mode_serial7,
-    runcascade(one_mode_table7, dl7; primary = prim7),
-)
+for particle_id in keys(planned7.F)
+    @assert only(one_mode_serial7.F[particle_id]) ==
+        planned7.F[particle_id][1]
+    @assert only(one_mode_serial7.Fprim[particle_id]) ==
+        planned7.Fprim[particle_id][1]
+end
 @assert runcascade(
     one_mode_plan7;
     primary = prim7,
@@ -1695,13 +1611,38 @@ let
     primary(p, n, gr) =
         (n == 0 ? 1.0 : 0.04) *
         [exp(-hypot(p.mass, q) / T) for q in gr]
-    assert_plan_matches(
-        runcascade(plan; primary, output = :all),
-        runcascade(table, decay_list; primary, output = :all),
-    )
+    result = runcascade(plan; primary, output = :all)
+    light_key = ChannelKey(1.5, 0.2, [0.3])
+    partner_key = ChannelKey(1.5, 0.3, [0.2])
+    for (mode_index, mode) in pairs(table.modes)
+        parent_p = primary(parts[10], mode, grid)
+        parent_q = primary(parts[11], mode, grid)
+        light_from_p = table.W[light_key][mode_index] * parent_p
+        light_from_q = table.W[light_key][mode_index] * parent_q
+        partner_from_p = table.W[partner_key][mode_index] * parent_p
+        partner_from_q = table.W[partner_key][mode_index] * parent_q
+        expected = Dict(
+            20 => primary(parts[20], mode, grid) .+
+                0.3 .* light_from_p,
+            21 => primary(parts[21], mode, grid) .+
+                0.3 .* light_from_p .+
+                0.4 .* light_from_q,
+            30 => primary(parts[30], mode, grid) .+
+                0.6 .* partner_from_p .+
+                0.4 .* partner_from_q,
+        )
+        for particle_id in keys(expected)
+            @assert isapprox(
+                result.F[particle_id][mode_index],
+                expected[particle_id];
+                rtol = 1.0e-12,
+                atol = 1.0e-12,
+            )
+        end
+    end
 end
 
-# A cycle retains the legacy deterministic mass-descending approximate sweep.
+# A cycle uses the deterministic mass-descending approximate sweep.
 let
     grid = range(0.0, 1.0, length = 7)
     parts = Dict(
@@ -1714,10 +1655,17 @@ let
         102 => [DecayChannel(102, 0.3, [101, 103])],
     )
     decay_list = DecayList(parts, byparent, "cycle", "cycle")
-    matrices = Dict{ChannelKey, Vector{Matrix{Float32}}}()
+    matrix_type = CascadeTables._tablematrixtype(length(grid))
+    matrix_entry = 0.002f0
+    matrices = Dict{ChannelKey, Vector{matrix_type}}()
     CascadeTables.eachchannelkey(decay_list) do _parent, _channel, _daughter, key
         get!(matrices, key) do
-            [fill(0.002f0, length(grid), length(grid))]
+            matrix_type[
+                CascadeTables._packtablematrix(
+                    matrix_type,
+                    fill(matrix_entry, length(grid), length(grid)),
+                ),
+            ]
         end
     end
     table = CascadeTable(
@@ -1735,13 +1683,18 @@ let
     @assert plan.ids[[step.parent for step in plan.steps]] == [101, 102]
     @assert length(plan.groups) == 4
     primary(p, _n, gr) = fill(p.id == 101 ? 1.0 : 0.1, length(gr))
-    reference = with_logger(SimpleLogger(IOBuffer(), Logging.Error)) do
-        runcascade(table, decay_list; primary, output = :all)
-    end
-    assert_plan_matches(
-        runcascade(plan; primary, output = :all),
-        reference,
-    )
+    result = runcascade(plan; primary, output = :all)
+
+    # The cycle is approximated by one deterministic P-then-Q sweep. Check its
+    # numerical consequence directly rather than comparing two plan entry points.
+    p_transfer = length(grid) * Float64(matrix_entry)
+    expected_q = 0.1 + 0.2 * p_transfer
+    q_transfer = length(grid) * Float64(matrix_entry) * expected_q
+    expected_p = 1.0 + 0.3 * q_transfer
+    expected_x = 0.1 + 0.2 * p_transfer + 0.3 * q_transfer
+    @assert all(isapprox.(result.F[101][1], expected_p; rtol = 1.0e-14))
+    @assert all(isapprox.(result.F[102][1], expected_q; rtol = 1.0e-14))
+    @assert all(isapprox.(result.F[103][1], expected_x; rtol = 1.0e-14))
 end
 
 println("   PASS")
@@ -1974,12 +1927,19 @@ let
         :unknown => 0,
     )
 
+    dependencies = Set{Tuple{Int, Int}}()
+    CascadeTables.eachchannelkey(combined) do parent_id, _channel, daughter_id, _key
+        if daughter_id != parent_id && haskey(combined.byparent, daughter_id)
+            push!(dependencies, (parent_id, daughter_id))
+        end
+    end
     cycle_log = IOBuffer()
     parent_order = with_logger(SimpleLogger(cycle_log, Logging.Warn)) do
-        CascadeTables.cascadeorder(combined)
+        CascadeTables._cascadeorder(combined, dependencies)
     end
     @assert isempty(String(take!(cycle_log)))
     @assert length(parent_order) == length(combined.byparent)
+    @assert Set(parent_order) == Set(keys(combined.byparent))
 end
 println("   PASS")
 

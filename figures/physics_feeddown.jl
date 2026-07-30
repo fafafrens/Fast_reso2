@@ -29,10 +29,11 @@ primary(p, n, grid) =
 
 dl  = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
 t0  = time()
-tab = CascadeTable(dl; cache = nothing)           # build in memory, without a cache file
-@printf("table built in %.1f s:  %d keys × %d modes\n", time() - t0,
+plan = CascadePlan(dl; cache = nothing)            # build in memory, without a cache file
+tab = plan.table
+@printf("table + plan ready in %.1f s:  %d keys × %d modes\n", time() - t0,
         length(tab.W), length(tab.modes))
-res = runcascade(tab, dl; primary)
+res = runcascade(plan; primary)
 
 grid = tab.grid
 idx(pT) = argmin(abs.(grid .- pT))

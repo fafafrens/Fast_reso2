@@ -1,8 +1,8 @@
-# Benchmark the legacy keyed cascade against the compiled flat CascadePlan.
+# Benchmark cascade plan construction, reuse, and mode-level parallelism.
 #
 # The default workload uses the complete bundled topology with small, distinct
-# deterministic matrices. It measures the full numerical apply and grouping
-# while excluding matrix construction and production-cache I/O.
+# deterministic packed matrices. Synthetic matrix construction and
+# production-cache I/O are setup costs outside the measurements.
 #
 #   julia --project -t 2 benchmarks/cascade_plan.jl
 #   CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
@@ -31,7 +31,11 @@ function deterministic_table(decay_list, grid)
     matrices = Dict{ChannelKey, Vector{matrix_type}}()
     transfer_count = Ref(0)
 
-    CascadeTables.eachchannelkey(decay_list) do _parent_id, _channel, _daughter_id, key
+    parent_order = sort!(collect(keys(decay_list.byparent)))
+    CascadeTables.eachchannelkey(
+        decay_list;
+        order = parent_order,
+    ) do _parent_id, _channel, _daughter_id, key
         transfer_count[] += 1
         get!(matrices, key) do
             key_index = length(matrices) + 1
@@ -55,25 +59,6 @@ function deterministic_table(decay_list, grid)
     return table, transfer_count[]
 end
 
-function normalized_error(candidate, reference)
-    max_error = 0.0
-    for particle_id in keys(reference.F)
-        for mode_index in eachindex(reference.F[particle_id])
-            expected = reference.F[particle_id][mode_index]
-            actual = candidate.F[particle_id][mode_index]
-            max_error = max(
-                max_error,
-                maximum(abs.(actual .- expected)) /
-                    max(maximum(abs.(expected)), 1.0),
-            )
-            candidate.Fprim[particle_id][mode_index] ==
-                reference.Fprim[particle_id][mode_index] ||
-                error("Fprim mismatch")
-        end
-    end
-    return max_error
-end
-
 function measure(run; samples = SAMPLES)
     run()
     times = Float64[]
@@ -85,44 +70,6 @@ function measure(run; samples = SAMPLES)
     for _ in 1:samples
         GC.gc()
         push!(allocations, @allocated run())
-    end
-    return (time = median(times), bytes = median(allocations))
-end
-
-function measure_apply(plan, primary, parallel; samples = SAMPLES)
-    function fresh_spectra()
-        initialized = CascadeTables._initialize_plan_spectra(
-            plan,
-            primary,
-            eachindex(plan.ids),
-        )
-        return initialized[3]
-    end
-
-    warm = fresh_spectra()
-    CascadeTables._apply_plan!(warm, plan, parallel)
-
-    times = Float64[]
-    allocations = Int[]
-    for _ in 1:samples
-        spectra_by_mode = fresh_spectra()
-        GC.gc()
-        elapsed = @elapsed CascadeTables._apply_plan!(
-            spectra_by_mode,
-            plan,
-            parallel,
-        )
-        push!(times, elapsed)
-    end
-    for _ in 1:samples
-        spectra_by_mode = fresh_spectra()
-        GC.gc()
-        allocated = @allocated CascadeTables._apply_plan!(
-            spectra_by_mode,
-            plan,
-            parallel,
-        )
-        push!(allocations, allocated)
     end
     return (time = median(times), bytes = median(allocations))
 end
@@ -155,24 +102,26 @@ primary(particle, mode, momenta) = begin
     ]
 end
 
-reference = runcascade(table, decay_list; primary, output = :all)
+wrapped = runcascade(table, decay_list; primary, output = :all)
 serial = runcascade(plan; primary, output = :all)
-threaded =
+modes_result =
     runcascade(plan; primary, parallel = :modes, output = :all)
-serial_error = normalized_error(serial, reference)
-threaded_error = normalized_error(threaded, reference)
-serial.F == threaded.F ||
-    error("serial and mode-threaded plan results are not bitwise equal")
-max(serial_error, threaded_error) ≤ 1.0e-12 ||
-    error("plan/reference normalized error exceeds 1e-12")
+wrapped.F == serial.F ||
+    error("table wrapper and reused serial plan results differ")
+wrapped.Fprim == serial.Fprim ||
+    error("table wrapper and reused serial primaries differ")
+serial.F == modes_result.F ||
+    error("serial and :modes plan results differ")
+serial.Fprim == modes_result.Fprim ||
+    error("serial and :modes primaries differ")
 
-compile_measurement = measure(() -> CascadePlan(table, decay_list))
-legacy_measurement = measure(
+plan_measurement = measure(() -> CascadePlan(table, decay_list))
+wrapper_measurement = measure(
     () -> runcascade(table, decay_list; primary, output = :all),
 )
 serial_measurement =
     measure(() -> runcascade(plan; primary, output = :all))
-threaded_measurement = measure(
+modes_measurement = measure(
     () -> runcascade(
         plan;
         primary,
@@ -180,15 +129,15 @@ threaded_measurement = measure(
         output = :all,
     ),
 )
-serial_apply = measure_apply(plan, primary, :serial)
-threaded_apply = measure_apply(plan, primary, :modes)
 
 group_count = length(plan.groups)
 multi_target_count = count(group -> length(group.targets) > 1, plan.groups)
-matrix_bytes =
-    group_count * length(MODES) * GRID_LENGTH^2 * sizeof(Float32)
+modes_execution =
+    Threads.nthreads() > 1 && length(MODES) > 1 ?
+    "parallel" :
+    "serial fallback"
 
-println("CascadePlan deterministic full-topology benchmark")
+println("Cascade pipeline deterministic full-topology benchmark")
 @printf(
     "  Julia threads: %d; BLAS threads: %d; grid: %d; modes: %s; samples: %d\n",
     Threads.nthreads(),
@@ -206,38 +155,23 @@ println("CascadePlan deterministic full-topology benchmark")
     length(plan.targets),
     multi_target_count,
 )
-@printf(
-    "  correctness: serial %.3e; threaded %.3e; serial/threaded bitwise equal\n",
-    serial_error,
-    threaded_error,
+println(
+    "  consistency: table wrapper, reused serial, and :modes " *
+    "($modes_execution) outputs are bitwise equal",
 )
 
-println("\nCompilation (reported separately)")
-print_measurement("CascadePlan(table, dl)", compile_measurement)
+println("\nPlan compilation (construction only)")
+print_measurement("CascadePlan(table, dl)", plan_measurement)
 
-println("\nPublic runcascade (includes output initialization)")
-print_measurement("legacy keyed", legacy_measurement)
+println("\nPublic runcascade (includes spectrum initialization and output)")
+print_measurement("table wrapper: compile + run", wrapper_measurement)
 print_measurement(
-    "flat serial",
+    "reused plan: serial",
     serial_measurement;
-    relative_to = legacy_measurement,
+    relative_to = wrapper_measurement,
 )
 print_measurement(
-    "flat mode-threaded",
-    threaded_measurement;
-    relative_to = legacy_measurement,
-)
-
-println("\nCompiled apply only (fresh spectra initialized outside timing)")
-print_measurement("flat serial apply", serial_apply)
-print_measurement(
-    "flat mode-threaded apply",
-    threaded_apply;
-    relative_to = serial_apply,
-)
-@printf(
-    "  flat logical matrix traffic: %.2f GiB; %.2f GiB/s serial, %.2f GiB/s threaded\n",
-    matrix_bytes / 2.0^30,
-    matrix_bytes / serial_apply.time / 2.0^30,
-    matrix_bytes / threaded_apply.time / 2.0^30,
+    "reused plan: modes ($modes_execution)",
+    modes_measurement;
+    relative_to = serial_measurement,
 )
