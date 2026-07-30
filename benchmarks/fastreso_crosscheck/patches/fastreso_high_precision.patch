@@ -1,0 +1,22 @@
+diff --git a/qag_params.h b/qag_params.h
+--- a/qag_params.h
++++ b/qag_params.h
+@@ -14,6 +14,6 @@
+ namespace qag_params{
+-  const double fEpsRel = 1e-6;
+-  const double fEpsAbs = 1e-10;
++  const double fEpsRel = 1e-8;
++  const double fEpsAbs = 1e-16;
+   const int fKey = GSL_INTEG_GAUSS51;
+   const int fLimit = 1000;
+ }
+diff --git a/grid_params.h b/grid_params.h
+--- a/grid_params.h
++++ b/grid_params.h
+@@ -22,5 +22,5 @@
+ namespace grid_params{
+- static const int fNpbar = 401; // number of points fluid restfram pbar grid
++ static const int fNpbar = 801; // number of points fluid restfram pbar grid
+  static const int fNf = 12; //  the maximum number of f_i functions to compute
+  static const int fNpT = 41; // number of points fluid restfram pbar grid
+  static const int fNur = 41; // number of points fluid restfram pbar grid

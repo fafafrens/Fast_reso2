@@ -1,0 +1,13 @@
+diff --git a/TFastReso_AZYHYDRO.cpp b/TFastReso_AZYHYDRO.cpp
+--- a/TFastReso_AZYHYDRO.cpp
++++ b/TFastReso_AZYHYDRO.cpp
+@@ -223,5 +223,7 @@
+       else if (ndecayproducts==4) {
+-        cerr  << "\033[1mTFastReso_AZYHYDRO.cpp::do_decays\033[0m : \033[1;31merror\033[0m : skipping 4 particle decay! " << endl;
+-        printf("%9d\t%9d\t%9d\t%9d\t%9d\t%f\n", Parent, Child1, Child2, Child3, Child4, BranchingRatio);
++        if (verbose) {
++          cerr  << "\033[1mTFastReso_AZYHYDRO.cpp::do_decays\033[0m : \033[1;31merror\033[0m : skipping 4 particle decay! " << endl;
++          printf("%9d\t%9d\t%9d\t%9d\t%9d\t%f\n", Parent, Child1, Child2, Child3, Child4, BranchingRatio);
++        }
+         continue;
+       }
