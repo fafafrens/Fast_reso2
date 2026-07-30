@@ -1,0 +1,207 @@
+Chic3510	jp3096zer	gam000zer	0.343 0
+Chic3556	jp3096zer	gam000zer	0.19  0
+
+Om3120zer   Xic2470zer   Ka0492zer  1.0      0
+Om3090zer   Xic2470zer   Ka0492zer  1.0      0
+Om3065zer   Xic2470zer   Ka0492zer  1.0      0
+Om3000zer   Xic2470zer   Ka0492zer  1.0      0
+
+Xic2970zer  Xic2470zer   pi0139plu  pi0139min   1. 0
+
+Lc2940plu	Lc2286plu	pi0139plu	pi0139min	0.67	0
+Lc2940min	Lc2286min	pi0139plu	pi0139min	0.67	0
+
+Lc2940plu	Sc2455zer	pi0139plu	0.165	0
+Lc2940plu	Sc2455ppl	pi0139min	0.165	0
+
+Lc2940min	Sc2455zrb	pi0139min	0.165	0
+Lc2940min	Sc2455mmi	pi0139plu	0.165	0
+#Lc2940plu	Dc1865zer	pr0938plu 0.33	0
+#Lc2940min Dc1865zrb	pr0938plb	0.33	0
+Lc2880plu	Lc2286plu	pi0139plu	pi0139min	0.67	0
+Lc2880min	Lc2286min	pi0139plu	pi0139min	0.67	0
+Lc2880plu	Dc1865zer	pr0938plu 0.33	0
+Lc2880min Dc1865zrb	pr0938plb	0.33	0
+#Lc2860plu	Dc1865zer	pr0938plu	1.00	0
+Lc2860plu	Lc2595plu	pi0135zer	1.00	0
+Lc2860min	Lc2595min	pi0135zer	1.00	0
+#Lc2860min	Dc1865zrb	pr0938plb	1.00	0
+
+
+Ds2860plu	Dc1865zer	Ka0492plu       0.39    0
+Ds2860plu	Dc1869plu	pi0139plu	pi0139min       0.024	0
+Ds2860plu	Dc1869plu	pi0135zer	pi0135zer	0.056	0
+Ds2860plu       Dc2007zer	Ka0492plu 	0.40    0
+Ds2860plu	Dc2010plu	pi0139plu	pi0139min	0.036	0
+Ds2860plu	Dc2010plu	pi0135zer	pi0135zer	0.084	0
+
+Ds2860min	Dc1865zer	Ka0492min       0.39    0
+Ds2860min	Dc1869min	pi0139plu	pi0139min       0.024	0
+Ds2860min	Dc1869min	pi0135zer	pi0135zer	0.056	0
+Ds2860min       Dc2007zer	Ka0492plu 	0.40    0
+Ds2860min	Dc2010min	pi0139plu	pi0139min	0.036	0
+Ds2860min	Dc2010min	pi0135zer	pi0135zer	0.084	0
+
+Xic2815zer  Xic2645zer   pi0135zer  0.33    0
+Xic2815zer  Xic2578zer   pi0135zer  0.33    0
+Xic2815zer  Xic2470zer   gam000zer  0.33    0
+
+Sc2800ppl	Lc2286plu	pi0139plu	1.0	0
+Sc2800plu	Lc2286plu	pi0135zer	1.0	0
+Sc2800zer	Lc2286plu	pi0139min	1.0	0
+Sc2800mmi	Lc2286min	pi0139min	1.0	0
+Sc2800min	Lc2286min	pi0135zer	1.0	0
+Sc2800zrb	Lc2286min	pi0139plu	1.0	0
+
+Xic2790zer  Xic2578zer   pi0135zer  1.0      0
+
+Om2770zer   Om2695zer    gam000zer  1.0      0
+
+Lc2765plu	Lc2595plu	pi0135zer	1.00	0
+Lc2765min	Lc2595min	pi0135zer	1.00	0
+
+#Lc2625plu	Lc2595plu	pi0135zer	1.00	0
+#Lc2625min	Lc2595min	pi0135zer	1.00	0
+
+
+Dc2750plu	Dc1865zer	pi0139plu	1.0	0
+Dc2750min	Dc1865zrb	pi0139min	1.0	0
+Dc2750zer       Dc1869plu       pi0139min       0.3     0
+Dc2750zer       Dc2010plu       pi0139min       0.7     0
+Dc2750zrb       Dc1869min       pi0139plu       0.3     0
+Dc2750zrb       Dc2010min       pi0139plu       0.7     0
+
+Ds2700plu	Dc1865zer	Ka0492plu       0.46    0
+Ds2700plu	Dc1869plu	pi0139plu	pi0139min       0.018	0
+Ds2700plu	Dc1869plu	pi0135zer	pi0135zer	0.042	0
+Ds2700plu       Dc2007zer	Ka0492plu 	0.40    0
+Ds2700plu	Dc2010plu	pi0139plu	pi0139min	0.021	0
+Ds2700plu	Dc2010plu	pi0135zer	pi0135zer	0.049	0
+
+Ds2700min	Dc1865zer	Ka0492min       0.46    0
+Ds2700min	Dc1869min	pi0139plu	pi0139min       0.018	0
+Ds2700min	Dc1869min	pi0135zer	pi0135zer	0.042	0
+Ds2700min       Dc2007zer	Ka0492plu 	0.40    0
+Ds2700min	Dc2010min	pi0139plu	pi0139min	0.021	0
+Ds2700min	Dc2010min	pi0135zer	pi0135zer	0.049	0
+
+Xic2645zer  Xic2470zer   pi0135zer  1.0      0
+
+Lc2625plu	Lc2286plu	pi0139plu	pi0139min	1.00	0
+Lc2625min	Lc2286min	pi0139plu	pi0139min	1.00	0
+#Lc2595plu	Lc2286plu	pi0139plu	pi0139min	0.20	0
+#Lc2595min	Lc2286min	pi0139plu	pi0139min	0.20	0
+
+#Lc2595plu	Lc2286plu	pi0139plu	pi0139min	1.00	0
+#Lc2595min	Lc2286min	pi0139plu	pi0139min	1.00	0
+
+
+Lc2595plu	Sc2455zer	pi0139plu	0.40	0
+Lc2595plu	Sc2455ppl	pi0139min	0.40	0
+Lc2595plu	Lc2286plu	pi0139plu	pi0139min	0.20	0
+Lc2595min	Sc2455zrb	pi0139min	0.40	0
+Lc2595min	Sc2455mmi	pi0139plu	0.40	0
+Lc2595min	Lc2286min	pi0139plu	pi0139min	0.20	0
+
+Xic2578zer  Xic2470zer   gam000zer  1.0      0
+
+#Ds2573plu	Dc1865zer	Ka0492plu	1.00	0
+#Ds2573min	Dc1865zrb	Ka0492min	1.00	0
+Ds2573plu	Dc1865zer	Ka0492plu	0.33	0
+Ds2573plu	Dc1869plu	pi0139plu	pi0139min	0.19	0
+Ds2573plu	Dc1869plu	pi0135zer	pi0135zer	0.44	0
+Ds2573plu	Dc2010plu	pi0139plu	pi0139min	0.01	0
+Ds2573plu	Dc2010plu	pi0135zer	pi0135zer	0.02	0
+
+Ds2573min	Dc1865zer	Ka0492min	0.33	0
+Ds2573min	Dc1869min	pi0139plu	pi0139min	0.19	0
+Ds2573min	Dc1869min	pi0135zer	pi0135zer	0.44	0
+Ds2573min	Dc2010min	pi0139plu	pi0139min	0.01	0
+Ds2573min	Dc2010min	pi0135zer	pi0135zer	0.02	0
+
+Ds2536plu	Dc2010plu	Ka0492zer	0.95	0
+Ds2536plu	Dc1865zer	Ka0492plu	0.05	0
+
+Ds2536min	Dc2010min	Ka0492zer	0.95	0
+Ds2536min	Dc1865zrb	Ka0492min	0.05	0
+
+
+Sc2520zer	Lc2286plu	pi0139min	1.0	0
+Sc2520zrb	Lc2286min	pi0139plu	1.0	0
+Sc2520ppl	Lc2286plu	pi0139plu	1.0	0
+Sc2520mmi	Lc2286min	pi0139min	1.0	0
+Sc2520plu	Lc2286plu	pi0135zer	1.0	0
+Sc2520min	Lc2286min	pi0135zer	1.0	0
+
+Dc2460plu	Dc1865zer	pi0139plu	1.0	0
+#Dc2460plu	Dc2007zer	pi0139plu	0.5	0
+Dc2460min	Dc1865zrb	pi0139min	1.0	0
+#Dc2460min	Dc2007zrb	pi0139min	0.5	0
+Dc2460zer       Dc1869plu       pi0139min       1     0
+#Dc2460zer      Dc2010plu       pi0139min       0.5     0
+Dc2460zrb       Dc1869min       pi0139plu       1     0
+#Dc2460zrb      Dc2010min       pi0139plu       0.5     0
+
+Ds2460min	Ds2112min	pi0135zer	0.63	0
+Ds2460min	Ds1968min	gam000zer	0.22	0
+Ds2460min	Ds1968min	pi0139plu	pi0139min	0.10	0
+Ds2460min	Ds2112min	gam000zer	0.05	0
+#Ds2460min	Ds2317min	gam000zer	0.05	0
+
+Ds2460plu	Ds2112plu	pi0135zer	0.63	0
+Ds2460plu	Ds1968plu	gam000zer	0.22	0
+Ds2460plu	Ds1968plu	pi0139plu	pi0139min	0.10	0
+Ds2460plu	Ds2112plu	gam000zer	0.05	0
+
+#Ds2460plu	Ds2317plu	gam000zer	0.05	0
+#Ds2460plu	Ds2112plu	pi0135zer	0.60	0
+#Ds2460plu	Ds1968plu	gam000zer	0.25	0
+#Ds2460plu	Ds1968plu	pi0139plu	pi0139min	0.05	0
+#Ds2460plu	Ds2112plu	gam000zer	0.05	0
+#Ds2460plu	Ds2317plu	gam000zer	0.05	0
+
+Sc2455ppl	Lc2286plu	pi0139plu	1.0	0
+Sc2455mmi	Lc2286min	pi0139min	1.0	0
+Sc2455zer	Lc2286plu	pi0139min	1.0	0
+Sc2455zrb	Lc2286min	pi0139plu	1.0	0
+Sc2455plu	Lc2286plu	pi0135zer	1.0	0
+Sc2455min	Lc2286min	pi0135zer	1.0	0
+
+Dc2430zer	Dc2010plu	pi0139min	1.0	0
+Dc2430zrb	Dc2010min	pi0139plu	1.0	0
+
+Dc2420plu	Dc2007zer	pi0139plu	1.0	0
+Dc2420min	Dc2007zrb	pi0139min	1.0	0
+Dc2420zer	Dc2010plu	pi0139min	1.0	0
+#Dc2420zer	Dc1865zer	pi0139plu	pi0139min	0.5	0
+Dc2420zrb	Dc2010min	pi0139plu	1.0	0
+#Dc2420zrb	Dc1865zrb	pi0139plu	pi0139min	0.5	0
+
+Ds2317plu	Ds1968plu	pi0135zer	0.90	0
+Ds2317plu	Ds1968plu	gam000zer	0.025	0
+Ds2317plu	Ds2112plu	gam000zer	0.025	0
+Ds2317plu	Ds2112plu	pi0135zer	0.05	0
+Ds2317min	Ds1968min	pi0135zer	0.90	0
+Ds2317min	Ds1968min	gam000zer	0.025	0
+Ds2317min	Ds2112min	gam000zer	0.025	0
+Ds2317min	Ds2112min	pi0135zer	0.05	0
+
+Dc2300plu	Dc2007zer	pi0139plu	1.0	0
+Dc2300min	Dc2007zrb	pi0139min	1.0	0
+Dc2300zer	Dc2010plu	pi0139min	1.0	0
+Dc2300zrb	Dc2010min	pi0139plu	1.0	0
+
+Ds2112plu	Ds1968plu	gam000zer	0.94	0
+Ds2112plu	Ds1968plu	pi0135zer	0.06	0
+Ds2112min	Ds1968min	gam000zer	0.94	0
+Ds2112min	Ds1968min	pi0135zer	0.06	0
+
+Dc2010plu	Dc1865zer	pi0139plu	0.70	0
+Dc2010plu	Dc1869plu	pi0135zer	0.30	0
+Dc2010min	Dc1865zrb	pi0139min	0.70	0
+Dc2010min	Dc1869min	pi0135zer	0.30	0
+
+Dc2007zer	Dc1865zer	pi0135zer	0.65	0
+Dc2007zer	Dc1865zer	gam000zer	0.35	0
+Dc2007zrb	Dc1865zrb	pi0135zer	0.65	0
+Dc2007zrb	Dc1865zrb	gam000zer	0.35	0

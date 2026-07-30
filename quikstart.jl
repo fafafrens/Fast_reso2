@@ -115,3 +115,23 @@ charm_spectra = plot_charm_spectra(res_charm, qs, charm_particles)
 savefig(charm_spectra, "charm_spectra.pdf")
 
 res.F
+
+combined_file = "decays_all.dat"
+
+open(combined_file, "w") do io
+    write(io, read("decays_QM2016Plus_massorder_isofix_sigma.dat"))
+    write(io, '\n')
+    write(io, read("decays_charm_bottom.dat"))
+end
+
+dl = DecayList(combined_file)
+res = runcascade(dl; primary, grid = qs)
+plot(res[1][425][1])
+
+
+available(list,result) = sort(
+    [list.parts[id] for id in keys(result.F)];
+    by = p -> (lowercase(p.name), p.id),
+)
+
+foreach(p -> println(p.id, "  ", p.name), available(dl,res))
