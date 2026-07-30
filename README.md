@@ -203,6 +203,10 @@ res = runcascade(plan; primary, parallel = :modes)        # one task per mode
 
 # One-shot alternative: build/load, compile, and run in one call
 res = runcascade(selected; primary, grid = t.grid, cache = "Wselected.jls")
+
+# Fast sharp-parent approximation: omit 4-body channels and width averaging
+fast = filter(nbody(2, 3), dl)
+res = runcascade(fast; primary, width_cut = Inf)
 ```
 
 Ready-made filters (all return a `ChannelFilter`):
@@ -221,6 +225,14 @@ Two properties this design buys:
 - **Or build lean** — the same filter at construction builds only the matrices
   you will use (give lean tables their own cache path, since a filtered list
   keeps the parent list's hash).
+
+Parents wider than `width_cut` (GeV) use Breit–Wigner averaging. Its default is
+`1.0e-3`, `Inf` disables width averaging, and `0.0` uses every positive width.
+`width_window = 4.0` sets the finite integration range to at most
+`mass ± width_window * width` (the lower mass is floored at `0.05 GeV`).
+Both are table keywords and cache settings; there are no module-level width
+constants. Disabling four-body channels or widths does not renormalize the
+retained branching fractions.
 
 ## License
 

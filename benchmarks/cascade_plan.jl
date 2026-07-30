@@ -47,7 +47,7 @@ function deterministic_table(decay_list, grid)
 
     table = CascadeTable(
         grid,
-        DEFAULT_ORDERS,
+        (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16),
         MODES,
         Dict{Symbol, Any}(:kind => "deterministic benchmark"),
         matrices,

@@ -7,9 +7,10 @@ and §"A spectral-function interface".
 ## Why
 
 `BreitWigner` in `DecaySpectra.jl` is a constant-width relativistic
-Breit–Wigner truncated to `[mR - kΓ, mR + kΓ]` with `k = WIDTHK = 4`. That is
-fine for narrow states and has two defects for broad ones, which are
-*independent of each other*:
+Breit–Wigner truncated to
+`[max(mR - kΓ, 0.05 GeV), mR + kΓ]`. Here `k` is the table-local
+`width_window` option and defaults to 4. That is fine for narrow states and
+has two defects for broad ones, which are *independent of each other*:
 
 1. **Threshold.** A constant width does not vanish at `m = Σ m_daughter`, so
    the shape carries weight where the decay is closed. `BroadParent`
@@ -128,7 +129,8 @@ it can be deferred if the goal is only to bracket the σ.
 ## Staged plan
 
 1. **Support cap first.** The single change that moves the number. Either a
-   per-shape `mmax` honoured by `decayfor`, or a global `WIDTHK` sweep.
+   per-shape `mmax` honoured by `decayfor`, or a table-local `width_window`
+   sweep.
    Measure the σ at cap = 1.0, 1.5, 2.675 GeV. Cheap, and it decides whether
    step 2 is worth doing.
 2. **`SpectralShape` + generic `parentmassnodes`.** Regression: every

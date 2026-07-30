@@ -33,7 +33,7 @@ import LinearAlgebra: mul!
 include("CascadeLinearAlgebra.jl")
 
 export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
-    prune!, validate, DEFAULT_ORDERS,
+    prune!, validate,
     savetables, loadtables, ParticleInfo, DecayChannel,
     stableparticles,
     isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
@@ -45,12 +45,25 @@ export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
 const FORMAT = 8
 const CACHE_MAGIC = "FastReso.CascadeTables\n"
 
-# Parents wider than WIDTHCUT are averaged within a window of up to ±WIDTHK·Γ.
-const WIDTHCUT = 0.001                 # GeV
-const WIDTHK = 4.0
+function _normalize_width_cut(width_cut)
+    width_cut isa Real && !(width_cut isa Bool) ||
+        throw(ArgumentError("width_cut must be a nonnegative real number"))
+    normalized_width_cut = Float64(width_cut)
+    !isnan(normalized_width_cut) && normalized_width_cut ≥ 0 ||
+        throw(ArgumentError("width_cut must be nonnegative, got $width_cut"))
+    return normalized_width_cut
+end
 
-"Default quadrature orders. `CascadeTable` accepts any subset and fills in the rest."
-const DEFAULT_ORDERS = (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)
+function _normalize_width_window(width_window)
+    width_window isa Real && !(width_window isa Bool) ||
+        throw(ArgumentError("width_window must be a positive finite real number"))
+    normalized_width_window = Float64(width_window)
+    isfinite(normalized_width_window) && normalized_width_window > 0 ||
+        throw(ArgumentError(
+            "width_window must be positive and finite, got $width_window",
+        ))
+    return normalized_width_window
+end
 
 # ---------------------------------------------------------------------------
 # Decay list wrapper: parsed structures + identity of the file that made them
@@ -318,6 +331,12 @@ struct CascadeTable{
     W::Dict{ChannelKey, Vector{M}}
 end
 
+_table_width_cut(table::CascadeTable) =
+    _normalize_width_cut(get(table.meta, :width_cut, 1.0e-3))
+
+_table_width_window(table::CascadeTable) =
+    _normalize_width_window(get(table.meta, :width_window, 4.0))
+
 function _tablematrixtype(grid_length::Int)
     column_type = _rowbandcolumntype(grid_length)
     offset_type =
@@ -418,14 +437,23 @@ mutable struct _CascadeGroupBuilder{N, M <: RowBandMatrix{Float32}}
 end
 
 """
-    eachchannelkey(visit, dl; order = keys(dl.byparent))
+    eachchannelkey(visit, dl; order = keys(dl.byparent),
+                   width_cut = 1.0e-3, width_window = 4.0)
 
 Call `visit(parent_id, channel, daughter_id, key)` for every enrolled
 observed-daughter slot. Table construction and cascade execution share the same
 multiplicity, threshold, width-tail, unresolved-daughter, nonpositive-mass, and
 self-slot rules. Returns enrollment and skip statistics.
 """
-function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
+function eachchannelkey(
+        visit,
+        dl::DecayList;
+        order = keys(dl.byparent),
+        width_cut = 1.0e-3,
+        width_window = 4.0,
+    )
+    normalized_width_cut = _normalize_width_cut(width_cut)
+    normalized_width_window = _normalize_width_window(width_window)
     enrollment_stats = Dict(
         :self => 0, :nd5 => 0, :closed => 0, :reopened => 0,
         :γdaughter => 0, :unknown => 0
@@ -439,7 +467,7 @@ function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
         parent = dl.parts[parent_id]
         parent_mass = parent.mass
         parent_width = parent.width
-        broad_parent = parent_width > WIDTHCUT
+        broad_parent = parent_width > normalized_width_cut
 
         for channel in dl.byparent[parent_id]
             daughter_ids = channel.daughters
@@ -464,7 +492,7 @@ function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
             threshold = sum(daughter_masses) + 1.0e-6
             open_at_pole = parent_mass > threshold
             open_in_tail = broad_parent &&
-                parent_mass + WIDTHK * parent_width > threshold
+                parent_mass + normalized_width_window * parent_width > threshold
 
             if !open_at_pole && !open_in_tail
                 enrollment_stats[:closed] += 1
@@ -506,17 +534,24 @@ function eachchannelkey(visit, dl::DecayList; order = keys(dl.byparent))
 end
 
 # Every matrix key the cascade will read, together with enrollment statistics.
-function neededkeys(decay_list::DecayList)
+function neededkeys(
+        decay_list::DecayList;
+        width_cut = 1.0e-3,
+        width_window = 4.0,
+    )
     required_keys = Set{ChannelKey}()
     enrollment_stats = eachchannelkey(
         (_parent_id, _channel, _daughter_id, key) -> push!(required_keys, key),
         decay_list,
+        width_cut = width_cut,
+        width_window = width_window,
     )
     return required_keys, enrollment_stats
 end
 
 """
-    cascadeorder(dl::DecayList) -> Vector{Int}
+    cascadeorder(dl::DecayList;
+                 width_cut = 1.0e-3, width_window = 4.0) -> Vector{Int}
 
 Order decaying parents feeder-before-fed, so every parent spectrum is complete
 before that parent decays. This is a topological sort of the enrolled feed-down
@@ -528,12 +563,20 @@ can reopen a channel to a heavier daughter. If the graph contains a cycle, no
 exact single-sweep order exists; append all parents blocked by that cycle in
 descending mass order and warn that their cross feed-down is approximate.
 """
-function cascadeorder(dl::DecayList)
+function cascadeorder(
+        dl::DecayList;
+        width_cut = 1.0e-3,
+        width_window = 4.0,
+    )
     dependencies = Tuple{Int, Int}[]
 
     # An enrolled parent → daughter slot is a dependency only when the daughter
     # has a parent block in the cascade sweep.
-    eachchannelkey(dl) do parent_id, _channel, daughter_id, _key
+    eachchannelkey(
+        dl;
+        width_cut = width_cut,
+        width_window = width_window,
+    ) do parent_id, _channel, daughter_id, _key
         if daughter_id != parent_id && haskey(dl.byparent, daughter_id)
             push!(dependencies, (parent_id, daughter_id))
         end
@@ -643,7 +686,14 @@ function CascadePlan(
     # A deterministic traversal makes group order and construction failures
     # independent of Dict insertion order.
     compile_order = sort!(collect(keys(decay_list.byparent)))
-    eachchannelkey(decay_list; order = compile_order) do parent_id, channel, daughter_id, key
+    width_cut = _table_width_cut(table)
+    width_window = _table_width_window(table)
+    eachchannelkey(
+        decay_list;
+        order = compile_order,
+        width_cut = width_cut,
+        width_window = width_window,
+    ) do parent_id, channel, daughter_id, key
         builders = get!(group_builders, parent_id) do
             _CascadeGroupBuilder{N, M}[]
         end
@@ -735,10 +785,14 @@ function CascadePlan(
     )
 end
 
-function decayfor(key::ChannelKey, rules::Rules)
+function decayfor(
+        key::ChannelKey,
+        rules::Rules,
+        width_window::Float64,
+    )
     if key.Γ > 0
-        minimum_mass = max(key.ma - WIDTHK * key.Γ, 0.05)
-        maximum_mass = key.ma + WIDTHK * key.Γ
+        minimum_mass = max(key.ma - width_window * key.Γ, 0.05)
+        maximum_mass = key.ma + width_window * key.Γ
         mass_distribution = BreitWigner(
             key.ma, key.Γ;
             mmin = minimum_mass,
@@ -772,6 +826,7 @@ function buildkeys!(
     modes = table.modes
     rules = Rules(; table.orders...)
     grid_length = length(table.grid)
+    width_window = _table_width_window(table)
 
     # Tasks can migrate between threads, so scratch storage belongs to each task.
     scratch_for_task = OncePerTask{NTuple{N, Vector{Float64}}}(
@@ -780,7 +835,7 @@ function buildkeys!(
     matrices_per_key = Vector{Vector{M}}(undef, length(keys_to_build))
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
-        decay = decayfor(keys_to_build[key_index], rules)
+        decay = decayfor(keys_to_build[key_index], rules, width_window)
         dense_matrices =
             map(_mode -> zeros(Float32, grid_length, grid_length), modes)
         # The outer key loop already uses the thread pool.
@@ -807,7 +862,11 @@ end
 
 # Build the matrices required by `decay_list` that are not already present.
 function ensure!(table::CascadeTable, decay_list::DecayList)
-    required_keys, _ = neededkeys(decay_list)
+    required_keys, _ = neededkeys(
+        decay_list;
+        width_cut = _table_width_cut(table),
+        width_window = _table_width_window(table),
+    )
     missing_keys = [key for key in required_keys if !haskey(table.W, key)]
     if isempty(missing_keys)
         return 0
@@ -817,7 +876,11 @@ end
 
 "Remove matrices not referenced by `decay_list`; return the orphan count."
 function prune!(table::CascadeTable, decay_list::DecayList)
-    required_keys, _ = neededkeys(decay_list)
+    required_keys, _ = neededkeys(
+        decay_list;
+        width_cut = _table_width_cut(table),
+        width_window = _table_width_window(table),
+    )
     orphaned_keys = [key for key in keys(table.W) if key ∉ required_keys]
     for key in orphaned_keys
         delete!(table.W, key)
@@ -825,29 +888,40 @@ function prune!(table::CascadeTable, decay_list::DecayList)
     return length(orphaned_keys)
 end
 
-function _table_metadata(decay_list::DecayList)
+function _table_metadata(decay_list::DecayList, width_cut, width_window)
     source_bytes = isfile(decay_list.path) ? read(decay_list.path) : UInt8[]
     return Dict{Symbol, Any}(
         :sha => decay_list.sha,
         :path => decay_list.path,
         :file => source_bytes,
         :created => string(now()),
+        :width_cut => width_cut,
+        :width_window => width_window,
     )
 end
 
 """
     CascadeTable(dl; grid = range(0, 4.0, length = 134),
-                 orders = DEFAULT_ORDERS, modes = [0, 2],
+                 orders = (;), modes = [0, 2],
+                 width_cut = 1.0e-3, width_window = 4.0,
                  cache = nothing, rebuild = false)
 
 Load the tables from `cache` if present and compatible (same format, grid,
 orders, modes), else build and save. `orders` may be any subset of
-[`DEFAULT_ORDERS`](@ref) — the rest are filled in. A decay-list hash mismatch
-keeps the tables (lenient policy — keys self-invalidate through their masses)
-but warns and builds any missing keys on demand.
+`(nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)` — omitted fields are filled
+with those defaults. A decay-list hash mismatch keeps the tables (lenient
+policy — keys self-invalidate through their masses) but warns and builds any
+missing keys on demand.
 
 `modes` accepts any iterable of integers and is stored as an immutable tuple,
 so its length specializes the fused matrix build.
+
+Parents with `width > width_cut` use the finite-width `BroadParent` path.
+Set `width_cut = Inf` to make every parent sharp at its pole mass, or zero to
+use every positive width. Broad-parent mass integration is truncated to
+`max(mass - width_window * width, 0.05 GeV)` through
+`mass + width_window * width`; `width_window` must be positive and finite.
+Both width options are part of cache compatibility.
 
 `grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
 uses the uniform-grid interpolation kernel without validation scans.
@@ -855,11 +929,16 @@ uses the uniform-grid interpolation kernel without validation scans.
 function CascadeTable(
         decay_list::DecayList;
         grid::AbstractRange{Float64} = range(0.0, 4.0, length = 134),
-        orders = DEFAULT_ORDERS,
-        modes = [0, 2], cache = nothing, rebuild = false
+        orders = (;),
+        modes = [0, 2], width_cut = 1.0e-3,
+        width_window = 4.0,
+        cache = nothing, rebuild = false
     )
-    resolved_orders = merge(DEFAULT_ORDERS, orders)
+    default_orders = (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)
+    resolved_orders = merge(default_orders, orders)
     selected_modes = Tuple(collect(Int, modes))
+    selected_width_cut = _normalize_width_cut(width_cut)
+    selected_width_window = _normalize_width_window(width_window)
 
     if cache !== nothing && !rebuild
         cached_table = loadtables(cache)
@@ -867,7 +946,9 @@ function CascadeTable(
             cached_table !== nothing &&
             cached_table.grid == grid &&
             cached_table.orders == resolved_orders &&
-            cached_table.modes == selected_modes
+            cached_table.modes == selected_modes &&
+            _table_width_cut(cached_table) == selected_width_cut &&
+            _table_width_window(cached_table) == selected_width_window
 
         if cache_matches
             if !isequal(
@@ -889,7 +970,11 @@ function CascadeTable(
         grid,
         resolved_orders,
         selected_modes,
-        _table_metadata(decay_list),
+        _table_metadata(
+            decay_list,
+            selected_width_cut,
+            selected_width_window,
+        ),
         Dict{ChannelKey, Vector{matrix_type}}(),
     )
     ensure!(table, decay_list)
@@ -982,6 +1067,8 @@ function _restoretable(
     M === matrix_type || return nothing
     expected_size = (length(grid), length(grid))
     try
+        _normalize_width_cut(get(metadata, :width_cut, 1.0e-3))
+        _normalize_width_window(get(metadata, :width_window, 4.0))
         for mode_matrices in values(matrices)
             length(mode_matrices) == N || return nothing
             for matrix in mode_matrices
@@ -994,13 +1081,7 @@ function _restoretable(
                 )
             end
         end
-        return CascadeTable(
-            grid,
-            orders,
-            modes,
-            metadata,
-            matrices,
-        )
+        return CascadeTable(grid, orders, modes, metadata, matrices)
     catch
         return nothing
     end
@@ -1054,8 +1135,19 @@ function runcascade(
         ]
     end
 
-    parent_order = cascadeorder(decay_list)
-    eachchannelkey(decay_list; order = parent_order) do parent_id, channel, daughter_id, key
+    width_cut = _table_width_cut(table)
+    width_window = _table_width_window(table)
+    parent_order = cascadeorder(
+        decay_list;
+        width_cut = width_cut,
+        width_window = width_window,
+    )
+    eachchannelkey(
+        decay_list;
+        order = parent_order,
+        width_cut = width_cut,
+        width_window = width_window,
+    ) do parent_id, channel, daughter_id, key
         decay_matrices = table.W[key]
         parent_spectra = spectra[parent_id]
         daughter_spectra = spectra[daughter_id]
@@ -1252,12 +1344,14 @@ end
 """
     runcascade(decay_list::DecayList; primary,
                grid = range(0, 4.0, length = 134),
-               orders = DEFAULT_ORDERS, modes = [0, 2],
+               orders = (;), modes = [0, 2],
+               width_cut = 1.0e-3, width_window = 4.0,
                cache = nothing, rebuild = false,
                parallel = :serial, output = :stable) -> (F, Fprim)
 
 Build or load a table, compile a plan, and run the cascade in one call.
-`grid`, `orders`, `modes`, `cache`, and `rebuild` configure the table;
+`grid`, `orders`, `modes`, `width_cut`, `width_window`, `cache`, and `rebuild`
+configure the table;
 `primary`, `parallel`, and `output` configure execution.
 
 This is the convenient one-shot interface. Construct a [`CascadePlan`](@ref)

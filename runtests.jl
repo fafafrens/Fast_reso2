@@ -571,6 +571,7 @@ tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfi
 @assert length(tab7.W) == 3            # ρ→π|π, ω→π|(πϖ), ω→ϖ|(ππ)
 @assert tab7.grid === g7 && tab7.grid isa AbstractRange{Float64}
 @assert tab7.modes === (0, 2)
+@assert tab7.orders == (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 16)
 table_matrix_type7 = typeof(first(first(values(tab7.W))))
 @assert table_matrix_type7 ==
     CascadeTables.RowBandMatrix{Float32, UInt8, UInt16}
@@ -657,6 +658,49 @@ open(invalid_mode_tabfile, "w") do io
 end
 @assert loadtables(invalid_mode_tabfile) === nothing
 
+legacy_width_metadata = copy(tab7.meta)
+delete!(legacy_width_metadata, :width_cut)
+delete!(legacy_width_metadata, :width_window)
+legacy_width_table = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    legacy_width_metadata,
+    copy(tab7.W),
+)
+legacy_width_tabfile = tempname()
+savetables(legacy_width_table, legacy_width_tabfile)
+loaded_legacy_width = loadtables(legacy_width_tabfile)
+@assert loaded_legacy_width !== nothing
+@assert CascadeTables._table_width_cut(loaded_legacy_width) == 1.0e-3
+@assert CascadeTables._table_width_window(loaded_legacy_width) == 4.0
+
+invalid_width_metadata = copy(tab7.meta)
+invalid_width_metadata[:width_cut] = NaN
+invalid_width_table = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    invalid_width_metadata,
+    copy(tab7.W),
+)
+invalid_width_tabfile = tempname()
+savetables(invalid_width_table, invalid_width_tabfile)
+@assert loadtables(invalid_width_tabfile) === nothing
+
+invalid_width_window_metadata = copy(tab7.meta)
+invalid_width_window_metadata[:width_window] = Inf
+invalid_width_window_table = CascadeTable(
+    tab7.grid,
+    tab7.orders,
+    tab7.modes,
+    invalid_width_window_metadata,
+    copy(tab7.W),
+)
+invalid_width_window_tabfile = tempname()
+savetables(invalid_width_window_table, invalid_width_window_tabfile)
+@assert loadtables(invalid_width_window_tabfile) === nothing
+
 invalid_W7 = typeof(tab7.W)(
     key => copy.(matrices) for (key, matrices) in tab7.W
 )
@@ -673,7 +717,13 @@ invalid_tabfile = tempname()
 savetables(invalid_table7, invalid_tabfile)
 @assert loadtables(invalid_tabfile) === nothing
 rm.(
-    (legacy_tabfile, invalid_mode_tabfile, invalid_tabfile);
+    (
+        legacy_tabfile,
+        invalid_mode_tabfile,
+        legacy_width_tabfile,
+        invalid_width_tabfile,
+        invalid_tabfile,
+    );
     force = true,
 )
 
@@ -751,8 +801,157 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     byp = Dict(1 => [DecayChannel(1, 1.0, [2, 2])])                         # R → ππ
     dl0 = DecayList(Dict(1 => ParticleInfo(1, "R", 0.9, 0.0, 1.0, 0, 0), 2 => πi), byp, "s", "s0")
     dlb = DecayList(Dict(1 => ParticleInfo(1, "R", 0.9, 0.12, 1.0, 0, 0), 2 => πi), byp, "b", "b0")
-    r0 = runcascade(CascadeTable(dl0; grid = g, orders = ord, modes = [0]), dl0; primary = prim)
-    rb = runcascade(CascadeTable(dlb; grid = g, orders = ord, modes = [0]), dlb; primary = prim)
+    width_cache = tempname()
+    table0 = CascadeTable(dl0; grid = g, orders = ord, modes = [0])
+    tableb = CascadeTable(
+        dlb;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        cache = width_cache,
+    )
+    tablesharp = CascadeTable(
+        dlb;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        width_cut = Inf,
+        cache = width_cache,
+    )
+    @assert CascadeTables._table_width_cut(tableb) == 1.0e-3
+    @assert CascadeTables._table_width_cut(tablesharp) == Inf
+    @assert CascadeTables._table_width_window(tableb) == 4.0
+    @assert CascadeTables._table_width_window(tablesharp) == 4.0
+    @assert any(key -> key.Γ > 0, keys(tableb.W))
+    @assert all(key -> key.Γ == 0, keys(tablesharp.W))
+    @assert CascadeTables._table_width_cut(loadtables(width_cache)) == Inf
+
+    # The integration window is a table option too. Changing it on the same
+    # cache path rebuilds the broad-parent matrices.
+    tablewindow = CascadeTable(
+        dlb;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        width_window = 2.0,
+        cache = width_cache,
+    )
+    @assert CascadeTables._table_width_window(tablewindow) == 2.0
+    @assert CascadeTables._table_width_window(loadtables(width_cache)) == 2.0
+    window_key = only(keys(tablewindow.W))
+    @assert tablewindow.W[window_key][1].values !=
+        tableb.W[window_key][1].values
+
+    r0 = runcascade(table0, dl0; primary = prim)
+    rb = runcascade(tableb, dlb; primary = prim)
+    rsharp = runcascade(tablesharp, dlb; primary = prim)
+    direct_sharp = runcascade(
+        dlb;
+        primary = prim,
+        grid = g,
+        orders = ord,
+        modes = [0],
+        width_cut = Inf,
+    )
+    @assert rsharp.F[2][1] == r0.F[2][1]
+    @assert rsharp.Fprim[2][1] == r0.Fprim[2][1]
+    direct_error = maximum(
+        abs.(direct_sharp.F[2][1] .- rsharp.F[2][1]),
+    ) / max(maximum(abs.(rsharp.F[2][1])), 1.0)
+    @assert direct_error ≤ 1.0e-12
+
+    # The zero cut enrolls every positive width, including widths below the
+    # historical 1 MeV default.
+    dlnarrow = DecayList(
+        Dict(
+            1 => ParticleInfo(1, "R", 0.9, 1.0e-4, 1.0, 0, 0),
+            2 => πi,
+        ),
+        byp,
+        "n",
+        "n0",
+    )
+    default_keys, _ = CascadeTables.neededkeys(dlnarrow)
+    all_width_keys, _ =
+        CascadeTables.neededkeys(dlnarrow; width_cut = 0.0)
+    @assert all(key -> key.Γ == 0, default_keys)
+    @assert any(key -> key.Γ == 1.0e-4, all_width_keys)
+
+    dlboundary = DecayList(
+        Dict(
+            1 => ParticleInfo(1, "R", 0.9, 1.0e-3, 1.0, 0, 0),
+            2 => πi,
+        ),
+        byp,
+        "boundary",
+        "boundary0",
+    )
+    boundary_keys, _ = CascadeTables.neededkeys(dlboundary)
+    zero_width_keys, _ =
+        CascadeTables.neededkeys(dl0; width_cut = 0.0)
+    @assert all(key -> key.Γ == 0, boundary_keys)
+    @assert all(key -> key.Γ == 0, zero_width_keys)
+
+    # Switching the option on one cache path rebuilds rather than mixing sharp
+    # and broad keys.
+    tableb_again = CascadeTable(
+        dlb;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        cache = width_cache,
+    )
+    @assert CascadeTables._table_width_cut(tableb_again) == 1.0e-3
+    @assert all(key -> key.Γ == 0.12, keys(tableb_again.W))
+    @assert CascadeTables._table_width_cut(loadtables(width_cache)) == 1.0e-3
+
+    invalid_width_cache = tempname()
+    for invalid_width_cut in (
+            -1.0, -Inf, NaN, false, true, "invalid", :invalid,
+        )
+        threw = false
+        try
+            CascadeTable(
+                dlb;
+                grid = g,
+                orders = ord,
+                modes = [0],
+                width_cut = invalid_width_cut,
+                cache = invalid_width_cache,
+            )
+        catch error
+            threw =
+                error isa ArgumentError &&
+                occursin("width_cut", error.msg)
+        end
+        @assert threw
+        @assert !isfile(invalid_width_cache)
+    end
+
+    invalid_width_window_cache = tempname()
+    for invalid_width_window in (
+            0.0, -1.0, Inf, -Inf, NaN, false, true, "invalid", :invalid,
+        )
+        threw = false
+        try
+            CascadeTable(
+                dlb;
+                grid = g,
+                orders = ord,
+                modes = [0],
+                width_window = invalid_width_window,
+                cache = invalid_width_window_cache,
+            )
+        catch error
+            threw =
+                error isa ArgumentError &&
+                occursin("width_window", error.msg)
+        end
+        @assert threw
+        @assert !isfile(invalid_width_window_cache)
+    end
+    rm(width_cache; force = true)
+
     # compare the feed-down (F − Fprim); the total F is diluted by the primary pion
     f0 = r0.F[2][1] .- r0.Fprim[2][1]
     fb = rb.F[2][1] .- rb.Fprim[2][1]
@@ -780,9 +979,56 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     dl = DecayList(parts, byp, "syn", "h0")
     ord_ = CascadeTables.cascadeorder(dl)
     @assert findfirst(==(1), ord_) < findfirst(==(2), ord_)   # P processed before D
+    sharp_order = CascadeTables.cascadeorder(dl; width_cut = Inf)
+    @assert findfirst(==(2), sharp_order) < findfirst(==(1), sharp_order)
+    short_window_order =
+        CascadeTables.cascadeorder(dl; width_window = 2.0)
+    @assert findfirst(==(2), short_window_order) <
+        findfirst(==(1), short_window_order)
+    sharp_keys, sharp_enrollment =
+        CascadeTables.neededkeys(dl; width_cut = Inf)
+    @assert all(key -> key.Γ == 0, sharp_keys)
+    @assert sharp_enrollment[:reopened] == 0
+    @assert sharp_enrollment[:closed] == 1
+    short_window_keys, short_window_enrollment =
+        CascadeTables.neededkeys(dl; width_window = 2.0)
+    @assert all(key -> key.ma != 1.0, short_window_keys)
+    @assert short_window_enrollment[:reopened] == 0
+    @assert short_window_enrollment[:closed] == 1
+
     tab = CascadeTable(dl; grid = g, orders = ord, modes = [0], cache = nothing)
+    sharp_tab = CascadeTable(
+        dl;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        width_cut = Inf,
+        cache = nothing,
+    )
+    short_window_tab = CascadeTable(
+        dl;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        width_window = 2.0,
+        cache = nothing,
+    )
+    @assert CascadeTables._table_width_window(short_window_tab) == 2.0
+    short_window_plan = CascadePlan(short_window_tab, dl)
     prim(p, n, gr) = (n == 0 && p.id == 1) ? [exp(-hypot(p.mass, q) / 0.15) for q in gr] : zeros(length(gr))
     res = runcascade(tab, dl; primary = prim, output = :all)
+    sharp_res = runcascade(sharp_tab, dl; primary = prim, output = :all)
+    short_window_res =
+        runcascade(short_window_plan; primary = prim, output = :all)
+    @assert short_window_res.F == sharp_res.F
+    @assert short_window_res.Fprim == sharp_res.Fprim
+    sharp_planned = runcascade(
+        CascadePlan(sharp_tab, dl);
+        primary = prim,
+        output = :all,
+    )
+    @assert sharp_planned.F == sharp_res.F
+    @assert sharp_planned.Fprim == sharp_res.Fprim
     planned =
         runcascade(CascadePlan(tab, dl); primary = prim, output = :all)
     for particle_id in keys(res.F), mode_index in eachindex(tab.modes)
@@ -795,6 +1041,7 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     end
     fda = sum(res.F[4][1] .- res.Fprim[4][1])                 # P→D→a downstream feed-down
     @assert fda > 0                                           # was exactly 0.0 under mass-order
+    @assert sharp_res.F[4][1] == sharp_res.Fprim[4][1]
     @printf("   P before D; downstream P→D→a feed-down = %.2e (was 0)\n", fda)
     println("   PASS")
 end
