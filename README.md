@@ -158,9 +158,11 @@ also required for `runcascade(plan; parallel = :modes)` to execute modes
 concurrently.
 
 The `Wtables.jls` cache is regenerable and git-ignored. It serializes packed
-`Float32` row bands; at the default grid their estimated matrix payload is
-1.1012 GiB, versus 2.4481 GiB for dense storage. The previous ~7 s load and
-~2 s sweep measurements describe the superseded dense cache.
+`Float32` row bands in fixed tuples aligned with `table.modes`; at the default
+grid their estimated matrix payload is 1.1012 GiB, versus 2.4481 GiB for dense
+storage. The previous ~7 s load and ~2 s sweep measurements describe the
+superseded dense cache. The fixed-tuple layout is cache format 9; older caches
+are ignored and rebuilt automatically.
 
 `CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
 that input. This keeps the grid compact and selects the uniform interpolation

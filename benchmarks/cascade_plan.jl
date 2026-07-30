@@ -28,7 +28,8 @@ SAMPLES ≥ 1 || error("CASCADE_BENCH_SAMPLES must be positive")
 
 function deterministic_table(decay_list, grid)
     matrix_type = CascadeTables._tablematrixtype(length(grid))
-    matrices = Dict{ChannelKey, Vector{matrix_type}}()
+    matrices =
+        Dict{ChannelKey, NTuple{length(MODES), matrix_type}}()
     transfer_count = Ref(0)
 
     parent_order = sort!(collect(keys(decay_list.byparent)))
@@ -42,10 +43,10 @@ function deterministic_table(decay_list, grid)
             scale = Float32(1.0e-5 * (1 + key_index % 13))
             mode_zero = fill(scale, length(grid), length(grid))
             mode_two = fill(-0.07f0 * scale, length(grid), length(grid))
-            matrix_type[
+            (
                 CascadeTables._packtablematrix(matrix_type, mode_zero),
                 CascadeTables._packtablematrix(matrix_type, mode_two),
-            ]
+            )
         end
     end
 

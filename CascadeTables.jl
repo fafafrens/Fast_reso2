@@ -42,7 +42,7 @@ export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
     parentstrangeness, strangeparent, charmparent, parentisospin
 
 # Increment when the serialized layout or generated matrix values change.
-const FORMAT = 8
+const FORMAT = 9
 const CACHE_MAGIC = "FastReso.CascadeTables\n"
 
 # ---------------------------------------------------------------------------
@@ -308,7 +308,7 @@ struct CascadeTable{
     orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma), Tuple{Int, Int, Int, Int, Int}}
     modes::NTuple{N, Int}
     meta::Dict{Symbol, Any}
-    W::Dict{ChannelKey, Vector{M}}
+    W::Dict{ChannelKey, NTuple{N, M}}
 end
 
 _table_width_cut(table::CascadeTable) =
@@ -538,32 +538,6 @@ function _cascadeorder(dl::DecayList, dependencies)
     return order
 end
 
-function _planmatrices(
-        table::CascadeTable{G, N, M},
-        key::ChannelKey,
-    ) where {G, N, M}
-    matrices = table.W[key]
-    length(matrices) == N ||
-        throw(
-        DimensionMismatch(
-            "table key $key has $(length(matrices)) matrices for $N modes",
-        )
-    )
-
-    grid_length = length(table.grid)
-    expected_size = (grid_length, grid_length)
-    for (mode_index, matrix) in pairs(matrices)
-        size(matrix) == expected_size ||
-            throw(
-            DimensionMismatch(
-                "table key $key mode index $mode_index has size $(size(matrix)); " *
-                    "expected $expected_size",
-            )
-        )
-    end
-    return ntuple(mode_index -> matrices[mode_index], Val(N))
-end
-
 function CascadePlan(
         table::CascadeTable{G, N, M},
         decay_list::DecayList,
@@ -585,10 +559,6 @@ function CascadePlan(
     group_builders =
         Dict{Int, Vector{_CascadeGroupBuilder{N, M}}}()
     group_positions = Dict{Int, Dict{ChannelKey, Int}}()
-    # Equal keys share one tuple of references to table matrices. ntuple in
-    # _planmatrices copies references, never the matrix payload.
-    matrix_cache =
-        Dict{ChannelKey, NTuple{N, M}}()
     dependencies = Set{Tuple{Int, Int}}()
 
     # A deterministic traversal makes group order and construction failures
@@ -611,13 +581,10 @@ function CascadePlan(
 
         group_index = get(positions, key, 0)
         if group_index == 0
-            matrices = get!(matrix_cache, key) do
-                _planmatrices(table, key)
-            end
             push!(
                 builders,
                 _CascadeGroupBuilder{N, M}(
-                    matrices,
+                    table.W[key],
                     Int[],
                     Dict{Int, Float64}(),
                 ),
@@ -731,6 +698,13 @@ function buildkeys!(
         table::CascadeTable{G, N, M},
         keys_to_build::Vector{ChannelKey},
     ) where {G, N, M}
+    if N == 0
+        for key in keys_to_build
+            table.W[key] = ()
+        end
+        return length(keys_to_build)
+    end
+
     modes = table.modes
     rules = Rules(; table.orders...)
     grid_length = length(table.grid)
@@ -740,7 +714,8 @@ function buildkeys!(
     scratch_for_task = OncePerTask{NTuple{N, Vector{Float64}}}(
         () -> rowscratch(modes, grid_length),
     )
-    matrices_per_key = Vector{Vector{M}}(undef, length(keys_to_build))
+    matrices_per_key =
+        Vector{NTuple{N, M}}(undef, length(keys_to_build))
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
         decay = decayfor(keys_to_build[key_index], rules, width_window)
@@ -753,10 +728,8 @@ function buildkeys!(
             scratch = scratch_for_task()
         )
 
-        packed_matrices = Vector{M}(undef, N)
-        for mode_index in 1:N
-            packed_matrices[mode_index] =
-                _packtablematrix(M, dense_matrices[mode_index])
+        packed_matrices = ntuple(Val(N)) do mode_index
+            _packtablematrix(M, dense_matrices[mode_index])
         end
         matrices_per_key[key_index] = packed_matrices
     end
@@ -873,7 +846,11 @@ function CascadeTable(
     end
 
     matrix_type = _tablematrixtype(length(grid))
-    table = CascadeTable(
+    table = CascadeTable{
+        typeof(grid),
+        length(selected_modes),
+        matrix_type,
+    }(
         grid,
         resolved_orders,
         selected_modes,
@@ -882,7 +859,10 @@ function CascadeTable(
             width_cut,
             width_window,
         ),
-        Dict{ChannelKey, Vector{matrix_type}}(),
+        Dict{
+            ChannelKey,
+            NTuple{length(selected_modes), matrix_type},
+        }(),
     )
     ensure!(table, decay_list)
     if cache !== nothing
@@ -912,13 +892,12 @@ function savetables(table::CascadeTable, path::AbstractString)
     return open(path, "w") do io
         write(io, CACHE_MAGIC)
         write(io, UInt8(FORMAT))
-        # Keep modes as a vector so the serialized payload is independent of N.
         serialize(
             io,
             (
                 table.grid,
                 table.orders,
-                collect(table.modes),
+                table.modes,
                 table.meta,
                 table.W,
             ),
@@ -942,42 +921,35 @@ function loadtables(path::AbstractString)
     stored_data isa Tuple && length(stored_data) == 5 || return nothing
     grid, orders, modes, metadata, matrices = stored_data
     grid isa AbstractRange{Float64} || return nothing
-    modes isa Union{AbstractVector, Tuple} || return nothing
-    all(mode -> mode isa Integer, modes) || return nothing
+    modes isa Tuple{Vararg{Int}} || return nothing
     metadata isa Dict{Symbol, Any} || return nothing
-    normalized_modes = try
-        Tuple(collect(Int, modes))
-    catch
-        return nothing
-    end
     return _restoretable(
         grid,
         orders,
-        normalized_modes,
+        modes,
         metadata,
         matrices,
     )
 end
 
 function _restoretable(
-        grid,
+        grid::G,
         orders,
         modes::NTuple{N, Int},
         metadata,
-        matrices::Dict{ChannelKey, Vector{M}},
-    ) where {N, M <: RowBandMatrix{Float32}}
+        matrices::Dict{ChannelKey, V},
+    ) where {G, N, V <: Tuple}
     matrix_type = try
         _tablematrixtype(length(grid))
     catch
         return nothing
     end
-    M === matrix_type || return nothing
+    V === NTuple{N, matrix_type} || return nothing
     expected_size = (length(grid), length(grid))
     try
         get(metadata, :width_cut, 1.0e-3)::Float64
         get(metadata, :width_window, 4.0)::Float64
         for mode_matrices in values(matrices)
-            length(mode_matrices) == N || return nothing
             for matrix in mode_matrices
                 size(matrix) == expected_size || return nothing
                 _validate_rowband_storage(
@@ -988,7 +960,13 @@ function _restoretable(
                 )
             end
         end
-        return CascadeTable(grid, orders, modes, metadata, matrices)
+        return CascadeTable{G, N, matrix_type}(
+            grid,
+            orders,
+            modes,
+            metadata,
+            matrices,
+        )
     catch
         return nothing
     end

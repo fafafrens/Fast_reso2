@@ -575,11 +575,40 @@ tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfi
 table_matrix_type7 = typeof(first(first(values(tab7.W))))
 @assert table_matrix_type7 ==
     CascadeTables.RowBandMatrix{Float32, UInt8, UInt16}
+@assert valtype(typeof(tab7.W)) === NTuple{2, table_matrix_type7}
 @assert all(
     typeof(matrix) == table_matrix_type7
         for matrices in values(tab7.W)
         for matrix in matrices
 )
+
+# Empty mode sets retain the table's matrix type without running matrix
+# assembly, and survive plan execution and cache restoration.
+zero_mode_tabfile7 = tempname()
+zero_mode_table7 = CascadeTable(
+    dl7;
+    grid = g7,
+    orders = ord7,
+    modes = Int[],
+    cache = zero_mode_tabfile7,
+)
+@assert zero_mode_table7.modes === ()
+@assert all(==(()), values(zero_mode_table7.W))
+zero_mode_plan7 = CascadePlan(zero_mode_table7, dl7)
+zero_mode_primary_calls7 = Ref(0)
+zero_mode_result7 = runcascade(
+    zero_mode_plan7;
+    primary = (_particle, _mode, grid) -> begin
+        zero_mode_primary_calls7[] += 1
+        zeros(length(grid))
+    end,
+)
+@assert zero_mode_primary_calls7[] == 0
+@assert all(isempty, values(zero_mode_result7.F))
+loaded_zero_mode_table7 = loadtables(zero_mode_tabfile7)
+@assert typeof(loaded_zero_mode_table7) === typeof(zero_mode_table7)
+@assert loaded_zero_mode_table7.W == zero_mode_table7.W
+rm(zero_mode_tabfile7; force = true)
 
 prim7(p, n, grid) = (n == 0 ? 1.0 : 0.05) * [exp(-hypot(p.mass, q) / T) for q in grid]
 primary_calls7 = Ref(0)
@@ -622,23 +651,31 @@ end
 # round trip: loading must reproduce exactly
 tab7native = loadtables(tabfile)
 @assert typeof(tab7native.grid) === typeof(tab7.grid)
+@assert typeof(tab7native.W) === typeof(tab7.W)
 @assert tab7native.modes === (0, 2)
 @assert tab7native.grid == tab7.grid && tab7native.W == tab7.W
 
-# Legacy caches are rejected from their prefix, before their dense payload is
-# deserialized. Packed metadata is revalidated after deserialization.
+# Vector-backed format-8 caches are rejected from their prefix, before their
+# potentially multi-GiB payload is deserialized. Packed metadata is revalidated
+# after deserialization for the current format.
 legacy_tabfile = tempname()
-serialize(
-    legacy_tabfile,
-    (
-        7,
-        tab7.grid,
-        tab7.orders,
-        collect(tab7.modes),
-        tab7.meta,
-        Dict{ChannelKey, Vector{Matrix{Float32}}}(),
-    ),
+legacy_W7 = Dict{ChannelKey, Vector{table_matrix_type7}}(
+    key => collect(matrices) for (key, matrices) in tab7.W
 )
+open(legacy_tabfile, "w") do io
+    write(io, CascadeTables.CACHE_MAGIC)
+    write(io, UInt8(8))
+    serialize(
+        io,
+        (
+            tab7.grid,
+            tab7.orders,
+            collect(tab7.modes),
+            tab7.meta,
+            legacy_W7,
+        ),
+    )
+end
 @assert loadtables(legacy_tabfile) === nothing
 
 invalid_mode_tabfile = tempname()
@@ -650,7 +687,7 @@ open(invalid_mode_tabfile, "w") do io
         (
             tab7.grid,
             tab7.orders,
-            [big(typemax(Int)) + 1],
+            (big(typemax(Int)) + 1,),
             tab7.meta,
             tab7.W,
         ),
@@ -1414,8 +1451,8 @@ end
     parallel = :modes,
 ).F == reversed_serial7.F
 
-one_mode_W7 = typeof(tab7.W)(
-    key => [matrices[1]] for (key, matrices) in tab7.W
+one_mode_W7 = Dict{ChannelKey, NTuple{1, table_matrix_type7}}(
+    key => (matrices[1],) for (key, matrices) in tab7.W
 )
 one_mode_table7 = CascadeTable(
     tab7.grid,
@@ -1496,7 +1533,7 @@ let threw = false
     @assert threw
 end
 
-# Missing or malformed table payloads are rejected while compiling the plan.
+# Missing table payloads are rejected while compiling the plan.
 missing_W7 = copy(tab7.W)
 missing_key7 = first(keys(missing_W7))
 delete!(missing_W7, missing_key7)
@@ -1516,35 +1553,41 @@ let threw = false
     @assert threw
 end
 
-malformed_W7 = copy(tab7.W)
-malformed_key7 = first(keys(malformed_W7))
-malformed_W7[malformed_key7] = malformed_W7[malformed_key7][1:1]
-malformed_table7 = CascadeTable(
-    tab7.grid,
-    tab7.orders,
-    tab7.modes,
-    copy(tab7.meta),
-    malformed_W7,
+# Matrix count is encoded in the dictionary value type. A same-format cache
+# whose tuple arity does not match its modes is rejected during restoration.
+malformed_W7 = Dict{ChannelKey, NTuple{1, table_matrix_type7}}(
+    key => (matrices[1],) for (key, matrices) in tab7.W
 )
-let threw = false
-    try
-        CascadePlan(malformed_table7, dl7)
-    catch error
-        threw = error isa DimensionMismatch
-    end
-    @assert threw
+malformed_tabfile7 = tempname()
+open(malformed_tabfile7, "w") do io
+    write(io, CascadeTables.CACHE_MAGIC)
+    write(io, UInt8(CascadeTables.FORMAT))
+    serialize(
+        io,
+        (
+            tab7.grid,
+            tab7.orders,
+            tab7.modes,
+            tab7.meta,
+            malformed_W7,
+        ),
+    )
 end
+@assert loadtables(malformed_tabfile7) === nothing
+rm(malformed_tabfile7; force = true)
 
+# Restore-time shape validation remains even though tuple arity needs no scan.
 bad_shape_W7 = copy(tab7.W)
 bad_shape_key7 = first(keys(bad_shape_W7))
-bad_shape_matrices7 = copy(bad_shape_W7[bad_shape_key7])
+bad_shape_matrices7 = bad_shape_W7[bad_shape_key7]
 reference_matrix7 = bad_shape_matrices7[1]
-bad_shape_matrices7[1] = CascadeTables.RowBandMatrix(
+bad_shape_matrix7 = CascadeTables.RowBandMatrix(
     zeros(Float32, length(tab7.grid) - 1, length(tab7.grid)),
     eltype(reference_matrix7.column_starts),
     eltype(reference_matrix7.value_offsets),
 )
-bad_shape_W7[bad_shape_key7] = bad_shape_matrices7
+bad_shape_W7[bad_shape_key7] =
+    (bad_shape_matrix7, bad_shape_matrices7[2])
 bad_shape_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
@@ -1552,9 +1595,17 @@ bad_shape_table7 = CascadeTable(
     copy(tab7.meta),
     bad_shape_W7,
 )
+bad_shape_tabfile7 = tempname()
+savetables(bad_shape_table7, bad_shape_tabfile7)
+@assert loadtables(bad_shape_tabfile7) === nothing
+rm(bad_shape_tabfile7; force = true)
+
+# Direct raw tables trust matrix shapes; public multiplication still reports
+# the mismatch before entering its @inbounds kernel.
+bad_shape_plan7 = CascadePlan(bad_shape_table7, dl7)
 let threw = false
     try
-        CascadePlan(bad_shape_table7, dl7)
+        runcascade(bad_shape_plan7; primary = prim7)
     catch error
         threw = error isa DimensionMismatch
     end
@@ -1657,15 +1708,15 @@ let
     decay_list = DecayList(parts, byparent, "cycle", "cycle")
     matrix_type = CascadeTables._tablematrixtype(length(grid))
     matrix_entry = 0.002f0
-    matrices = Dict{ChannelKey, Vector{matrix_type}}()
+    matrices = Dict{ChannelKey, NTuple{1, matrix_type}}()
     CascadeTables.eachchannelkey(decay_list) do _parent, _channel, _daughter, key
         get!(matrices, key) do
-            matrix_type[
+            (
                 CascadeTables._packtablematrix(
                     matrix_type,
                     fill(matrix_entry, length(grid), length(grid)),
                 ),
-            ]
+            )
         end
     end
     table = CascadeTable(

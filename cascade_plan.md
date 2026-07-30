@@ -42,15 +42,15 @@ This plan has four goals:
 3. allow safe partial multithreading;
 4. preserve keyed table-storage semantics and numerical accuracy.
 
-The original plan work did not require a storage change. The table has since
-moved to packed row bands without changing the plan architecture.
+The table has since moved to packed row bands and fixed per-mode tuples without
+changing the plan architecture.
 
 ## 2. Why a separate plan
 
 `CascadeTable.W` is a good construction and storage representation:
 
 ```julia
-Dict{ChannelKey, Vector{M}} where M <: RowBandMatrix{Float32}
+Dict{ChannelKey,NTuple{N,M}} where {N,M<:RowBandMatrix{Float32}}
 ```
 
 It supports filtered decay lists, incremental `ensure!`, and `prune!`.
@@ -132,7 +132,7 @@ define both the numerical operations and their dependency graph.
    finite-width settings;
 3. during that traversal, collect grouped operations and unique
    `parent => decaying daughter` dependency edges;
-4. resolve `table.W[key]` once for each encountered key;
+4. attach `table.W[key]` directly to each new parent/key group;
 5. topologically order the completed parent blocks;
 6. within each group, sum weights separately for every daughter.
 
@@ -175,8 +175,9 @@ topological order.  Stable first-seen ordering of groups and targets should be
 used for reproducibility.
 
 A missing table entry naturally throws during construction at `table.W[key]`.
-Matrix count and shape are also validated during construction. No key, grid,
-topology, or hash validation belongs in the hot execution path.
+Matrix count is encoded by `NTuple{N,M}`. Cache restoration validates matrix
+shape and packed storage before use. No key, grid, topology, or hash validation
+belongs in the hot execution path.
 
 The dependency edges should be deduplicated even when several slots or
 channels connect the same parent and daughter. A dependency cycle has no exact
@@ -561,6 +562,25 @@ include row-band matrix-vector applications with deterministic payloads while
 excluding construction and cache I/O. They are not a `G = 134`
 production-cache benchmark. Current measurements should label the table
 wrapper as compile-plus-execute and the reused plan as execution-only.
+
+### Fixed-tuple table storage benchmark
+
+Changing each table value from `Vector{M}` to `NTuple{N,M}` removes the
+plan-time tuple adapter and its cache. On the same full topology with Julia
+1.12.6, two Julia threads, one BLAS thread, `G = 16`, two modes, and 50 median
+samples:
+
+| path | vector-backed | tuple-backed | vector allocations | tuple allocations |
+|---|---:|---:|---:|---:|
+| plan compilation | 32.596 ms | 29.081 ms | 77.892 MiB | 67.736 MiB |
+| table wrapper: compile + run | 40.926 ms | 36.958 ms | 79.948 MiB | 69.793 MiB |
+| reused plan, serial | 8.497 ms | 8.533 ms | 2.057 MiB | 2.057 MiB |
+| reused plan, mode-threaded | 4.569 ms | 4.500 ms | 2.058 MiB | 2.058 MiB |
+
+Plan compilation is about 11% faster with 13% fewer allocations; the
+compile-plus-run wrapper is about 10% faster with 13% fewer allocations.
+Execution of an already compiled plan is materially unchanged. All compared
+outputs were bitwise equal.
 
 ## 12. Implementation stages
 
