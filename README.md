@@ -94,10 +94,11 @@ emitted off-axis — recovering to 3.8% by 2 GeV.
 `res.F[id]` is the spectrum per Fourier mode after feed-down and `res.Fprim[id]`
 the primary part alone, both on `qs`, keyed by PDG id. Results contain only
 stable particles by default; `stableparticles(plan)` lists their
-`ParticleInfo` records in ID order. Pass `output = :all` to `runcascade` only
-when intermediate-resonance spectra are needed for diagnostics. The `primary`
-callback is where the physics goes: return `zero(qs)` for a species to exclude
-it.
+`ParticleInfo` records in ID order; `allparticles(plan)` lists every species
+compiled into the plan. The same accessors accept a `DecayList`. Pass
+`output = :all` to `runcascade` only when intermediate-resonance spectra are
+needed for diagnostics. The `primary` callback is where the physics goes:
+return `zero(qs)` for a species to exclude it.
 
 For production, pass `cache = "Wtables.jls"` so the packed matrices are built
 once and reloaded. At the default 134-point grid, dense `Float32` storage would
