@@ -60,12 +60,12 @@ plot!(qs, res.F[π⁻][1];     label = L"\pi^{-}\ \mathrm{total}",   lw = 2, lc 
 
 savefig( p,"pions.pdf")
 
-available = sort(
-    [dl_charm.parts[id] for id in keys(res_charm.F)];
+available_particles = sort(
+    stableparticles(dl_charm);
     by = p -> (lowercase(p.name), p.id),
 )
 
-foreach(p -> println(p.id, "  ", p.name), available)
+foreach(p -> println(p.id, "  ", p.name), available_particles)
 
 function plot_charm_spectra(result, grid, particles)
     spectrum_plot = plot(;
@@ -129,9 +129,9 @@ res = runcascade(dl; primary, grid = qs)
 plot(res[1][425][1])
 
 
-available(list,result) = sort(
-    [list.parts[id] for id in keys(result.F)];
+available_particles = sort(
+    stableparticles(dl);
     by = p -> (lowercase(p.name), p.id),
 )
 
-foreach(p -> println(p.id, "  ", p.name), available(dl,res))
+foreach(p -> println(p.id, "  ", p.name), available_particles)

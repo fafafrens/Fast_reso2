@@ -598,14 +598,19 @@ end
 res7 = runcascade(tab7, dl7; primary = counted_prim7)
 @assert primary_calls7[] == length(parts7) * length(tab7.modes)
 @assert dl7.stable_ids == [2, 4]
+@assert [particle.id for particle in allparticles(dl7)] == [1, 2, 3, 4]
 @assert [particle.id for particle in stableparticles(dl7)] == [2, 4]
 @assert Set(keys(res7.F)) == Set([2, 4])
 @assert Set(keys(res7.Fprim)) == Set([2, 4])
+@assert Set(keys(res7.F)) ==
+    Set(particle.id for particle in stableparticles(dl7))
 
 res7allparticles =
     runcascade(tab7, dl7; primary = prim7, output = :all)
 @assert Set(keys(res7allparticles.F)) == Set(keys(parts7))
 @assert Set(keys(res7allparticles.Fprim)) == Set(keys(parts7))
+@assert Set(keys(res7allparticles.F)) ==
+    Set(particle.id for particle in allparticles(dl7))
 for particle_id in dl7.stable_ids
     @assert res7.F[particle_id] == res7allparticles.F[particle_id]
     @assert res7.Fprim[particle_id] ==
@@ -1328,6 +1333,10 @@ rm(convenience_cache7; force = true)
 
 @assert plan7.ids == sort!(collect(keys(dl7.parts)))
 @assert plan7.ids[plan7.stable_indices] == dl7.stable_ids
+plan_particles7 = allparticles(plan7)
+@assert [particle.id for particle in plan_particles7] == plan7.ids
+pop!(plan_particles7)
+@assert length(plan7.particles) == length(plan7.ids)
 @assert [particle.id for particle in stableparticles(plan7)] ==
     dl7.stable_ids
 assert_plan_matches(

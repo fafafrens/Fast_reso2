@@ -35,7 +35,7 @@ include("CascadeLinearAlgebra.jl")
 export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
     prune!, validate,
     savetables, loadtables, ParticleInfo, DecayChannel,
-    stableparticles,
+    allparticles, stableparticles,
     isospin, spin, isbaryon, ismeson, isantiparticle, isstrange,
     ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
     fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
@@ -95,6 +95,16 @@ function DecayList(path::AbstractString)
         bytes2hex(sha256(read(path)))
     )
 end
+
+"""
+    allparticles(decay_list::DecayList) -> Vector{ParticleInfo}
+
+Return every particle defined by the decay list in ascending particle-ID order.
+"""
+allparticles(decay_list::DecayList) = [
+    decay_list.parts[particle_id]
+        for particle_id in sort!(collect(keys(decay_list.parts)))
+]
 
 """
     stableparticles(decay_list::DecayList) -> Vector{ParticleInfo}
@@ -370,6 +380,14 @@ end
 Return the plan's terminal particles in ascending particle-ID order.
 """
 stableparticles(plan::CascadePlan) = plan.particles[plan.stable_indices]
+
+"""
+    allparticles(plan::CascadePlan) -> Vector{ParticleInfo}
+
+Return every particle compiled into the plan in ascending particle-ID order.
+The returned vector is independent of the plan's internal storage.
+"""
+allparticles(plan::CascadePlan) = copy(plan.particles)
 
 mutable struct _CascadeGroupBuilder{N, M <: RowBandMatrix{Float32}}
     matrices::NTuple{N, M}
