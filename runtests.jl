@@ -1981,12 +1981,137 @@ let
     @assert length(supplement.parts) == 150
     @assert isempty(intersect(keys(base.parts), keys(supplement.parts)))
 
-    combined = DecayList(
-        merge(base.parts, supplement.parts),
-        merge(base.byparent, supplement.byparent),
-        "base + charm/bottom supplement",
-        string(base.sha, supplement.sha),
+    combined = merge(base, supplement)
+    @assert combined.parts !== base.parts
+    @assert combined.parts !== supplement.parts
+    @assert combined.byparent !== base.byparent
+    @assert combined.byparent !== supplement.byparent
+    @assert combined.path == string(base.path, " + ", supplement.path)
+    @assert combined.sha == string(base.sha, "+", supplement.sha)
+    @assert combined.stable_ids ==
+        sort!(vcat(base.stable_ids, supplement.stable_ids))
+
+    copied_base = merge(base)
+    @assert copied_base.parts == base.parts
+    @assert copied_base.parts !== base.parts
+    @assert copied_base.byparent == base.byparent
+    @assert copied_base.byparent !== base.byparent
+    @assert copied_base.stable_ids == base.stable_ids
+    @assert copied_base.stable_ids !== base.stable_ids
+    @assert copied_base.path == base.path && copied_base.sha == base.sha
+
+    third_id = 999_999_998
+    third = DecayList(
+        Dict(
+            third_id =>
+                ParticleInfo(third_id, "third", 0.1, 0.0, 1.0, 0, 0),
+        ),
+        Dict{Int, Vector{DecayChannel}}(),
+        "third source",
+        "third hash",
     )
+    direct_merge = merge(base, supplement, third)
+    nested_merge = merge(merge(base, supplement), third)
+    @assert direct_merge.parts == nested_merge.parts
+    @assert direct_merge.byparent == nested_merge.byparent
+    @assert direct_merge.stable_ids == nested_merge.stable_ids
+    @assert direct_merge.path == nested_merge.path
+    @assert direct_merge.sha == nested_merge.sha
+
+    filtered_base = filter(
+        channelfilter((_parent, _channel, _daughters) -> false),
+        base,
+    )
+    @assert merge(filtered_base, supplement).stable_ids ==
+        combined.stable_ids
+
+    duplicated_base = merge(base, base)
+    @assert duplicated_base.parts == base.parts
+    @assert duplicated_base.byparent == base.byparent
+    @assert duplicated_base.stable_ids == base.stable_ids
+
+    overlapping_parent = first(
+        parent_id for parent_id in keys(base.byparent)
+            if parent_id ∉ base.stable_ids
+    )
+    header_only = DecayList(
+        Dict(overlapping_parent => base.parts[overlapping_parent]),
+        Dict{Int, Vector{DecayChannel}}(),
+        "header only",
+        "header only",
+    )
+    merged_header = merge(base, header_only)
+    @assert merged_header.parts == base.parts
+    @assert merged_header.byparent == base.byparent
+    @assert overlapping_parent ∉ merged_header.stable_ids
+
+    reordered_channels = reverse([
+        DecayChannel(channel.parent, channel.br, reverse(channel.daughters))
+            for channel in base.byparent[overlapping_parent]
+    ])
+    reordered_block = DecayList(
+        Dict(overlapping_parent => base.parts[overlapping_parent]),
+        Dict(overlapping_parent => reordered_channels),
+        Int[],
+        "reordered block",
+        "reordered block",
+    )
+    merged_reordered = merge(base, reordered_block)
+    @assert merged_reordered.byparent[overlapping_parent] ===
+        base.byparent[overlapping_parent]
+
+    particle = base.parts[overlapping_parent]
+    conflicting_particle = ParticleInfo(
+        particle.id,
+        particle.name * "_conflict",
+        particle.mass,
+        particle.width,
+        particle.degeneracy,
+        particle.baryon,
+        particle.charge,
+        particle.strangeness,
+        particle.charm,
+        particle.twiceisospin,
+    )
+    conflicting_header = DecayList(
+        Dict(overlapping_parent => conflicting_particle),
+        Dict{Int, Vector{DecayChannel}}(),
+        "conflicting header",
+        "conflicting header",
+    )
+    particle_conflict = nothing
+    try
+        merge(base, conflicting_header)
+    catch error
+        particle_conflict = error
+    end
+    @assert particle_conflict isa ArgumentError
+    @assert occursin("name", sprint(showerror, particle_conflict))
+
+    conflicting_channels = copy(base.byparent[overlapping_parent])
+    channel = conflicting_channels[1]
+    conflicting_channels[1] = DecayChannel(
+        channel.parent,
+        nextfloat(channel.br),
+        copy(channel.daughters),
+    )
+    conflicting_block = DecayList(
+        Dict(
+            overlapping_parent => base.parts[overlapping_parent],
+        ),
+        Dict(overlapping_parent => conflicting_channels),
+        Int[],
+        "conflicting block",
+        "conflicting block",
+    )
+    channel_conflict = nothing
+    try
+        merge(base, conflicting_block)
+    catch error
+        channel_conflict = error
+    end
+    @assert channel_conflict isa ArgumentError
+
     stats = validate(combined; verbose = false)
     @assert stats.unresolved == 0
     @assert stats.br_out_of_range == 0

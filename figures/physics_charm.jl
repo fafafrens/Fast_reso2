@@ -15,13 +15,12 @@ const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
-# merge the main list (light daughters) with the charm+bottom supplement
-combined = tempname() * ".dat"
-open(combined, "w") do io
-    write(io, read(joinpath(ROOT, "decays_QM2016Plus_massorder.dat")))
-    write(io, read(joinpath(ROOT, "decays_charm_bottom.dat")))
-end
-dl  = DecayList(combined)
+# Merge the main list (light daughters) with the charm+bottom supplement.
+# Supplement channels may refer directly to particle IDs from the base list.
+dl = merge(
+    DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat")),
+    DecayList(joinpath(ROOT, "decays_charm_bottom.dat")),
+)
 dlc = filter(charmparent(), dl)                   # only charm-parent decays matter
 
 const T  = 0.145                                  # freeze-out temperature

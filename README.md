@@ -165,6 +165,17 @@ storage. The previous ~7 s load and ~2 s sweep measurements describe the
 superseded dense cache. Fixed mode tuples and concrete width-setting fields use
 cache format 10; older caches are ignored and rebuilt automatically.
 
+Decay-list supplements can refer to particles from a base list and be composed
+without writing a temporary combined file. Repeated particle records and
+parent channel blocks are deduplicated when their stored definitions agree;
+conflicting definitions are rejected rather than overwritten or concatenated:
+
+```julia
+base = DecayList("decays_QM2016Plus_massorder.dat")
+heavy = DecayList("decays_charm_bottom.dat")
+combined = merge(base, heavy)
+```
+
 `CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
 that input. This keeps the grid compact and selects the uniform interpolation
 kernel without validation scans. Standalone `DecayMatrix` objects still accept

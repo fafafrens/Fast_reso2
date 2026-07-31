@@ -9,8 +9,8 @@ Structured, persistent decay-matrix tables for the full resonance cascade.
     )
 
 Design (see matrix_notes.pdf for details):
-  * decay matrices are serialized; source identity and bytes remain in the
-    table metadata for provenance;
+  * decay matrices are serialized; source identity remains in table metadata,
+    with source bytes retained for directly file-backed lists;
   * matrices are keyed by `ChannelKey` (the masses plus the parent width,
     observed daughter fixed, unobserved partners sorted), allowing physically
     equivalent channels to share an entry;
@@ -93,6 +93,107 @@ function DecayList(path::AbstractString)
     return DecayList(
         particles, channels_by_parent, String(path),
         bytes2hex(sha256(read(path)))
+    )
+end
+
+"""
+    merge(first::DecayList, remaining::DecayList...) -> DecayList
+
+Copy or combine decay lists. A particle may occur in several inputs when all
+of its stored fields agree exactly. A parent channel block may also repeat when
+it contains the same multiset of channels; channel-row and daughter ordering
+do not matter, but branching ratios must agree exactly. Conflicting particle
+or channel definitions are rejected instead of overwritten or concatenated.
+Cross-list daughters are allowed, so a generated supplement may refer to
+particles from its base list without creating an intermediate combined file.
+
+The result owns new outer dictionaries and a new terminal-ID vector, preserves
+the terminal-particle classification of every input, and records source paths
+and hashes in input order. A repeated particle is terminal only when every
+input containing it marks it terminal. Particle records and channel vectors
+are shared with the first defining input and treated as read-only.
+"""
+function Base.merge(
+        first::DecayList,
+        remaining::DecayList...,
+    )
+    decay_lists = (first, remaining...)
+    particles = Dict{Int, ParticleInfo}()
+    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
+    terminal_by_id = Dict{Int, Bool}()
+
+    different_fields(left, right) = [
+        field for field in fieldnames(ParticleInfo)
+            if !isequal(getfield(left, field), getfield(right, field))
+    ]
+    channel_signature(channel) = (
+        channel.parent,
+        channel.br,
+        Tuple(sort(channel.daughters)),
+    )
+    channel_signatures(channels) =
+        sort!([channel_signature(channel) for channel in channels])
+    same_channels(left, right) =
+        left === right ||
+        (length(left) == length(right) &&
+            isequal(channel_signatures(left), channel_signatures(right)))
+
+    for decay_list in decay_lists
+        terminal_ids = Set(decay_list.stable_ids)
+        for particle_id in sort!(collect(keys(decay_list.parts)))
+            particle = decay_list.parts[particle_id]
+            if haskey(particles, particle_id)
+                fields = different_fields(particles[particle_id], particle)
+                isempty(fields) || throw(ArgumentError(
+                    "conflicting particle definition for ID $particle_id; " *
+                        "different fields: $(join(fields, ", "))",
+                ))
+            else
+                particles[particle_id] = particle
+            end
+            terminal_by_id[particle_id] =
+                get(terminal_by_id, particle_id, true) &&
+                particle_id in terminal_ids
+        end
+
+        for parent_id in sort!(collect(keys(decay_list.byparent)))
+            channels = decay_list.byparent[parent_id]
+            if haskey(channels_by_parent, parent_id)
+                same_channels(channels_by_parent[parent_id], channels) ||
+                    throw(ArgumentError(
+                        "conflicting channel definitions for parent ID " *
+                            "$parent_id",
+                    ))
+            else
+                channels_by_parent[parent_id] = channels
+            end
+        end
+    end
+
+    # A channel-only supplement can turn a header-only terminal particle into
+    # a decaying parent even when that supplement does not repeat its header.
+    for (parent_id, channels) in channels_by_parent
+        if any(
+                channel ->
+                    length(channel.daughters) != 1 ||
+                    only(channel.daughters) != parent_id,
+                channels,
+            )
+            terminal_by_id[parent_id] = false
+        end
+    end
+
+    stable_ids = sort!([
+        particle_id for (particle_id, terminal) in terminal_by_id if terminal
+    ])
+    source_path = join((decay_list.path for decay_list in decay_lists), " + ")
+    source_sha = join((decay_list.sha for decay_list in decay_lists), "+")
+    return DecayList(
+        particles,
+        channels_by_parent,
+        stable_ids,
+        source_path,
+        source_sha,
     )
 end
 
