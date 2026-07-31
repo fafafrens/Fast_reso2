@@ -54,6 +54,8 @@ function deterministic_table(decay_list, grid)
         grid,
         (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16),
         MODES,
+        1.0e-3,
+        4.0,
         Dict{Symbol, Any}(:kind => "deterministic benchmark"),
         matrices,
     )

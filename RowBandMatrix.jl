@@ -8,6 +8,10 @@ a span are retained; numerical zeros before and after it are omitted. Signed
 zeros and non-finite values are retained so converting the packed
 representation back to a dense matrix is exact.
 
+The public array interface is read-only and does not support element
+assignment. Construct it from a completed dense matrix, then use it for
+indexing, conversion, or matrix-vector products.
+
 Compact integer types are selected independently for column and value
 positions. Pass them explicitly as `RowBandMatrix(matrix, UInt32, UInt32)`
 when a fixed representation is needed.
@@ -190,157 +194,6 @@ Base.@propagate_inbounds function Base.getindex(
     return zero(T)
 end
 
-function _check_rowband_growth(
-        matrix::RowBandMatrix{T, I, O},
-        added_values::Int,
-    ) where {T, I, O}
-    stored_values = length(matrix.values)
-    if added_values > typemax(Int) - stored_values
-        throw(ArgumentError("row-band payload exceeds typemax(Int)"))
-    end
-
-    new_value_count = stored_values + added_values
-    if new_value_count == typemax(Int) ||
-            new_value_count + 1 > typemax(O)
-        throw(
-            ArgumentError(
-                "$O cannot represent $new_value_count stored values",
-            )
-        )
-    end
-    return new_value_count
-end
-
-function _growrowband!(
-        matrix::RowBandMatrix{T, I, O},
-        row::Int,
-        first_value::Int,
-        next_value::Int,
-        prefix_length::Int,
-        suffix_length::Int,
-    ) where {T, I, O}
-    added_values = prefix_length + suffix_length
-    new_value_count = _check_rowband_growth(matrix, added_values)
-    old_value_count = length(matrix.values)
-    zero_value = zero(T)
-    resize!(matrix.values, new_value_count)
-
-    @inbounds begin
-        tail_length = old_value_count - next_value + 1
-        if tail_length > 0
-            copyto!(
-                matrix.values,
-                next_value + added_values,
-                matrix.values,
-                next_value,
-                tail_length,
-            )
-        end
-        row_length = next_value - first_value
-        if prefix_length > 0 && row_length > 0
-            copyto!(
-                matrix.values,
-                first_value + prefix_length,
-                matrix.values,
-                first_value,
-                row_length,
-            )
-        end
-        for value_index in first_value:(first_value + prefix_length - 1)
-            matrix.values[value_index] = zero_value
-        end
-        suffix_start = next_value + prefix_length
-        for value_index in suffix_start:(suffix_start + suffix_length - 1)
-            matrix.values[value_index] = zero_value
-        end
-
-        for offset_index in (row + 1):length(matrix.value_offsets)
-            matrix.value_offsets[offset_index] = O(
-                Int(matrix.value_offsets[offset_index]) + added_values,
-            )
-        end
-    end
-    return matrix
-end
-
-Base.@propagate_inbounds function Base.setindex!(
-        matrix::RowBandMatrix{T, I, O},
-        value,
-        row::Int,
-        column::Int,
-    ) where {T, I, O}
-    @boundscheck checkbounds(matrix, row, column)
-    stored_value = convert(T, value)
-
-    @inbounds begin
-        first_value = Int(matrix.value_offsets[row])
-        next_value = Int(matrix.value_offsets[row + 1])
-        band_length = next_value - first_value
-        first_column = Int(matrix.column_starts[row])
-        column_offset = column - first_column
-
-        if 0 <= column_offset < band_length
-            matrix.values[first_value + column_offset] = stored_value
-            return matrix
-        end
-        if isequal(stored_value, zero(T))
-            return matrix
-        end
-
-        if band_length == 0
-            _growrowband!(
-                matrix,
-                row,
-                first_value,
-                next_value,
-                0,
-                1,
-            )
-            matrix.column_starts[row] = I(column)
-            matrix.values[first_value] = stored_value
-            return matrix
-        end
-
-        last_column = first_column + band_length - 1
-        new_first_column = min(first_column, column)
-        prefix_length = first_column - new_first_column
-        suffix_length = max(column - last_column, 0)
-        _growrowband!(
-            matrix,
-            row,
-            first_value,
-            next_value,
-            prefix_length,
-            suffix_length,
-        )
-        matrix.column_starts[row] = I(new_first_column)
-        matrix.values[first_value + column - new_first_column] =
-            stored_value
-    end
-    return matrix
-end
-
-function Base.fill!(matrix::RowBandMatrix{T, I, O}, value) where {T, I, O}
-    stored_value = convert(T, value)
-    if isequal(stored_value, zero(T))
-        fill!(matrix.values, stored_value)
-        return matrix
-    end
-
-    row_count, column_count = size(matrix)
-    full_value_count = Base.checked_mul(row_count, column_count)
-    added_values = full_value_count - length(matrix.values)
-    _check_rowband_growth(matrix, added_values)
-
-    resize!(matrix.values, full_value_count)
-    fill!(matrix.values, stored_value)
-    fill!(matrix.column_starts, one(I))
-    @inbounds for row in 0:row_count
-        matrix.value_offsets[row + 1] = O(row * column_count + 1)
-    end
-    return matrix
-end
-
 RowBandMatrix(matrix::AbstractMatrix{T}) where {T <: Number} =
     RowBandMatrix(matrix, _rowbandcolumntype(size(matrix, 2)))
 
@@ -476,33 +329,6 @@ Base.copy(matrix::RowBandMatrix) = RowBandMatrix(
     copy(matrix.value_offsets),
     copy(matrix.values),
 )
-
-function Base.similar(
-        matrix::RowBandMatrix{<:Number, I, O},
-        ::Type{T},
-        dimensions::Dims{2},
-    ) where {T <: Number, I <: Integer, O <: Integer}
-    if dimensions == size(matrix)
-        return RowBandMatrix(
-            matrix.column_count,
-            copy(matrix.column_starts),
-            copy(matrix.value_offsets),
-            Vector{T}(undef, length(matrix.values)),
-        )
-    end
-
-    row_count, column_count = dimensions
-    column_type = _rowbandcolumntype(column_count)
-    offset_type = _rowbandoffsettype(
-        Base.checked_mul(row_count, column_count),
-    )
-    return RowBandMatrix(
-        column_count,
-        fill(one(column_type), row_count),
-        fill(one(offset_type), row_count + 1),
-        Vector{T}(undef, 0),
-    )
-end
 
 Base.similar(
     ::RowBandMatrix,

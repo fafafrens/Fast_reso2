@@ -1316,7 +1316,8 @@ are unsupported and skipped.
 
 A \texttt{CascadeTable} contains
 \begin{equation}
-\mathcal T=(g,\ {\rm orders},\ {\rm modes},\ {\rm metadata},\ \mathcal W),
+\mathcal T=(g,\ {\rm orders},\ {\rm modes},\
+{\rm width\_cut},\ {\rm width\_window},\ {\rm metadata},\ \mathcal W),
 \qquad
 \mathcal W:\kappa\longmapsto
 \{W_{\kappa,n}\}_{n\in{\rm modes}} .
@@ -1342,10 +1343,13 @@ the dictionary is filled serially afterward, so the build needs no dictionary
 lock and never retains a second dense copy of the complete table.
 
 Cache compatibility requires exact agreement of the format version, grid,
-orders, and modes.  The decay-list SHA is provenance rather than a hard
-invalidation boundary.  On a hash mismatch, matrices whose mass/width keys
-still match are retained, missing keys are built, and \texttt{prune!} can
-remove orphan keys.  A branching-ratio-only change reuses every matrix.
+orders, modes, width cut, and width window.  The two width settings are
+concrete table fields because they determine enrollment and matrix values;
+metadata contains provenance only.  The decay-list SHA is provenance rather
+than a hard invalidation boundary.  On a hash mismatch, matrices whose
+mass/width keys still match are retained, missing keys are built, and
+\texttt{prune!} can remove orphan keys.  A branching-ratio-only change reuses
+every matrix.
 This is intentionally a lenient, incremental cache policy.  In the current
 code, a lenient update does not refresh the stored SHA/path/raw-file metadata,
 and \texttt{prune!} changes only the in-memory table until the caller

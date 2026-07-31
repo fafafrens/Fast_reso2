@@ -313,6 +313,7 @@ using .CascadeTables
 
 # RowBandMatrix keeps one contiguous source-column range per output row.
 # Offsets delimit each row in the flat payload and make scalar access O(1).
+# Packed matrices are read-only; generic array operations allocate dense output.
 let
     dense = Float32[
         0 1 0 2 0
@@ -346,60 +347,37 @@ let
     @assert Matrix(packed) == dense
     @assert Matrix(copy(packed)) == dense
 
-    similar_packed = similar(packed)
-    @assert typeof(similar_packed) == typeof(packed)
-    @assert size(similar_packed) == size(packed)
-    @assert similar_packed.column_starts == packed.column_starts
-    @assert similar_packed.value_offsets == packed.value_offsets
-    @assert similar_packed.column_starts !== packed.column_starts
-    @assert similar_packed.value_offsets !== packed.value_offsets
-    @assert length(similar_packed.values) == length(packed.values)
-    @assert similar_packed.values !== packed.values
-    copyto!(similar_packed, packed)
-    @assert Matrix(similar_packed) == dense
+    dense_similar = similar(packed)
+    @assert dense_similar isa Matrix{Float32}
+    @assert size(dense_similar) == size(packed)
+    copyto!(dense_similar, packed)
+    @assert dense_similar == dense
 
-    zero_packed = zero(packed)
-    @assert typeof(zero_packed) == typeof(packed)
-    @assert all(iszero, zero_packed)
+    zero_matrix = zero(packed)
+    @assert zero_matrix isa Matrix{Float32}
+    @assert size(zero_matrix) == size(packed)
+    @assert all(iszero, zero_matrix)
 
-    mapped_packed = map(value -> value + 1, packed)
-    @assert mapped_packed isa CascadeTables.RowBandMatrix
-    @assert Matrix(mapped_packed) == dense .+ 1
-
-    filled_packed = similar(packed)
-    fill!(filled_packed, 2)
-    @assert Matrix(filled_packed) == fill(Float32(2), size(packed))
-    fill!(filled_packed, 0)
-    @assert all(iszero, filled_packed)
+    mapped_matrix = map(value -> value + 1, packed)
+    @assert mapped_matrix isa Matrix{Float32}
+    @assert mapped_matrix == dense .+ 1
 
     similar_float64 = similar(packed, Float64)
-    @assert similar_float64 isa
-        CascadeTables.RowBandMatrix{Float64, UInt8, UInt16}
-    @assert similar_float64.column_starts == packed.column_starts
-    @assert similar_float64.value_offsets == packed.value_offsets
-    @assert length(similar_float64.values) == length(packed.values)
+    @assert similar_float64 isa Matrix{Float64}
+    @assert size(similar_float64) == size(packed)
 
     resized_similar = similar(packed, Float64, (3, 7))
-    @assert resized_similar isa
-        CascadeTables.RowBandMatrix{Float64, UInt8, UInt16}
+    @assert resized_similar isa Matrix{Float64}
     @assert size(resized_similar) == (3, 7)
-    @assert resized_similar.column_starts == fill(UInt8(1), 3)
-    @assert resized_similar.value_offsets == fill(UInt16(1), 4)
-    @assert isempty(resized_similar.values)
-    fill!(resized_similar, 3)
-    @assert Matrix(resized_similar) == fill(3.0, 3, 7)
 
-    expanded = copy(packed)
-    expanded[3, 5] = 7
-    expanded[2, 5] = 8
-    expanded[4, 1] = 9
-    expanded[1, 1] = -0.0
-    expected_expanded = copy(dense)
-    expected_expanded[3, 5] = 7
-    expected_expanded[2, 5] = 8
-    expected_expanded[4, 1] = 9
-    expected_expanded[1, 1] = -0.0
-    @assert isequal(Matrix(expanded), expected_expanded)
+    mutation_threw = false
+    try
+        packed[3, 5] = 7
+    catch
+        mutation_threw = true
+    end
+    @assert mutation_threw
+    @assert Matrix(packed) == dense
 
     big_packed = CascadeTables.RowBandMatrix(
         BigInt[
@@ -407,10 +385,7 @@ let
             2 0 0
         ]
     )
-    big_filled = similar(big_packed)
-    fill!(big_filled, BigInt(3))
-    @assert Matrix(big_filled) == fill(BigInt(3), 2, 3)
-    @assert Matrix(map(value -> value + 1, big_packed)) ==
+    @assert map(value -> value + 1, big_packed) ==
         Matrix(big_packed) .+ 1
 
     packed32 = CascadeTables.RowBandMatrix(dense, UInt32)
@@ -572,6 +547,10 @@ tab7 = CascadeTable(dl7; grid = g7, orders = ord7, modes = [0, 2], cache = tabfi
 @assert tab7.grid === g7 && tab7.grid isa AbstractRange{Float64}
 @assert tab7.modes === (0, 2)
 @assert tab7.orders == (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma = 16)
+@assert tab7.width_cut == 1.0e-3
+@assert tab7.width_window == 4.0
+@assert !haskey(tab7.meta, :width_cut)
+@assert !haskey(tab7.meta, :width_window)
 table_matrix_type7 = typeof(first(first(values(tab7.W))))
 @assert table_matrix_type7 ==
     CascadeTables.RowBandMatrix{Float32, UInt8, UInt16}
@@ -653,11 +632,13 @@ tab7native = loadtables(tabfile)
 @assert typeof(tab7native.grid) === typeof(tab7.grid)
 @assert typeof(tab7native.W) === typeof(tab7.W)
 @assert tab7native.modes === (0, 2)
+@assert tab7native.width_cut == tab7.width_cut
+@assert tab7native.width_window == tab7.width_window
 @assert tab7native.grid == tab7.grid && tab7native.W == tab7.W
 
-# Vector-backed format-8 caches are rejected from their prefix, before their
-# potentially multi-GiB payload is deserialized. Packed metadata is revalidated
-# after deserialization for the current format.
+# Older caches are rejected from their prefix, before their potentially
+# multi-GiB payload is deserialized. Packed metadata is revalidated after
+# deserialization for the current format.
 legacy_tabfile = tempname()
 legacy_W7 = Dict{ChannelKey, Vector{table_matrix_type7}}(
     key => collect(matrices) for (key, matrices) in tab7.W
@@ -678,6 +659,30 @@ open(legacy_tabfile, "w") do io
 end
 @assert loadtables(legacy_tabfile) === nothing
 
+legacy_tuple_tabfile = tempname()
+legacy_width_metadata = merge(
+    copy(tab7.meta),
+    Dict{Symbol, Any}(
+        :width_cut => tab7.width_cut,
+        :width_window => tab7.width_window,
+    ),
+)
+open(legacy_tuple_tabfile, "w") do io
+    write(io, CascadeTables.CACHE_MAGIC)
+    write(io, UInt8(9))
+    serialize(
+        io,
+        (
+            tab7.grid,
+            tab7.orders,
+            tab7.modes,
+            legacy_width_metadata,
+            tab7.W,
+        ),
+    )
+end
+@assert loadtables(legacy_tuple_tabfile) === nothing
+
 invalid_mode_tabfile = tempname()
 open(invalid_mode_tabfile, "w") do io
     write(io, CascadeTables.CACHE_MAGIC)
@@ -688,29 +693,14 @@ open(invalid_mode_tabfile, "w") do io
             tab7.grid,
             tab7.orders,
             (big(typemax(Int)) + 1,),
+            tab7.width_cut,
+            tab7.width_window,
             tab7.meta,
             tab7.W,
         ),
     )
 end
 @assert loadtables(invalid_mode_tabfile) === nothing
-
-legacy_width_metadata = copy(tab7.meta)
-delete!(legacy_width_metadata, :width_cut)
-delete!(legacy_width_metadata, :width_window)
-legacy_width_table = CascadeTable(
-    tab7.grid,
-    tab7.orders,
-    tab7.modes,
-    legacy_width_metadata,
-    copy(tab7.W),
-)
-legacy_width_tabfile = tempname()
-savetables(legacy_width_table, legacy_width_tabfile)
-loaded_legacy_width = loadtables(legacy_width_tabfile)
-@assert loaded_legacy_width !== nothing
-@assert CascadeTables._table_width_cut(loaded_legacy_width) == 1.0e-3
-@assert CascadeTables._table_width_window(loaded_legacy_width) == 4.0
 
 invalid_W7 = typeof(tab7.W)(
     key => copy.(matrices) for (key, matrices) in tab7.W
@@ -721,6 +711,8 @@ invalid_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     tab7.modes,
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     invalid_W7,
 )
@@ -730,8 +722,8 @@ savetables(invalid_table7, invalid_tabfile)
 rm.(
     (
         legacy_tabfile,
+        legacy_tuple_tabfile,
         invalid_mode_tabfile,
-        legacy_width_tabfile,
         invalid_tabfile,
     );
     force = true,
@@ -828,13 +820,13 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
         width_cut = Inf,
         cache = width_cache,
     )
-    @assert CascadeTables._table_width_cut(tableb) == 1.0e-3
-    @assert CascadeTables._table_width_cut(tablesharp) == Inf
-    @assert CascadeTables._table_width_window(tableb) == 4.0
-    @assert CascadeTables._table_width_window(tablesharp) == 4.0
+    @assert tableb.width_cut == 1.0e-3
+    @assert tablesharp.width_cut == Inf
+    @assert tableb.width_window == 4.0
+    @assert tablesharp.width_window == 4.0
     @assert any(key -> key.Γ > 0, keys(tableb.W))
     @assert all(key -> key.Γ == 0, keys(tablesharp.W))
-    @assert CascadeTables._table_width_cut(loadtables(width_cache)) == Inf
+    @assert loadtables(width_cache).width_cut == Inf
 
     # The integration window is a table option too. Changing it on the same
     # cache path rebuilds the broad-parent matrices.
@@ -846,8 +838,8 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
         width_window = 2.0,
         cache = width_cache,
     )
-    @assert CascadeTables._table_width_window(tablewindow) == 2.0
-    @assert CascadeTables._table_width_window(loadtables(width_cache)) == 2.0
+    @assert tablewindow.width_window == 2.0
+    @assert loadtables(width_cache).width_window == 2.0
     window_key = only(keys(tablewindow.W))
     @assert tablewindow.W[window_key][1].values !=
         tableb.W[window_key][1].values
@@ -911,9 +903,9 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
         modes = [0],
         cache = width_cache,
     )
-    @assert CascadeTables._table_width_cut(tableb_again) == 1.0e-3
+    @assert tableb_again.width_cut == 1.0e-3
     @assert all(key -> key.Γ == 0.12, keys(tableb_again.W))
-    @assert CascadeTables._table_width_cut(loadtables(width_cache)) == 1.0e-3
+    @assert loadtables(width_cache).width_cut == 1.0e-3
 
     rm(width_cache; force = true)
 
@@ -972,7 +964,7 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
         width_window = 2.0,
         cache = nothing,
     )
-    @assert CascadeTables._table_width_window(short_window_tab) == 2.0
+    @assert short_window_tab.width_window == 2.0
     plan = CascadePlan(tab, dl)
     sharp_plan = CascadePlan(sharp_tab, dl)
     short_window_plan = CascadePlan(short_window_tab, dl)
@@ -1418,6 +1410,8 @@ snapshot_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     tab7.modes,
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     copy(tab7.W),
 )
@@ -1434,6 +1428,8 @@ reversed_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     reverse(tab7.modes),
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     reversed_W7,
 )
@@ -1458,6 +1454,8 @@ one_mode_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     (tab7.modes[1],),
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     one_mode_W7,
 )
@@ -1541,6 +1539,8 @@ missing_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     tab7.modes,
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     missing_W7,
 )
@@ -1568,6 +1568,8 @@ open(malformed_tabfile7, "w") do io
             tab7.grid,
             tab7.orders,
             tab7.modes,
+            tab7.width_cut,
+            tab7.width_window,
             tab7.meta,
             malformed_W7,
         ),
@@ -1592,6 +1594,8 @@ bad_shape_table7 = CascadeTable(
     tab7.grid,
     tab7.orders,
     tab7.modes,
+    tab7.width_cut,
+    tab7.width_window,
     copy(tab7.meta),
     bad_shape_W7,
 )
@@ -1723,6 +1727,8 @@ let
         grid,
         tab7.orders,
         (0,),
+        1.0e-3,
+        4.0,
         Dict{Symbol, Any}(),
         matrices,
     )
@@ -1895,7 +1901,7 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
         Wz = (fill(NaN, np, nq),)
         decaymatrices!(Wz, dcl, (0,), pT8, g)
         @assert all(iszero, Wz[1])
-        # shape is checked, not assumed — of the output and of the scratch
+        # Shape is checked, not assumed — of the output and of serial scratch.
         for bad in (
                 () -> decaymatrices!((fill(NaN, np, nq),), ρ8, (0, 2), pT8, g),
                 () -> decaymatrices!(
@@ -1904,10 +1910,12 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
                 ),
                 () -> decaymatrices!(
                     Wz, ρ8, (0,), pT8, g;             # buffers too short
+                    threaded = false,
                     scratch = rowscratch((0,), nq - 1)
                 ),
                 () -> decaymatrices!(
                     Wz, ρ8, (0,), pT8, g;             # wrong buffer count
+                    threaded = false,
                     scratch = rowscratch((0, 2), nq)
                 ),
             )
@@ -1919,6 +1927,21 @@ let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
             end
             @assert threw
         end
+
+        # Threaded assembly owns one scratch set per task. Caller scratch is
+        # intentionally ignored, so even a wrong shape cannot affect output.
+        threaded_output = (fill(NaN, np, nq),)
+        decaymatrices!(
+            threaded_output,
+            ρ8,
+            (0,),
+            pT8,
+            g;
+            threaded = true,
+            scratch = (),
+        )
+        @assert threaded_output[1] ==
+            decaymatrices(ρ8, [0], pT8, g; threaded = true)[1]
 
         # a caller-supplied scratch removes the last allocation: the row buffers.
         # Reused across calls (each row zeroes its buffer first), so the result must

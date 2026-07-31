@@ -42,7 +42,7 @@ export DecayList, ChannelKey, CascadeTable, CascadePlan, runcascade,
     parentstrangeness, strangeparent, charmparent, parentisospin
 
 # Increment when the serialized layout or generated matrix values change.
-const FORMAT = 9
+const FORMAT = 10
 const CACHE_MAGIC = "FastReso.CascadeTables\n"
 
 # ---------------------------------------------------------------------------
@@ -307,15 +307,11 @@ struct CascadeTable{
     grid::G
     orders::NamedTuple{(:nq, :nθ, :nµ, :nσ, :nma), Tuple{Int, Int, Int, Int, Int}}
     modes::NTuple{N, Int}
+    width_cut::Float64
+    width_window::Float64
     meta::Dict{Symbol, Any}
     W::Dict{ChannelKey, NTuple{N, M}}
 end
-
-_table_width_cut(table::CascadeTable) =
-    get(table.meta, :width_cut, 1.0e-3)::Float64
-
-_table_width_window(table::CascadeTable) =
-    get(table.meta, :width_window, 4.0)::Float64
 
 function _tablematrixtype(grid_length::Int)
     column_type = _rowbandcolumntype(grid_length)
@@ -564,13 +560,11 @@ function CascadePlan(
     # A deterministic traversal makes group order and construction failures
     # independent of Dict insertion order.
     compile_order = sort!(collect(keys(decay_list.byparent)))
-    width_cut = _table_width_cut(table)
-    width_window = _table_width_window(table)
     eachchannelkey(
         decay_list;
         order = compile_order,
-        width_cut = width_cut,
-        width_window = width_window,
+        width_cut = table.width_cut,
+        width_window = table.width_window,
     ) do parent_id, channel, daughter_id, key
         builders = get!(group_builders, parent_id) do
             _CascadeGroupBuilder{N, M}[]
@@ -606,7 +600,7 @@ function CascadePlan(
 
         # Only daughters that also decay constrain the feeder-before-fed
         # parent order. The Set removes duplicate edges from repeated slots.
-        if daughter_id != parent_id && haskey(decay_list.byparent, daughter_id)
+        if haskey(decay_list.byparent, daughter_id)
             push!(dependencies, (parent_id, daughter_id))
         end
     end
@@ -708,7 +702,6 @@ function buildkeys!(
     modes = table.modes
     rules = Rules(; table.orders...)
     grid_length = length(table.grid)
-    width_window = _table_width_window(table)
 
     # Tasks can migrate between threads, so scratch storage belongs to each task.
     scratch_for_task = OncePerTask{NTuple{N, Vector{Float64}}}(
@@ -718,7 +711,8 @@ function buildkeys!(
         Vector{NTuple{N, M}}(undef, length(keys_to_build))
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
-        decay = decayfor(keys_to_build[key_index], rules, width_window)
+        decay =
+            decayfor(keys_to_build[key_index], rules, table.width_window)
         dense_matrices =
             map(_mode -> zeros(Float32, grid_length, grid_length), modes)
         # The outer key loop already uses the thread pool.
@@ -745,8 +739,8 @@ end
 function ensure!(table::CascadeTable, decay_list::DecayList)
     required_keys, _ = neededkeys(
         decay_list;
-        width_cut = _table_width_cut(table),
-        width_window = _table_width_window(table),
+        width_cut = table.width_cut,
+        width_window = table.width_window,
     )
     missing_keys = [key for key in required_keys if !haskey(table.W, key)]
     if isempty(missing_keys)
@@ -759,8 +753,8 @@ end
 function prune!(table::CascadeTable, decay_list::DecayList)
     required_keys, _ = neededkeys(
         decay_list;
-        width_cut = _table_width_cut(table),
-        width_window = _table_width_window(table),
+        width_cut = table.width_cut,
+        width_window = table.width_window,
     )
     orphaned_keys = [key for key in keys(table.W) if key ∉ required_keys]
     for key in orphaned_keys
@@ -769,15 +763,13 @@ function prune!(table::CascadeTable, decay_list::DecayList)
     return length(orphaned_keys)
 end
 
-function _table_metadata(decay_list::DecayList, width_cut, width_window)
+function _table_metadata(decay_list::DecayList)
     source_bytes = isfile(decay_list.path) ? read(decay_list.path) : UInt8[]
     return Dict{Symbol, Any}(
         :sha => decay_list.sha,
         :path => decay_list.path,
         :file => source_bytes,
         :created => string(now()),
-        :width_cut => width_cut,
-        :width_window => width_window,
     )
 end
 
@@ -788,7 +780,8 @@ end
                  cache = nothing, rebuild = false)
 
 Load the tables from `cache` if present and compatible (same format, grid,
-orders, modes), else build and save. `orders` may be any subset of
+orders, modes, `width_cut`, and `width_window`), else build and save. `orders`
+may be any subset of
 `(nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)` — omitted fields are filled
 with those defaults. A decay-list hash mismatch keeps the tables (lenient
 policy — keys self-invalidate through their masses) but warns and builds any
@@ -801,8 +794,9 @@ Parents with `width > width_cut` use the finite-width `BroadParent` path.
 Set `width_cut = Inf` to make every parent sharp at its pole mass, or `0.0` to
 use every positive width. Broad-parent mass integration is truncated to
 `max(mass - width_window * width, 0.05 GeV)` through
-`mass + width_window * width`. Both options are `Float64` cache settings;
-their physical ranges are caller responsibility.
+`mass + width_window * width`. Both options are concrete `Float64` table
+fields and cache-compatibility settings; their physical ranges are caller
+responsibility.
 
 `grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
 uses the uniform-grid interpolation kernel without validation scans.
@@ -827,8 +821,8 @@ function CascadeTable(
             cached_table.grid == grid &&
             cached_table.orders == resolved_orders &&
             cached_table.modes == selected_modes &&
-            _table_width_cut(cached_table) == width_cut &&
-            _table_width_window(cached_table) == width_window
+            cached_table.width_cut == width_cut &&
+            cached_table.width_window == width_window
 
         if cache_matches
             if !isequal(
@@ -854,11 +848,9 @@ function CascadeTable(
         grid,
         resolved_orders,
         selected_modes,
-        _table_metadata(
-            decay_list,
-            width_cut,
-            width_window,
-        ),
+        width_cut,
+        width_window,
+        _table_metadata(decay_list),
         Dict{
             ChannelKey,
             NTuple{length(selected_modes), matrix_type},
@@ -898,6 +890,8 @@ function savetables(table::CascadeTable, path::AbstractString)
                 table.grid,
                 table.orders,
                 table.modes,
+                table.width_cut,
+                table.width_window,
                 table.meta,
                 table.W,
             ),
@@ -906,8 +900,6 @@ function savetables(table::CascadeTable, path::AbstractString)
 end
 
 function loadtables(path::AbstractString)
-    isfile(path) || return nothing
-
     stored_data = try
         open(path, "r") do io
             magic = read(io, ncodeunits(CACHE_MAGIC))
@@ -918,15 +910,20 @@ function loadtables(path::AbstractString)
     catch
         return nothing
     end
-    stored_data isa Tuple && length(stored_data) == 5 || return nothing
-    grid, orders, modes, metadata, matrices = stored_data
+    stored_data isa Tuple && length(stored_data) == 7 || return nothing
+    grid, orders, modes, width_cut, width_window, metadata, matrices =
+        stored_data
     grid isa AbstractRange{Float64} || return nothing
     modes isa Tuple{Vararg{Int}} || return nothing
+    width_cut isa Float64 || return nothing
+    width_window isa Float64 || return nothing
     metadata isa Dict{Symbol, Any} || return nothing
     return _restoretable(
         grid,
         orders,
         modes,
+        width_cut,
+        width_window,
         metadata,
         matrices,
     )
@@ -936,6 +933,8 @@ function _restoretable(
         grid::G,
         orders,
         modes::NTuple{N, Int},
+        width_cut::Float64,
+        width_window::Float64,
         metadata,
         matrices::Dict{ChannelKey, V},
     ) where {G, N, V <: Tuple}
@@ -947,8 +946,6 @@ function _restoretable(
     V === NTuple{N, matrix_type} || return nothing
     expected_size = (length(grid), length(grid))
     try
-        get(metadata, :width_cut, 1.0e-3)::Float64
-        get(metadata, :width_window, 4.0)::Float64
         for mode_matrices in values(matrices)
             for matrix in mode_matrices
                 size(matrix) == expected_size || return nothing
@@ -964,6 +961,8 @@ function _restoretable(
             grid,
             orders,
             modes,
+            width_cut,
+            width_window,
             metadata,
             matrices,
         )
@@ -972,7 +971,15 @@ function _restoretable(
     end
 end
 
-_restoretable(_grid, _orders, _modes, _metadata, _matrices) = nothing
+_restoretable(
+    _grid,
+    _orders,
+    _modes,
+    _width_cut,
+    _width_window,
+    _metadata,
+    _matrices,
+) = nothing
 
 # ---------------------------------------------------------------------------
 # The cascade

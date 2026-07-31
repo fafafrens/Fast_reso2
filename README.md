@@ -117,7 +117,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 |------|------|
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
 | `CascadeTables.jl`  | Persistent per-channel packed matrices, filtering, feeder-first cascade, compiled flat plans |
-| `RowBandMatrix.jl`  | Offset-backed row-band `AbstractMatrix` storage |
+| `RowBandMatrix.jl`  | Read-only, offset-backed row-band `AbstractMatrix` storage |
 | `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
@@ -161,8 +161,8 @@ The `Wtables.jls` cache is regenerable and git-ignored. It serializes packed
 `Float32` row bands in fixed tuples aligned with `table.modes`; at the default
 grid their estimated matrix payload is 1.1012 GiB, versus 2.4481 GiB for dense
 storage. The previous ~7 s load and ~2 s sweep measurements describe the
-superseded dense cache. The fixed-tuple layout is cache format 9; older caches
-are ignored and rebuilt automatically.
+superseded dense cache. Fixed mode tuples and concrete width-setting fields use
+cache format 10; older caches are ignored and rebuilt automatically.
 
 `CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
 that input. This keeps the grid compact and selects the uniform interpolation
@@ -241,8 +241,10 @@ Parents wider than `width_cut` (GeV) use Breit–Wigner averaging. Its default i
 `1.0e-3`, `Inf` disables width averaging, and `0.0` uses every positive width.
 `width_window = 4.0` sets the finite integration range to at most
 `mass ± width_window * width` (the lower mass is floored at `0.05 GeV`).
-Both are `Float64` table keywords and cache settings; their physical ranges
-are caller responsibility, and there are no module-level width constants.
+Both are `Float64` table keywords, concrete fields available as
+`table.width_cut` and `table.width_window`, and cache settings. Their physical
+ranges are caller responsibility, and there are no module-level width
+constants.
 Disabling four-body channels or widths does not renormalize the retained
 branching fractions.
 

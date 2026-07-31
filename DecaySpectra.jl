@@ -650,10 +650,13 @@ function decaymatrices!(output_matrices, decay::MassAverage, modes::Tuple,
             "each output must be $daughter_count×$parent_count " *
             "(length(daughter_grid) × length(parent_grid))",
         ))
-    scratch === nothing ||
-        (length(scratch) == length(modes) &&
-         all(buffer -> length(buffer) == parent_count, scratch)) ||
-        throw(DimensionMismatch("scratch needs $(length(modes)) buffers of length $parent_count"))
+    if !threaded && scratch !== nothing
+        length(scratch) == length(modes) &&
+            all(buffer -> length(buffer) == parent_count, scratch) ||
+            throw(DimensionMismatch(
+                "scratch needs $(length(modes)) buffers of length $parent_count",
+            ))
+    end
     integer_modes = map(Int, modes)
     daughter_count == 0 && return output_matrices
 

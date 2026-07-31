@@ -97,14 +97,6 @@ function _cascade_axpy!(
         source::Vector{Float64},
         destination::Vector{Float64},
     )
-    if length(source) != length(destination)
-        throw(
-            DimensionMismatch(
-                "source has length $(length(source)) but destination has " *
-                    "length $(length(destination))",
-            )
-        )
-    end
     iszero(α) && return destination
 
     @inbounds @simd for index in eachindex(source, destination)
