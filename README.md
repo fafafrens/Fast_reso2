@@ -121,6 +121,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `RowBandMatrix.jl`  | Read-only, offset-backed row-band `AbstractMatrix` storage |
 | `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
+| `benchmarks/fastreso_crosscheck/` | Cross-check against upstream [FastReso](https://github.com/amazeliauskas/FastReso) — see its own README |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | Particle / decay-list parsing |
 | `runtests.jl`       | Test suite (see below) |
@@ -150,8 +151,15 @@ julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-d
 julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
 CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
   julia --project -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
+benchmarks/fastreso_crosscheck/run_small.sh        # cross-check against upstream FastReso
 python -m unittest discover -s tests -p 'test_*.py' # offline generator/data invariants
 ```
+
+The FastReso cross-check needs upstream built first, and adds two Julia
+notebooks that compare against its **native** `*_Fj.out` output with no custom
+C++ in the path — one on the small fixtures, one on a trimmed
+`decays_QM2016Plus_massorder.dat`. See
+[`benchmarks/fastreso_crosscheck/README.md`](benchmarks/fastreso_crosscheck/README.md).
 
 `-t auto` (threads) matters for the table build, which parallelizes over
 channels and fuses all Fourier modes into a single quadrature sweep. It is
