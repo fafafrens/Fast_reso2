@@ -61,7 +61,7 @@ W = decaymatrices(ρ, [0, 2], grid, grid)          # one matrix per Fourier mode
 ## 2. The whole cascade
 include("CascadeTables.jl"); using .CascadeTables
 
-dl = DecayList("decays_QM2016Plus_massorder.dat")
+dl = readazyhydro("decays_QM2016Plus_massorder.dat")
 T  = 0.155
 primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
@@ -123,7 +123,8 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
 | `benchmarks/fastreso_crosscheck/` | Cross-check against upstream [FastReso](https://github.com/amazeliauskas/FastReso) — see its own README |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
-| `ParticleList.jl`   | Particle / decay-list parsing |
+| `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and shared reader mechanics |
+| `readers/`          | Isolated fixed-format adapters for GENERIC, AZYHYDRO, and THERMINATOR inputs |
 | `runtests.jl`       | Test suite (see below) |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
@@ -173,16 +174,117 @@ storage. The previous ~7 s load and ~2 s sweep measurements describe the
 superseded dense cache. Fixed mode tuples and concrete width-setting fields use
 cache format 10; older caches are ignored and rebuilt automatically.
 
-Decay-list supplements can refer to particles from a base list and be composed
-without writing a temporary combined file. Repeated particle records and
-parent channel blocks are deduplicated when their stored definitions agree;
-conflicting definitions are rejected rather than overwritten or concatenated:
+Particle metadata and decay topology are independent input layers:
+
+- `ParticleCatalog` owns `ParticleInfo` records, canonical names, aliases, and
+  ID/name lookup.
+- `DecayNetwork` owns parent-to-channel rows and may refer to particle IDs from
+  a catalog loaded later.
+- `DecayList` resolves the two. It is the strict, runnable model accepted by
+  filtering, tables, plans, validation, and cascade execution.
+
+Three fixed formats replace configurable schemas. Their readers do not guess:
+
+| reader | particle identity | file layout |
+|--------|-------------------|-------------|
+| `readgenericparticles(particles)` / `readgenericdecays(decays)` | integer ID | two fixed, separate files |
+| `readazyhydro(paths...)` | integer ID | one or more combined AZYHYDRO files |
+| `readtherminator(particles, decays)` | exact name | THERMINATOR particle and decay files |
+
+The generic convention is the default for separate files:
+
+```text
+# particles
+id name mass width degeneracy B S C Bot I Q
+
+# decays
+parent n_daughters branching_fraction daughters...
+```
+
+The daughter tail must contain exactly `n_daughters` IDs. The two files can be
+loaded independently, then resolved together:
 
 ```julia
-base = DecayList("decays_QM2016Plus_massorder.dat")
-heavy = DecayList("decays_charm_bottom.dat")
-combined = merge(base, heavy)
+catalog = readgenericparticles("particles.dat")
+network = readgenericdecays("channels.dat")
+dl = DecayList(catalog, network)
 ```
+
+The combined reader and keyword constructor are equivalent conveniences:
+
+```julia
+dl = readgeneric("particles.dat", "channels.dat")
+dl = DecayList(particles = "particles.dat", decays = "channels.dat")
+```
+
+AZYHYDRO stores a 12-column particle header followed by its declared number of
+eight-column, zero-padded channel rows. Supplements may refer to particles from
+the base source, so pass every source in one call and resolve only after they
+have been merged:
+
+```julia
+dl = readazyhydro(
+    "decays_QM2016Plus_massorder.dat",
+    "decays_charm_bottom.dat",
+)
+```
+
+`DecayList(path...)` remains a compatibility shorthand for `readazyhydro`.
+The heavy supplement is not runnable alone because many of its daughters are
+defined by the base catalog.
+
+THERMINATOR uses the fixed particle layout
+
+```text
+name mass width spin I I3 Nq Ns Naq Nas Nc Nac MC
+```
+
+and name-based two-/three-body channel rows. The reader derives degeneracy,
+`B`, `S`, `C`, and electric charge from those fields. Unique nonzero MC codes
+remain particle IDs. When an MC code is duplicated, every colliding particle
+receives a deterministic internal ID; `particleids(dl, "MC:3128")` retrieves
+all particles carrying the original code. Unambiguous MC-code signs are
+preserved, so `isantiparticle` reflects the source convention and cannot repair
+sign mistakes in an input table. If a decay row requests
+Clebsch–Gordan rescaling, provide the coefficient table:
+
+```julia
+dl = readtherminator(
+    "particles.data",
+    "decays.data";
+    cgc_path = "CGC.dat",
+)
+```
+
+The coefficient table is authoritative: a requested coefficient absent from
+`CGC.dat` contributes zero, matching FastReso's THERMINATOR implementation.
+THERMINATOR branching weights depend on particle metadata during CG rescaling;
+the resolved `DecayList.path` and `.sha` include every particle, decay, and CGC
+source. The checked-in `particles_charm.data` and `decays_charm.data` are
+partial legacy snippets, not a matching standalone pair; use a complete
+THERMINATOR catalog/network pair.
+
+Each reader constructs the relevant `ParticleCatalog` or `DecayNetwork` layer;
+the combined readers then apply the same strict resolution. Raw programmatic
+data can still use `DecayList(catalog, network)`. Resolution accepts only a sole
+`parent → parent` terminal row or runnable 2-/3-/4-body channels; unsupported
+multiplicities and unresolved particle references fail before table
+construction. Branching fractions must be finite but are neither clamped nor
+renormalized; `validate(dl)` reports values outside the physical `[0, 1]`
+range and incomplete parent sums.
+
+`ParticleInfo.name` is the canonical display name. Catalog merges retain a
+different spelling for the same ID as an alias. `particle(catalog, id)` and
+`particle(catalog, name)` retrieve a unique particle; `particleids(catalog,
+name)` returns every matching ID when a label is ambiguous. These lookups also
+accept a resolved list directly, for example `particle(dl, 211)`. Name-based
+channel filters match canonical `ParticleInfo.name` values; resolve an alias
+explicitly with `fromid(particleids(dl, alias)...)` or
+`toid(particleids(dl, alias)...)`. Existing
+`dl.parts` and `dl.byparent` access remains available as a compatibility view
+of `dl.catalog.byid` and `dl.network.byparent`. Catalog and network dictionaries
+are shared as read-only model data; construct or merge a new value instead of
+mutating them after resolution.
 
 `CascadeTable(...; grid=...)` requires an `AbstractRange{Float64}` and trusts
 that input. This keeps the grid compact and selects the uniform interpolation

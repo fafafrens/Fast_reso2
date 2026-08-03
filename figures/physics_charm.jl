@@ -15,11 +15,11 @@ const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
-# Merge the main list (light daughters) with the charm+bottom supplement.
-# Supplement channels may refer directly to particle IDs from the base list.
-dl = merge(
-    DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat")),
-    DecayList(joinpath(ROOT, "decays_charm_bottom.dat")),
+# Resolve the main catalog and charm+bottom supplement together. Supplement
+# channels may refer directly to particle IDs supplied by the base source.
+dl = readazyhydro(
+    joinpath(ROOT, "decays_QM2016Plus_massorder.dat"),
+    joinpath(ROOT, "decays_charm_bottom.dat"),
 )
 dlc = filter(charmparent(), dl)                   # only charm-parent decays matter
 

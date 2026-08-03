@@ -1,21 +1,19 @@
 """
     ParticleList
 
-Reader for the hydro-code decay list format (`decays_QM2016Plus_massorder.dat`):
-per species a 12-field header
-
-    id  name  mass  width  degeneracy  B  S  C  Bot  I  Q  n_channels
-
-followed by `n_channels` 8-field lines
-
-    id  n_daughters  BR  d1 d2 d3 d4 d5      (unused slots are 0)
-
-Stable particles carry one self-channel (n_daughters = 1, daughter = id).
+Particle metadata and unresolved decay topology. Shared input mechanics live
+here; the generic, AZYHYDRO, and THERMINATOR adapters are included from
+`readers/`.
 """
 module ParticleList
 
-export ParticleInfo, DecayChannel, read_decaylist,
-       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange
+using SHA
+
+export ParticleInfo, DecayChannel,
+       ParticleCatalog, DecayNetwork,
+       read_decaylist,
+       particle, particleids,
+       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, isbottom
 
 struct ParticleInfo
     id::Int
@@ -25,14 +23,23 @@ struct ParticleInfo
     degeneracy::Float64
     baryon::Int
     charge::Int
-    strangeness::Int      # S, file field 7
-    charm::Int            # C, file field 8
-    twiceisospin::Int     # twice I, derived from file field 10
+    strangeness::Int      # S
+    charm::Int            # C
+    bottomness::Int       # bottom flavour quantum number
+    twiceisospin::Int     # 2I
 end
 
-# Constructor with zero strangeness, charm, and isospin.
+# Compatibility constructors used by programmatic decay lists.
 ParticleInfo(id, name, mass, width, degeneracy, baryon, charge) =
-    ParticleInfo(id, name, mass, width, degeneracy, baryon, charge, 0, 0, 0)
+    ParticleInfo(id, name, mass, width, degeneracy, baryon, charge, 0, 0, 0, 0)
+
+ParticleInfo(
+        id, name, mass, width, degeneracy, baryon, charge,
+        strangeness, charm, twiceisospin,
+    ) = ParticleInfo(
+        id, name, mass, width, degeneracy, baryon, charge,
+        strangeness, charm, 0, twiceisospin,
+    )
 
 "Physical isospin I (half-integer), recovered from the stored 2I."
 isospin(particle::ParticleInfo) = particle.twiceisospin / 2
@@ -46,6 +53,8 @@ ismeson(particle::ParticleInfo) = particle.baryon == 0
 isantiparticle(particle::ParticleInfo) = particle.id < 0
 "True for a strange hadron (nonzero strangeness)."
 isstrange(particle::ParticleInfo) = particle.strangeness != 0
+"True for a bottom hadron (nonzero bottomness)."
+isbottom(particle::ParticleInfo) = particle.bottomness != 0
 
 struct DecayChannel
     parent::Int
@@ -53,62 +62,410 @@ struct DecayChannel
     daughters::Vector{Int}
 end
 
+# ---------------------------------------------------------------------------
+# Catalog and unresolved topology
+# ---------------------------------------------------------------------------
+
+struct _ValidatedInputToken end
+const _VALIDATED_INPUT = _ValidatedInputToken()
+
 """
-    read_decaylist(path) -> (particles, channels_by_parent)
+    ParticleCatalog(particles; aliases = Dict(), path = "", sha = "")
 
-`particles :: Dict{Int,ParticleInfo}` keyed by id, and
-`channels_by_parent :: Dict{Int,Vector{DecayChannel}}` groups channels by
-parent id (absent key = no channel rows for that id).
+Particle metadata keyed by integer particle ID. `ParticleInfo.name` is the
+canonical display name; `aliases` may map an ID to additional exact labels.
+Names are a multimap because distinct particle IDs may legitimately share a
+label. Use [`particleids`](@ref) for name lookup when ambiguity is possible.
 """
-function read_decaylist(path::AbstractString)
-    particles = Dict{Int,ParticleInfo}()
-    channels_by_parent = Dict{Int,Vector{DecayChannel}}()
+struct ParticleCatalog
+    byid::Dict{Int, ParticleInfo}
+    byname::Dict{String, Vector{Int}}
+    path::String
+    sha::String
 
-    for line in eachline(path)
-        fields = split(line)
-        (isempty(fields) || startswith(fields[1], "#")) && continue
+    function ParticleCatalog(
+            byid::Dict{Int, ParticleInfo},
+            byname::Dict{String, Vector{Int}},
+            path::String,
+            sha::String,
+            ::_ValidatedInputToken,
+        )
+        return new(byid, byname, path, sha)
+    end
+end
 
-        # Field count identifies the row type because names contain no whitespace.
-        if length(fields) == 12
-            particle_id = parse(Int, fields[1])
-            name = String(fields[2])
-            mass = parse(Float64, fields[3])
-            width = parse(Float64, fields[4])
-            degeneracy = parse(Float64, fields[5])
-            baryon = round(Int, parse(Float64, fields[6]))
-            charge = round(Int, parse(Float64, fields[11]))
-            strangeness = round(Int, parse(Float64, fields[7]))
-            charm = round(Int, parse(Float64, fields[8]))
-            twice_isospin = round(Int, 2 * parse(Float64, fields[10]))
-
-            # Bottomness (field 9) and the declared channel count (12) are not stored.
-            particles[particle_id] = ParticleInfo(
-                particle_id, name, mass, width, degeneracy, baryon, charge,
-                strangeness, charm, twice_isospin,
+function _nameindex(
+        particles::Dict{Int, ParticleInfo},
+        aliases,
+    )
+    byname = Dict{String, Vector{Int}}()
+    for particle_id in sort!(collect(keys(particles)))
+        particle = particles[particle_id]
+        particle.id == particle_id || throw(ArgumentError(
+            "particle dictionary key $particle_id disagrees with " *
+                "ParticleInfo.id=$(particle.id)",
+        ))
+        isempty(particle.name) || push!(
+            get!(byname, particle.name, Int[]), particle_id,
+        )
+    end
+    for (particle_id, labels) in aliases
+        haskey(particles, particle_id) || throw(ArgumentError(
+            "alias supplied for unknown particle ID $particle_id",
+        ))
+        for label in labels
+            isempty(label) || push!(
+                get!(byname, String(label), Int[]), particle_id,
             )
-        elseif length(fields) == 8
-            parent_id = parse(Int, fields[1])
-            daughter_count = parse(Int, fields[2])
-            1 ≤ daughter_count ≤ 5 ||
-                error("channel n_daughters=$daughter_count out of range 1–5: $line")
-
-            branching_ratio = parse(Float64, fields[3])
-            daughter_ids = [parse(Int, fields[3 + index])
-                            for index in 1:daughter_count]
-
-            # Reject nonzero padding so under-declared daughters are not dropped.
-            all(index -> parse(Int, fields[3 + index]) == 0,
-                daughter_count + 1:5) ||
-                error("channel declares $daughter_count daughters but has nonzero padding: $line")
-
-            channel = DecayChannel(parent_id, branching_ratio, daughter_ids)
-            parent_channels = get!(channels_by_parent, parent_id, DecayChannel[])
-            push!(parent_channels, channel)
-        else
-            error("unrecognized line ($(length(fields)) fields): $line")
         end
     end
-    return particles, channels_by_parent
+    for ids in values(byname)
+        sort!(unique!(ids))
+    end
+    return byname
+end
+
+function ParticleCatalog(
+        particles::Dict{Int, ParticleInfo};
+        aliases = Dict{Int, Vector{String}}(),
+        path::AbstractString = "",
+        sha::AbstractString = "",
+    )
+    return ParticleCatalog(
+        particles,
+        _nameindex(particles, aliases),
+        String(path),
+        String(sha),
+        _VALIDATED_INPUT,
+    )
+end
+
+"Return the particle with integer `id`."
+particle(catalog::ParticleCatalog, id::Integer) = catalog.byid[Int(id)]
+
+"Return all particle IDs carrying the exact canonical name or alias `label`."
+function particleids(catalog::ParticleCatalog, label::AbstractString)
+    ids = get(catalog.byname, String(label), nothing)
+    return ids === nothing ? Int[] : copy(ids)
+end
+
+"Return the unique particle carrying `label`, rejecting unknown or ambiguous names."
+function particle(catalog::ParticleCatalog, label::AbstractString)
+    ids = get(catalog.byname, String(label), nothing)
+    ids === nothing && throw(ArgumentError("unknown particle name: $label"))
+    length(ids) == 1 || throw(ArgumentError(
+        "particle name '$label' is ambiguous; matching IDs: $(join(ids, ", "))",
+    ))
+    return catalog.byid[only(ids)]
+end
+
+function _differentparticlefields(left::ParticleInfo, right::ParticleInfo)
+    return [
+        field for field in fieldnames(ParticleInfo)
+            if field != :name &&
+                !isequal(getfield(left, field), getfield(right, field))
+    ]
+end
+
+function _replaceparticlename(particle::ParticleInfo, name::String)
+    return ParticleInfo(
+        particle.id,
+        name,
+        particle.mass,
+        particle.width,
+        particle.degeneracy,
+        particle.baryon,
+        particle.charge,
+        particle.strangeness,
+        particle.charm,
+        particle.bottomness,
+        particle.twiceisospin,
+    )
+end
+
+function _joinprovenance(values)
+    selected = String[value for value in values if !isempty(value)]
+    return join(selected, " + ")
+end
+
+function _joinhashes(values)
+    selected = String[value for value in values if !isempty(value)]
+    return join(selected, "+")
+end
+
+"Merge catalogs by particle ID, retaining alternate names as aliases."
+function Base.merge(
+        first::ParticleCatalog,
+        remaining::ParticleCatalog...,
+    )
+    catalogs = (first, remaining...)
+    particles = Dict{Int, ParticleInfo}()
+    aliases = Dict{Int, Vector{String}}()
+
+    for catalog in catalogs
+        for (label, particle_ids) in catalog.byname
+            for particle_id in particle_ids
+                haskey(catalog.byid, particle_id) || throw(ArgumentError(
+                    "name index '$label' refers to unknown particle ID " *
+                        "$particle_id",
+                ))
+                push!(get!(aliases, particle_id, String[]), label)
+            end
+        end
+        for particle_id in sort!(collect(keys(catalog.byid)))
+            incoming = catalog.byid[particle_id]
+
+            if haskey(particles, particle_id)
+                current = particles[particle_id]
+                fields = _differentparticlefields(current, incoming)
+                isempty(fields) || throw(ArgumentError(
+                    "conflicting particle definition for ID $particle_id; " *
+                        "different fields: $(join(fields, ", "))",
+                ))
+                if isempty(current.name) && !isempty(incoming.name)
+                    particles[particle_id] =
+                        _replaceparticlename(current, incoming.name)
+                end
+            else
+                particles[particle_id] = incoming
+            end
+        end
+    end
+
+    return ParticleCatalog(
+        particles;
+        aliases,
+        path = _joinprovenance(catalog.path for catalog in catalogs),
+        sha = _joinhashes(catalog.sha for catalog in catalogs),
+    )
+end
+
+_isselfchannel(channel::DecayChannel, parent_id::Integer = channel.parent) =
+    length(channel.daughters) == 1 && only(channel.daughters) == parent_id
+
+function _channelsignature(channel::DecayChannel)
+    return (channel.parent, channel.br, Tuple(sort(channel.daughters)))
+end
+
+function _samechannels(left, right)
+    left === right && return true
+    length(left) == length(right) || return false
+    left_signatures = sort!([_channelsignature(channel) for channel in left])
+    right_signatures = sort!([_channelsignature(channel) for channel in right])
+    return isequal(left_signatures, right_signatures)
+end
+
+"""
+    DecayNetwork(channels_by_parent; path = "", sha = "")
+
+Decay topology keyed by parent ID. A network deliberately does not own
+particle metadata, so daughter IDs may be resolved only after several sources
+are merged. `decaying_ids` survives topology filtering and prevents a filtered
+parent from becoming a terminal output accidentally. Raw input may retain a
+legacy five-body row, but resolving it into a runnable `DecayList` rejects
+unsupported multiplicities.
+"""
+struct DecayNetwork
+    byparent::Dict{Int, Vector{DecayChannel}}
+    decaying_ids::Vector{Int}
+    terminal_ids::Vector{Int}
+    path::String
+    sha::String
+
+    function DecayNetwork(
+            byparent::Dict{Int, Vector{DecayChannel}},
+            decaying_ids::Vector{Int},
+            terminal_ids::Vector{Int},
+            path::String,
+            sha::String,
+            ::_ValidatedInputToken,
+        )
+        return new(byparent, decaying_ids, terminal_ids, path, sha)
+    end
+end
+
+function DecayNetwork(
+        channels_by_parent::Dict{Int, Vector{DecayChannel}};
+        decaying_ids = nothing,
+        terminal_ids = nothing,
+        path::AbstractString = "",
+        sha::AbstractString = "",
+    )
+    inferred_decaying = Int[]
+    inferred_terminal = Int[]
+    for (parent_id, channels) in channels_by_parent
+        all(channel -> channel.parent == parent_id, channels) ||
+            throw(ArgumentError(
+                "channel parent disagrees with dictionary key $parent_id",
+            ))
+        any(channel -> !_isselfchannel(channel, parent_id), channels) &&
+            push!(inferred_decaying, parent_id)
+        !isempty(channels) && all(
+            channel -> _isselfchannel(channel, parent_id), channels,
+        ) && push!(inferred_terminal, parent_id)
+    end
+
+    selected_decaying = decaying_ids === nothing ?
+        inferred_decaying : collect(Int, decaying_ids)
+    append!(selected_decaying, inferred_decaying)
+    sort!(unique!(selected_decaying))
+
+    selected_terminal = terminal_ids === nothing ?
+        inferred_terminal : collect(Int, terminal_ids)
+    append!(selected_terminal, inferred_terminal)
+    sort!(unique!(selected_terminal))
+
+    conflicting_ids = intersect(selected_decaying, selected_terminal)
+    isempty(conflicting_ids) || throw(ArgumentError(
+        "particle IDs cannot be both decaying and terminal: " *
+            join(conflicting_ids, ", "),
+    ))
+
+    return DecayNetwork(
+        channels_by_parent,
+        selected_decaying,
+        selected_terminal,
+        String(path),
+        String(sha),
+        _VALIDATED_INPUT,
+    )
+end
+
+"Merge unresolved networks without requiring their particle catalogs."
+function Base.merge(
+        first::DecayNetwork,
+        remaining::DecayNetwork...,
+    )
+    networks = (first, remaining...)
+    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
+    decaying_ids = Int[]
+    terminal_ids = Int[]
+
+    for network in networks
+        append!(decaying_ids, network.decaying_ids)
+        append!(terminal_ids, network.terminal_ids)
+        for parent_id in sort!(collect(keys(network.byparent)))
+            channels = network.byparent[parent_id]
+            if haskey(channels_by_parent, parent_id)
+                _samechannels(channels_by_parent[parent_id], channels) ||
+                    throw(ArgumentError(
+                        "conflicting channel definitions for parent ID " *
+                            "$parent_id",
+                    ))
+            else
+                channels_by_parent[parent_id] = channels
+            end
+        end
+    end
+
+    decaying_set = Set(decaying_ids)
+    filter!(particle_id -> particle_id ∉ decaying_set, terminal_ids)
+
+    return DecayNetwork(
+        channels_by_parent;
+        decaying_ids,
+        terminal_ids,
+        path = _joinprovenance(network.path for network in networks),
+        sha = _joinhashes(network.sha for network in networks),
+    )
+end
+
+# ---------------------------------------------------------------------------
+# Fixed-format readers
+# ---------------------------------------------------------------------------
+
+function _sourceidentity(path::AbstractString)
+    source_path = String(path)
+    return source_path, bytes2hex(sha256(read(path)))
+end
+
+function _datarows(path::AbstractString)
+    rows = Tuple{Int, Vector{SubString{String}}}[]
+    for (line_number, line) in enumerate(eachline(path))
+        content = first(split(line, '#'; limit = 2))
+        isempty(strip(content)) && continue
+        push!(rows, (line_number, split(content)))
+    end
+    return rows
+end
+
+function _expectcolumns(fields, count, location, kind)
+    length(fields) == count || throw(ArgumentError(
+        "$location: expected $count $kind columns, got $(length(fields))",
+    ))
+end
+
+function _parseat(action, location, kind)
+    try
+        return action()
+    catch error
+        error isa InterruptException && rethrow()
+        message = sprint(showerror, error)
+        startswith(message, "$location:") && rethrow()
+        throw(ArgumentError("$location: invalid $kind row: $message"))
+    end
+end
+
+_parsequantum(value) = round(Int, parse(Float64, value))
+
+function _parsecanonicalparticle(fields, location, kind)
+    _expectcolumns(fields, 11, location, "$kind particle")
+    return _parseat(location, "$kind particle") do
+        particle_id = parse(Int, fields[1])
+        particle_id != 0 || throw(ArgumentError(
+            "particle ID 0 is reserved for AZYHYDRO daughter padding",
+        ))
+        return ParticleInfo(
+            particle_id,
+            String(fields[2]),
+            parse(Float64, fields[3]),
+            parse(Float64, fields[4]),
+            parse(Float64, fields[5]),
+            _parsequantum(fields[6]),
+            _parsequantum(fields[11]),
+            _parsequantum(fields[7]),
+            _parsequantum(fields[8]),
+            _parsequantum(fields[9]),
+            round(Int, 2 * parse(Float64, fields[10])),
+        )
+    end
+end
+
+function _insertparticle!(particles, particle_info, location)
+    haskey(particles, particle_info.id) && throw(ArgumentError(
+        "$location: duplicate particle ID $(particle_info.id)",
+    ))
+    particles[particle_info.id] = particle_info
+    return particles
+end
+
+function _pushchannel!(channels_by_parent, channel)
+    push!(
+        get!(channels_by_parent, channel.parent, DecayChannel[]),
+        channel,
+    )
+    return channels_by_parent
+end
+
+function _parsedaughters(values, daughter_count)
+    1 <= daughter_count <= 5 || throw(ArgumentError(
+        "channel n_daughters=$daughter_count out of range 1-5",
+    ))
+    daughters = [parse(Int, values[index]) for index in 1:daughter_count]
+    any(==(0), daughters) && throw(ArgumentError(
+        "particle ID 0 is reserved for daughter padding",
+    ))
+    return daughters
+end
+
+include(joinpath(@__DIR__, "readers", "Generic.jl"))
+include(joinpath(@__DIR__, "readers", "AZYHYDRO.jl"))
+include(joinpath(@__DIR__, "readers", "THERMINATOR.jl"))
+
+"Compatibility reader for the original single-file AZYHYDRO API."
+function read_decaylist(path::AbstractString)
+    source = _readazyhydro(path)
+    return source.catalog.byid, source.network.byparent
 end
 
 end # module

@@ -9,10 +9,10 @@ using LaTeXStrings                                # L"..." labels, rendered by G
 ## 2. The whole cascade
 include("CascadeTables.jl"); using .CascadeTables
 
-dl = DecayList("decays_QM2016Plus_massorder_isofix.dat")
-dl2 = DecayList("decays_QM2016Plus_massorder_isofix_sigma.dat")
+dl = readazyhydro("decays_QM2016Plus_massorder_isofix.dat")
+dl2 = readazyhydro("decays_QM2016Plus_massorder_isofix_sigma.dat")
 
-dl_charm = DecayList("decays_charm_clean.dat")
+dl_charm = readazyhydro("decays_charm_clean.dat")
 T  = 0.155
 primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
@@ -116,7 +116,10 @@ savefig(charm_spectra, "charm_spectra.pdf")
 
 res.F
 
-dl = merge(dl2, DecayList("decays_charm_bottom.dat"))
+dl = readazyhydro(
+    "decays_QM2016Plus_massorder_isofix_sigma.dat",
+    "decays_charm_bottom.dat",
+)
 res = runcascade(dl; primary, grid = qs)
 plot(res[1][425][1])
 
