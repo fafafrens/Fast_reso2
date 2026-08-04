@@ -266,8 +266,74 @@ const _SEGBUF = OncePerTask{Vector{Segment{Float64, Float64, Float64}}}() do
     alloc_segbuf()
 end
 
+"Mass window a resonance is averaged over: `mR +- k*Gamma`, cut at threshold."
+function _support(record, threshold, k)
+    record.width > 0 || return (0.0, 0.0)
+    return (max(record.mass - k * record.width, threshold),
+            record.mass + k * record.width)
+end
+
+# Dense rule used only when building the plan, to integrate the Breit-Wigner
+# against each Lagrange basis function. Its order is irrelevant at evaluation.
+const _BUILD_NODES, _BUILD_WEIGHTS = gausslegendre(256)
+
 """
-    ThermalPlan(decay_list)
+    _breitwignerrule(record, lower, upper, mass_order) -> (nodes, weights)
+
+A quadrature rule carrying the Breit-Wigner as its weight function:
+`sum(w .* f.(nodes))` approximates `int S(m) f(m) dm / int S(m) dm` for smooth
+`f`. Nodes are Chebyshev points, weights are `int S(m) l_j(m) dm` with `l_j` the
+Lagrange basis through them, so the rule is exact wherever the degree-`order`
+interpolant of `f` is.
+
+Handing the peak to the weights is what makes this cheap: adaptive quadrature
+subdivides to resolve the Lorentzian and pays a full density evaluation at every
+point it adds — 150 per resonance — although the density itself is smooth there.
+
+Nothing here depends on temperature or chemical potential, so a fit builds it
+once. The accuracy floor is polynomial approximation of the density, which
+spans three decades across the window of a broad state: 6.6e-6 at order 24.
+"""
+function _breitwignerrule(record, lower, upper, order)
+    half = (upper - lower) / 2
+    midpoint = (upper + lower) / 2
+    reference = [cos((2j - 1) * π / (2order)) for j in 1:order]
+    nodes = midpoint .+ half .* reference
+    # Barycentric weights for Chebyshev points of the first kind.
+    barycentric = [(-1)^j * sin((2j - 1) * π / (2order)) for j in 1:order]
+
+    shape(m) = m * record.width /
+        ((m^2 - record.mass^2)^2 + (record.mass * record.width)^2)
+
+    weights = zeros(order)
+    basis = zeros(order)
+    for index in eachindex(_BUILD_NODES)
+        x = _BUILD_NODES[index]
+        weight = _BUILD_WEIGHTS[index] * half * shape(midpoint + half * x)
+
+        # Barycentric Lagrange basis at x, guarding the node-coincident case.
+        hit = findfirst(j -> x == reference[j], 1:order)
+        if hit === nothing
+            total = 0.0
+            for j in 1:order
+                basis[j] = barycentric[j] / (x - reference[j])
+                total += basis[j]
+            end
+            basis ./= total
+        else
+            fill!(basis, 0.0)
+            basis[hit] = 1.0
+        end
+        for j in 1:order
+            weights[j] += weight * basis[j]
+        end
+    end
+    total = sum(weights)
+    return nodes, (total > 0 ? weights ./ total : fill(1 / order, order))
+end
+
+"""
+    ThermalPlan(decay_list; mass_order = 24, k = 4.0)
 
 Everything about a decay list that does not depend on `(T, muB, V)`, resolved
 once: dense species indices, the quantum numbers each density needs, the decay
@@ -303,13 +369,17 @@ struct ThermalPlan
     branching::Vector{Float64}
     daughter_range::Vector{UnitRange{Int}}
     daughters::Vector{Int}
-    # Breit-Wigner normalization per species, 0 for the sharp ones. It depends
-    # only on mass, width and threshold, so a fit re-uses it across every
-    # (T, muB, V) instead of re-integrating the shape each call.
-    normalization::Vector{Float64}
+    # A quadrature rule per broad species that carries the Breit-Wigner as its
+    # weight function, so a call evaluates the density at `mass_nodes` and takes
+    # a dot product instead of driving an adaptive integral through the peak.
+    # `mass_range[i]` is empty for a sharp species. Weights are normalized, so
+    # no separate normalization is needed.
+    mass_range::Vector{UnitRange{Int}}
+    mass_nodes::Vector{Float64}
+    mass_weights::Vector{Float64}
 end
 
-function ThermalPlan(decay_list)
+function ThermalPlan(decay_list; mass_order = 24, k = 4.0)
     catalog = decay_list.catalog.byid
     ids = sort!(collect(keys(catalog)))
     index_of = Dict(particle_id => index for (index, particle_id) in pairs(ids))
@@ -344,15 +414,20 @@ function ThermalPlan(decay_list)
         push!(channel_range, first_channel:length(branching))
     end
 
-    normalization = map(records) do record
-        record.width > 0 || return 0.0
-        lower = max(record.mass - 4.0 * record.width,
-                    get(thresholds, record.id, 0.0))
-        upper = record.mass + 4.0 * record.width
-        lower < upper || return 0.0
-        shape(m) = m * record.width /
-            ((m^2 - record.mass^2)^2 + (record.mass * record.width)^2)
-        first(quadgk(shape, lower, upper; rtol = 1.0e-8))
+    mass_range = UnitRange{Int}[]
+    mass_nodes = Float64[]
+    mass_weights = Float64[]
+    for record in records
+        lower, upper = _support(record, get(thresholds, record.id, 0.0), k)
+        if lower >= upper
+            push!(mass_range, 1:0)
+            continue
+        end
+        nodes, weights = _breitwignerrule(record, lower, upper, mass_order)
+        first_node = length(mass_nodes) + 1
+        append!(mass_nodes, nodes)
+        append!(mass_weights, weights)
+        push!(mass_range, first_node:length(mass_nodes))
     end
 
     return ThermalPlan(
@@ -362,7 +437,8 @@ function ThermalPlan(decay_list)
         [Float64(r.baryon) for r in records], [Float64(r.strangeness) for r in records],
         [Float64(r.charge) for r in records], [Float64(r.charm) for r in records],
         [get(thresholds, particle_id, 0.0) for particle_id in ids],
-        order, channel_range, branching, daughter_range, daughters, normalization,
+        order, channel_range, branching, daughter_range, daughters,
+        mass_range, mass_nodes, mass_weights,
     )
 end
 
@@ -379,19 +455,29 @@ integral around it.
 function thermalyields(
         plan::ThermalPlan, temperature;
         muB = 0.0, muS = 0.0, muQ = 0.0, muC = 0.0,
-        V, quantum = true, width = true, k = 4.0, rtol = 1.0e-6,
+        V, quantum = true, width = true,
     )
     temperature > 0 || throw(ArgumentError("temperature must be positive"))
     volume = V / (0.1973269804)^3
     species_count = length(plan)
     primary = Vector{Float64}(undef, species_count)
 
-    Threads.@threads :greedy for index in 1:species_count
-        mu = plan.baryon[index] * muB + plan.strangeness[index] * muS +
-             plan.charge[index] * muQ + plan.charm[index] * muC
-        primary[index] = volume * _density(
-            plan, index, temperature, mu; quantum, width, k, rtol,
-        )
+    # Chunked, not per-species. A single density costs 0.4 us for a sharp
+    # species and ~10 us for a broad one, so scheduling one task each buries the
+    # work in overhead: 1518 tasks cost ~9 ms against ~7 ms of actual
+    # computation. A few chunks per thread amortize that while leaving the
+    # scheduler enough pieces to balance broad against sharp.
+    chunk_count = min(species_count, 4 * Threads.nthreads())
+    chunk_size = cld(species_count, chunk_count)
+    Threads.@threads :greedy for chunk in 1:chunk_count
+        first_index = (chunk - 1) * chunk_size + 1
+        last_index = min(chunk * chunk_size, species_count)
+        @inbounds for index in first_index:last_index
+            mu = plan.baryon[index] * muB + plan.strangeness[index] * muS +
+                 plan.charge[index] * muQ + plan.charm[index] * muC
+            primary[index] =
+                volume * _density(plan, index, temperature, mu; quantum, width)
+        end
     end
 
     total = copy(primary)
@@ -415,24 +501,21 @@ function thermalyields(
 end
 
 "Density for one plan entry, mirroring `thermaldensity` on a flattened record."
-function _density(plan::ThermalPlan, index, temperature, mu; quantum, width, k, rtol)
+function _density(plan::ThermalPlan, index, temperature, mu; quantum, width)
     mass, resonance_width = plan.mass[index], plan.width[index]
     degeneracy, is_fermion = plan.degeneracy[index], plan.isfermion[index]
     pole() = _densityatmass(mass, degeneracy, is_fermion, temperature, mu; quantum)
     (!width || resonance_width <= 0) && return pole()
 
-    lower = max(mass - k * resonance_width, plan.threshold[index])
-    upper = mass + k * resonance_width
-    lower < upper || return pole()
-
-    weight = plan.normalization[index]        # precomputed: no (T, mu) in it
-    weight > 0 || return pole()
-    shape(m) = m * resonance_width /
-        ((m^2 - mass^2)^2 + (mass * resonance_width)^2)
-    averaged, _ = quadgk(lower, upper; rtol, segbuf = _SEGBUF()) do m
-        shape(m) * _densityatmass(m, degeneracy, is_fermion, temperature, mu; quantum)
+    range = plan.mass_range[index]
+    isempty(range) && return pole()
+    averaged = 0.0
+    @inbounds for slot in range
+        averaged += plan.mass_weights[slot] * _densityatmass(
+            plan.mass_nodes[slot], degeneracy, is_fermion, temperature, mu; quantum,
+        )
     end
-    return averaged / weight
+    return averaged
 end
 
 end # module ThermalModel

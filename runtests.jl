@@ -2999,10 +2999,12 @@ let
     end
     @printf("   charge drift removed by symmetrize_conjugation\n")
 
-    # (e) A compiled plan reproduces the decay-list path. Not bit-for-bit: it
-    # precomputes each Breit-Wigner normalization at 1e-8 once, where the direct
-    # path re-integrates it at the caller's 1e-6 every time. The two therefore
-    # agree to ~1e-8, two orders inside the tolerance the model is held to.
+    # (e) A compiled plan reproduces the decay-list path, but not bit-for-bit.
+    # The plan averages each resonance on a fixed 24-node rule that carries the
+    # Breit-Wigner as its weight function; the direct path drives an adaptive
+    # integral through the peak at the caller's 1e-6. They agree to ~4e-7, which
+    # is the accuracy the model claims -- the bound below is set at the model's
+    # tolerance, not at the quadrature's.
     plan = ThermalPlan(decay_list)
     planned = thermalyields(plan, temperature; muB = 0.0, V = 5300.0)
     @assert Set(keys(planned.total)) == Set(keys(yields.total))
@@ -3012,12 +3014,12 @@ let
             abs(compiled[id] - direct[id]) / max(direct[id], 1.0e-300)
             for id in keys(direct)
         )
-        @assert deviation < 1.0e-7 "plan differs from the direct path: $deviation"
+        @assert deviation < 1.0e-6 "plan differs from the direct path: $deviation"
     end
     # and it must still track a changed temperature, not cache the first answer
     hotter = thermalyields(plan, 0.17; muB = 0.0, V = 5300.0)
     @assert hotter.total[211] > planned.total[211]
-    @printf("   ThermalPlan agrees with the direct path to 1e-8\n")
+    @printf("   ThermalPlan agrees with the direct path to 4e-7\n")
 
     # Feed-down dominates the pion yield, as it must at freeze-out.
     @assert yields.total[211] > 2 * yields.primary[211]
