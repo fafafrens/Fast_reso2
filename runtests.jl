@@ -2902,4 +2902,91 @@ let
 end
 println("   PASS")
 
+
+# ---------------------------------------------------------------- test 10
+println("== 10. Thermal model: densities, statistics, widths, feed-down ==")
+isdefined(Main, :ThermalModel) || include(joinpath(@__DIR__, "ThermalModel.jl"))
+let
+    using .ThermalModel
+
+    data_directory = joinpath(@__DIR__, "data")
+    catalog = readparticles(joinpath(data_directory, "particles_light_pdg.dat"))
+    pion = catalog.byid[211]
+    proton = catalog.byid[2212]
+    temperature = 0.1565
+
+    # (a) Boltzmann limit. Quantum and classical statistics converge when
+    # m/T is large, and separate for the pion -- where Bose sits *above*
+    # Boltzmann because the occupancy 1/(e^x - 1) exceeds e^{-x}.
+    heavy_quantum = thermaldensity(proton, temperature; quantum = true, width = false)
+    heavy_classical = thermaldensity(proton, temperature; quantum = false, width = false)
+    @assert abs(heavy_quantum - heavy_classical) / heavy_classical < 1.0e-3
+    pion_quantum = thermaldensity(pion, temperature; quantum = true, width = false)
+    pion_classical = thermaldensity(pion, temperature; quantum = false, width = false)
+    @assert pion_quantum > pion_classical
+    @assert (pion_quantum - pion_classical) / pion_classical > 0.02
+    @printf("   pion Bose/Boltzmann = %.4f; proton agrees to %.2e\n",
+            pion_quantum / pion_classical,
+            abs(heavy_quantum - heavy_classical) / heavy_classical)
+
+    # (b) Zero-width limit: averaging over a vanishing Breit-Wigner has to
+    # reproduce the pole mass.
+    rho = catalog.byid[213]
+    narrow = typeof(rho)(
+        rho.id, rho.name, rho.mass, 1.0e-9, rho.degeneracy, rho.baryon,
+        rho.charge, rho.strangeness, rho.charm, rho.bottomness, rho.twiceisospin,
+    )
+    broadened = thermaldensity(narrow, temperature; width = true)
+    sharp = thermaldensity(narrow, temperature; width = false)
+    @assert abs(broadened - sharp) / sharp < 1.0e-6
+
+    # A real width moves the density: the rho is light enough that the
+    # Boltzmann factor rewards its low-mass tail.
+    rho_broad = thermaldensity(rho, temperature; width = true)
+    rho_sharp = thermaldensity(rho, temperature; width = false)
+    @assert rho_broad > rho_sharp
+    @printf("   rho finite-width/pole density = %.4f\n", rho_broad / rho_sharp)
+
+    # (c) Conservation under feed-down. Strong and electromagnetic decays
+    # conserve B, Q and S, and every weak decayer in this list is terminal, so
+    # the totals cannot move. This is checked on light_pdg: the quark-model
+    # layer contains 103 neutral self-conjugate parents whose channel *sets*
+    # are not charge-conjugation symmetric (e.g. rho(1921)3(0) gives BR 0.0110
+    # to rho+ pi- but 0.0076 to rho- pi+, and its rho- pi+ pi0 channel has no
+    # mirror at all). Each channel conserves charge, so `validate` accepts
+    # them, but the yields then drift.
+    decay_list = DecayList(
+        catalog,
+        readdecays(joinpath(data_directory, "decays_light_pdg.dat")),
+    )
+    yields = thermalyields(decay_list, temperature; muB = 0.0, V = 5300.0)
+    records = decay_list.catalog.byid
+    conserved(quantity, book) =
+        sum(quantity(records[id]) * book[id] for id in keys(book))
+    for (label, quantity) in (
+            ("baryon", particle -> particle.baryon),
+            ("charge", particle -> particle.charge),
+            ("strangeness", particle -> particle.strangeness),
+        )
+        before = conserved(quantity, yields.primary)
+        after = conserved(quantity, yields.total)
+        scale = max(abs(before), sum(abs(quantity(records[id])) * yields.total[id]
+                                     for id in keys(yields.total)), 1.0)
+        @assert abs(after - before) / scale < 1.0e-12 "$label drifted: $before -> $after"
+    end
+
+    # Feed-down dominates the pion yield, as it must at freeze-out.
+    @assert yields.total[211] > 2 * yields.primary[211]
+    @printf("   feed-down conserves B, Q, S; pion total/primary = %.2f\n",
+            yields.total[211] / yields.primary[211])
+
+    # (d) Monotonicity: density rises with temperature, and baryons with muB.
+    @assert thermaldensity(proton, 0.17) > thermaldensity(proton, 0.14)
+    @assert thermaldensity(proton, temperature; muB = 0.05) >
+            thermaldensity(proton, temperature; muB = 0.0)
+    @assert thermaldensity(pion, temperature; muB = 0.05) ≈
+            thermaldensity(pion, temperature; muB = 0.0)
+end
+println("   PASS")
+
 println("\nAll tests passed.")

@@ -129,6 +129,7 @@ lives in `figures/`.
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
 | `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and canonical reader mechanics |
 | `readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
+| `ThermalModel.jl`   | Statistical hadronization: freeze-out number densities and yields after feed-down |
 | `runtests.jl`       | Test suite (see below) |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
@@ -155,6 +156,7 @@ julia --project -t auto figures/demo_filter.jl       # feed-down by decay topolo
 julia --project -t auto figures/cascade.jl           # full cascade + figure
 julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
 julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
+julia --project -t auto figures/thermal_yields.jl    # thermal yields + feed-down, SHM style
 CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
   julia --project -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
 benchmarks/fastreso_crosscheck/run_small.sh        # cross-check against upstream FastReso
