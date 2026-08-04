@@ -2,8 +2,10 @@ const BENCHMARK_DIR = @__DIR__
 const REPOSITORY_ROOT = normpath(joinpath(BENCHMARK_DIR, "..", ".."))
 
 include(joinpath(REPOSITORY_ROOT, "CascadeTables.jl"))
+include(joinpath(REPOSITORY_ROOT, "tools", "convert_decay_data.jl"))
 
 using .CascadeTables
+using .DecayDataConverter
 using Printf
 using Statistics
 
@@ -11,13 +13,22 @@ environment_int(name, default) = parse(Int, get(ENV, name, string(default)))
 environment_float(name, default) =
     parse(Float64, get(ENV, name, string(default)))
 
+function canonical_decay_list(azyhydro_path)
+    return mktempdir() do directory
+        particle_path = joinpath(directory, "particles.dat")
+        decay_path = joinpath(directory, "decays.dat")
+        convert_azyhydro([azyhydro_path], particle_path, decay_path)
+        DecayList(readparticles(particle_path), readdecays(decay_path))
+    end
+end
+
 function main(arguments)
     length(arguments) ≤ 1 ||
         error("usage: julia benchmark_chain_plan.jl [DECAY_LIST]")
     decay_path = isempty(arguments) ?
         joinpath(BENCHMARK_DIR, "fixtures", "rho_chain.dat") :
         only(arguments)
-    decay_list = DecayList(decay_path)
+    decay_list = canonical_decay_list(decay_path)
     orders = (
         nq = environment_int("FASTRESO_PLAN_NQ", 128),
         nθ = environment_int("FASTRESO_PLAN_NTHETA", 32),

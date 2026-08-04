@@ -27,7 +27,11 @@ primary(p, n, grid) =
     n == 2 ? [v2in(q) * p.degeneracy * exp(-hypot(p.mass, q) / T) for q in grid] :
              zeros(length(grid))
 
-dl  = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
+const DATA = joinpath(ROOT, "data")
+dl = DecayList(
+    readparticles(joinpath(DATA, "particles_QM2016Plus.dat")),
+    readdecays(joinpath(DATA, "decays_QM2016Plus.dat")),
+)
 t0  = time()
 plan = CascadePlan(dl; cache = nothing)            # build in memory, without a cache file
 tab = plan.table

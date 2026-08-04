@@ -9,17 +9,26 @@ using LaTeXStrings                                # L"..." labels, rendered by G
 ## 2. The whole cascade
 include("CascadeTables.jl"); using .CascadeTables
 
-dl = readazyhydro("decays_QM2016Plus_massorder_isofix.dat")
-dl2 = readazyhydro("decays_QM2016Plus_massorder_isofix_sigma.dat")
+const DATA = joinpath(@__DIR__, "data")
+base_catalog = readparticles(joinpath(DATA, "particles_QM2016Plus.dat"))
+base_network = readdecays(joinpath(DATA, "decays_QM2016Plus.dat"))
+dl = DecayList(base_catalog, base_network)
 
-dl_charm = readazyhydro("decays_charm_clean.dat")
+charm_catalog = merge(
+    base_catalog,
+    readparticles(joinpath(DATA, "particles_charm_bottom.dat")),
+)
+charm_network = merge(
+    base_network,
+    readdecays(joinpath(DATA, "decays_charm_bottom.dat")),
+)
+dl_charm = DecayList(charm_catalog, charm_network)
 T  = 0.155
 primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
 
 qs = range(0.0, 6.0, length = 151)
 res = runcascade(dl; primary, grid = qs, parallel = :modes)
-res_sigma = runcascade(dl2; primary, grid = qs, parallel = :modes)
 res_charm = runcascade(dl_charm; primary, grid = qs, parallel = :modes)
 ## 3. Read it out
 π⁺ = 211
@@ -36,8 +45,6 @@ end
 
 plot(qs,res.Fprim[π⁺][1],yaxis=:log10)
 plot!(qs,res.F[π⁺][1])
-plot!(qs,res_sigma.Fprim[π⁺][1])
-plot!(qs,res_sigma.F[π⁺][1])
 
 
 plot(qs,res.Fprim[prot][1])
@@ -113,20 +120,3 @@ charm_particles = [
 
 charm_spectra = plot_charm_spectra(res_charm, qs, charm_particles)
 savefig(charm_spectra, "charm_spectra.pdf")
-
-res.F
-
-dl = readazyhydro(
-    "decays_QM2016Plus_massorder_isofix_sigma.dat",
-    "decays_charm_bottom.dat",
-)
-res = runcascade(dl; primary, grid = qs)
-plot(res[1][425][1])
-
-
-available_particles = sort(
-    stableparticles(dl);
-    by = p -> (lowercase(p.name), p.id),
-)
-
-foreach(p -> println(p.id, "  ", p.name), available_particles)

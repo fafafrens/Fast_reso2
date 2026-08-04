@@ -1,10 +1,10 @@
-# Fixed THERMINATOR name-based adapter, included inside `ParticleList`.
+# THERMINATOR name-based conversion. Included inside `DecayDataConverter`.
 
 _roundtherminator(value) = round(Int, value, RoundNearestTiesAway)
 
 function _parsetherminatorparticle(fields, location)
-    _expectcolumns(fields, 13, location, "THERMINATOR particle")
-    return _parseat(location, "THERMINATOR particle") do
+    PL._expectcolumns(fields, 13, location, "THERMINATOR particle")
+    return PL._parseat(location, "THERMINATOR particle") do
         mass = parse(Float64, fields[2])
         mass >= 0 || throw(ArgumentError("particle mass must be nonnegative"))
         spin_value = parse(Float64, fields[4])
@@ -24,7 +24,7 @@ function _parsetherminatorparticle(fields, location)
         charge = _roundtherminator(
             i3 + (baryon + strangeness + charm) / 2,
         )
-        degeneracy = 2 * spin_value + (mass > 0.001 ? 1 : 0)
+        degeneracy = 2 * spin_value + PL._spindegeneracyoffset(mass)
         return (
             name = String(fields[1]),
             mass,
@@ -73,10 +73,10 @@ end
 
 function _cgcindex(path::AbstractString)
     coefficients = Dict{NTuple{6, Int}, Float64}()
-    for (line_number, fields) in _datarows(path)
+    for (line_number, fields) in PL._datarows(path)
         location = "$(String(path)):$line_number"
-        _expectcolumns(fields, 7, location, "CGC")
-        key, coefficient = _parseat(location, "CGC") do
+        PL._expectcolumns(fields, 7, location, "CGC")
+        key, coefficient = PL._parseat(location, "CGC") do
             values = ntuple(index -> parse(Float64, fields[index]), 6)
             entry = (
                 ntuple(index -> _roundtherminator(2 * values[index]), 6),
@@ -116,7 +116,7 @@ function _therminatorbranching(
             "two-body rows",
     ))
     cgc === nothing && throw(ArgumentError(
-        "$location: THERMINATOR row requests CG rescaling; supply cgc_path",
+        "$location: THERMINATOR row requests CG rescaling; supply --cgc",
     ))
 
     first_daughter, second_daughter = daughters
@@ -137,8 +137,7 @@ function _therminatorbranching(
         _roundtherminator(2 * parent.isospin),
         _roundtherminator(2 * parent.i3),
     )
-    # FastReso uses map indexing for this lookup, whose missing-key value is
-    # zero. Keeping the table authoritative preserves reference behavior.
+    # FastReso uses map indexing, whose missing-key value is zero.
     coefficient = get(cgc, key, 0.0)
     adjusted = branching * coefficient
 
@@ -156,21 +155,7 @@ function _therminatorbranching(
     return result
 end
 
-"""
-    _readtherminator(particle_path, decay_path; cgc_path = nothing)
-        -> (catalog, network)
-
-Read the fixed THERMINATOR convention. Particle rows are
-
-    name mass width spin I I3 Nq Ns Naq Nas Nc Nac MC
-
-and decay rows contain a parent name, two or three daughter names, a branching
-fraction, and a Clebsch-Gordan flag. Exact names are the source identity. A
-unique nonzero MC code is retained as the internal ID; colliding MC codes get
-deterministic synthetic IDs and remain available through `"MC:<code>"`
-catalog aliases. Supply `cgc_path` when a decay row has a nonzero CG flag.
-"""
-function _readtherminator(
+function _loadtherminator(
         particle_path::AbstractString,
         decay_path::AbstractString;
         cgc_path::Union{Nothing, AbstractString} = nothing,
@@ -179,7 +164,7 @@ function _readtherminator(
         _parsetherminatorparticle(
             fields,
             "$(String(particle_path)):$line_number",
-        ) for (line_number, fields) in _datarows(particle_path)
+        ) for (line_number, fields) in PL._datarows(particle_path)
     ]
     names = Dict{String, Int}()
     for (index, row) in pairs(rows)
@@ -195,11 +180,10 @@ function _readtherminator(
     end
 
     ids = _therminatorids(rows)
-    particles = Dict{Int, ParticleInfo}()
+    particles = Dict{Int, PL.ParticleInfo}()
     aliases = Dict{Int, Vector{String}}()
-    ids_by_name = Dict{String, Int}()
     for (row, particle_id) in zip(rows, ids)
-        particles[particle_id] = ParticleInfo(
+        particles[particle_id] = PL.ParticleInfo(
             particle_id,
             row.name,
             row.mass,
@@ -213,18 +197,17 @@ function _readtherminator(
             _roundtherminator(2 * row.isospin),
         )
         aliases[particle_id] = ["MC:$(row.mc)"]
-        ids_by_name[row.name] = particle_id
     end
 
     cgc = cgc_path === nothing ? nothing : _cgcindex(cgc_path)
-    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
-    for (line_number, fields) in _datarows(decay_path)
+    channels_by_parent = Dict{Int, Vector{PL.DecayChannel}}()
+    for (line_number, fields) in PL._datarows(decay_path)
         location = "$(String(decay_path)):$line_number"
         length(fields) in (5, 6) || throw(ArgumentError(
             "$location: expected 5 or 6 THERMINATOR decay columns, got " *
                 "$(length(fields))",
         ))
-        channel = _parseat(location, "THERMINATOR decay") do
+        channel = PL._parseat(location, "THERMINATOR decay") do
             daughter_count = length(fields) - 3
             parent_name = String(fields[1])
             daughter_names = String.(fields[2:1 + daughter_count])
@@ -252,30 +235,30 @@ function _readtherminator(
                 cgc,
                 location,
             )
-            return DecayChannel(
-                ids_by_name[parent_name],
+            return PL.DecayChannel(
+                ids[parent_index],
                 branching,
-                [ids_by_name[name] for name in daughter_names],
+                ids[daughter_indices],
             )
         end
-        _pushchannel!(channels_by_parent, channel)
+        PL._pushchannel!(channels_by_parent, channel)
     end
 
-    particle_source, particle_sha = _sourceidentity(particle_path)
-    decay_source, decay_sha = _sourceidentity(decay_path)
+    particle_source, particle_sha = PL._sourceidentity(particle_path)
+    decay_source, decay_sha = PL._sourceidentity(decay_path)
     if cgc_path !== nothing
-        cgc_source, cgc_sha = _sourceidentity(cgc_path)
-        decay_source = _joinprovenance((decay_source, cgc_source))
-        decay_sha = _joinhashes((decay_sha, cgc_sha))
+        cgc_source, cgc_sha = PL._sourceidentity(cgc_path)
+        decay_source = PL._joinprovenance((decay_source, cgc_source))
+        decay_sha = PL._joinhashes((decay_sha, cgc_sha))
     end
     return (
-        catalog = ParticleCatalog(
+        catalog = PL.ParticleCatalog(
             particles;
             aliases,
             path = particle_source,
             sha = particle_sha,
         ),
-        network = DecayNetwork(
+        network = PL.DecayNetwork(
             channels_by_parent;
             path = decay_source,
             sha = decay_sha,

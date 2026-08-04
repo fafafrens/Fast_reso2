@@ -305,6 +305,8 @@ println("   PASS")
 println("== 7. CascadeTables: keys, cascade vs direct, round trip, updates ==")
 isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
 using .CascadeTables
+include(joinpath(@__DIR__, "tools", "convert_decay_data.jl"))
+using .DecayDataConverter
 
 # key invariants: partner order canonicalized, observed slot preserved
 @assert ChannelKey(1.0, 0.2, [0.5, 0.3]) == ChannelKey(1.0, 0.2, [0.3, 0.5])
@@ -508,43 +510,13 @@ let
     end
 end
 
-# parser rejects padding violations: a nonzero daughter slot past the declared
-# count means daughters would be silently dropped (an under-declared 4-body mode,
-# a lost radiative photon). Must fail loudly, not parse a corrupt channel.
-let read = CascadeTables.ParticleList.read_decaylist,
-        hdr = "1 x 1.0 0.14 1 0 0 0 0 0 0 1\n"
-    good = tempname(); write(good, hdr * "1 2 1.0 211 -211 0 0 0\n")
-    @assert read(good) isa Tuple                                # 0-padded: fine
-    bad = tempname(); write(bad, hdr * "1 2 1.0 211 -211 211 0 0\n")   # slot 3 nonzero
-    threw = false
-    try
-        read(bad)
-    catch
-        threw = true
-    end
-    @assert threw
-    truncated = tempname()
-    write(
-        truncated,
-        replace(hdr, r"1\n$" => "2\n") *
-            "1 2 1.0 211 -211 0 0 0\n",
-    )
-    threw = false
-    try
-        read(truncated)
-    catch error
-        threw = error isa ArgumentError &&
-            occursin("declares 2 channels", sprint(showerror, error))
-    end
-    @assert threw
-    rm.((good, bad, truncated); force = true)
-end
-
-# The fixed GENERIC and AZYHYDRO readers produce the same resolved model.
-# Resolution is the boundary that requires every parent and daughter ID to
-# exist.
+# The canonical reader resolves independently loaded particle and decay files.
+# AZYHYDRO parsing belongs to the standalone converter and round-trips through
+# that one runtime format.
 let
     combined_path = tempname()
+    converted_particle_path = tempname()
+    converted_decay_path = tempname()
     particle_path = tempname()
     decay_path = tempname()
     empty_particle_path = tempname()
@@ -559,7 +531,7 @@ let
     )
     write(
         particle_path,
-        "1 P 1.0 0.1 3 0 0 0 0 0 0\n" *
+        "1 P 1.0 0.1 3 0 0 0 0 0 0 parent-alias\n" *
             "2 a 0.1 0.0 1 0 0 0 0 0 1\n" *
             "3 b 0.1 0.0 1 0 0 0 0 0 -1\n",
     )
@@ -568,17 +540,49 @@ let
     write(empty_decay_path, "")
     write(unresolved_decay_path, "1 2 1.0 2 999\n")
 
-    catalog = readgenericparticles(particle_path)
-    network = readgenericdecays(decay_path)
+    catalog = readparticles(particle_path)
+    network = readdecays(decay_path)
     split = DecayList(catalog, network)
-    combined_generic = readgeneric(particle_path, decay_path)
-    split_convenience = DecayList(
-        particles = particle_path,
-        decays = decay_path,
+    empty_split = DecayList(
+        readparticles(empty_particle_path),
+        readdecays(empty_decay_path),
     )
-    empty_split = readgeneric(empty_particle_path, empty_decay_path)
-    combined = readazyhydro(combined_path)
-    legacy_combined = DecayList(combined_path)
+    convert_azyhydro(
+        [combined_path],
+        converted_particle_path,
+        converted_decay_path,
+    )
+    threw = false
+    try
+        convert_azyhydro(
+            [combined_path],
+            converted_particle_path,
+            converted_decay_path,
+        )
+    catch error
+        threw = error isa ArgumentError &&
+            occursin("--force", sprint(showerror, error))
+    end
+    @assert threw
+    original_combined = read(combined_path, String)
+    threw = false
+    try
+        convert_azyhydro(
+            [combined_path],
+            combined_path,
+            tempname();
+            force = true,
+        )
+    catch error
+        threw = error isa ArgumentError &&
+            occursin("overwrite an input", sprint(showerror, error))
+    end
+    @assert threw
+    @assert read(combined_path, String) == original_combined
+    converted = DecayList(
+        readparticles(converted_particle_path),
+        readdecays(converted_decay_path),
+    )
     @assert catalog isa ParticleCatalog
     @assert network isa DecayNetwork
     @assert catalog.path == particle_path
@@ -586,7 +590,7 @@ let
     @assert !isempty(catalog.sha)
     @assert !isempty(network.sha)
     @assert isempty(network.terminal_ids)
-    unresolved_network = readgenericdecays(unresolved_decay_path)
+    unresolved_network = readdecays(unresolved_decay_path)
     @assert haskey(unresolved_network.byparent, 1)
     threw = false
     try
@@ -597,7 +601,7 @@ let
     end
     @assert threw
 
-    @assert split.parts == combined.parts
+    @assert split.parts == converted.parts
     channel_rows(decay_list) = Dict(
         parent_id => [
             (channel.parent, channel.br, Tuple(channel.daughters))
@@ -605,15 +609,8 @@ let
         ]
         for (parent_id, channels) in decay_list.byparent
     )
-    @assert combined_generic.catalog.byid == catalog.byid
-    @assert channel_rows(combined_generic) == channel_rows(split)
-    @assert combined_generic.stable_ids == split.stable_ids
-    @assert combined_generic.path == split.path
-    @assert combined_generic.sha == split.sha
-    @assert channel_rows(split) == channel_rows(combined)
-    @assert channel_rows(split_convenience) == channel_rows(split)
-    @assert legacy_combined.parts == combined.parts
-    @assert channel_rows(legacy_combined) == channel_rows(combined)
+    @assert channel_rows(split) == channel_rows(converted)
+    @assert split.stable_ids == converted.stable_ids
     @assert empty_split.path ==
         string(empty_particle_path, " + ", empty_decay_path)
     @assert empty_split.sha == string(
@@ -635,17 +632,41 @@ let
     merged_network = merge(terminal_network, network)
     @assert 1 in merged_network.decaying_ids
     @assert 1 ∉ merged_network.terminal_ids
-    @assert split.stable_ids == combined.stable_ids == [2, 3]
+
+    self_terminal_network = DecayNetwork(Dict(
+        1 => [DecayChannel(1, 1.0, [1])],
+    ))
+    filtered_network = DecayNetwork(
+        Dict{Int, Vector{DecayChannel}}();
+        decaying_ids = [1],
+    )
+    for merged in (
+            merge(filtered_network, self_terminal_network),
+            merge(self_terminal_network, filtered_network),
+        )
+        @assert 1 in merged.decaying_ids
+        @assert 1 ∉ merged.terminal_ids
+        @assert !haskey(merged.byparent, 1)
+    end
+    for merged in (
+            merge(network, self_terminal_network),
+            merge(self_terminal_network, network),
+        )
+        @assert merged.byparent[1] == network.byparent[1]
+        @assert 1 in merged.decaying_ids
+        @assert 1 ∉ merged.terminal_ids
+    end
+    @assert split.stable_ids == converted.stable_ids == [2, 3]
 
     tiny_grid = range(0.0, 1.5, length = 9)
     tiny_table = CascadeTable(
-        combined;
+        converted;
         grid = tiny_grid,
         modes = (0,),
         orders = (nq = 4, nθ = 4, nµ = 4, nσ = 4, nma = 4),
         width_cut = Inf,
     )
-    combined_plan = CascadePlan(tiny_table, combined)
+    combined_plan = CascadePlan(tiny_table, converted)
     split_plan = CascadePlan(tiny_table, split)
     @assert split_plan.ids == combined_plan.ids
     @assert split_plan.particles == combined_plan.particles
@@ -665,6 +686,8 @@ let
 
     @assert particle(catalog, 1).name == "P"
     @assert particle(catalog, "P").id == 1
+    @assert particle(catalog, "parent-alias").id == 1
+    @assert particleids(catalog, "parent-alias") == [1]
     @assert particle(split, 1).name == "P"
     @assert particle(split, "P").id == 1
     @assert particleids(split, "P") == [1]
@@ -676,6 +699,10 @@ let
     filtered_split = filter(nbody(2), split)
     @assert filtered_split.path == split.path
     @assert filtered_split.sha == split.sha
+    fully_filtered_stats = validate(filter(nbody(3), split); verbose = false)
+    @assert fully_filtered_stats.channels == 0
+    @assert fully_filtered_stats.br_norm_outliers == 1
+    @assert fully_filtered_stats.br_maxdev == 1.0
     bottom_catalog = ParticleCatalog(Dict(
         1 => ParticleInfo(1, "B", 1.0, 0.0, 1.0, 0, 0, 0, 0, -1, 0),
         2 => split.parts[2],
@@ -845,7 +872,11 @@ let
     )
     threw = false
     try
-        readazyhydro(parent_mismatch)
+        convert_azyhydro(
+            [parent_mismatch],
+            tempname(),
+            tempname(),
+        )
     catch error
         threw = error isa ArgumentError &&
             occursin("does not match block parent", sprint(showerror, error))
@@ -859,7 +890,11 @@ let
     )
     threw = false
     try
-        readazyhydro(duplicate_header)
+        convert_azyhydro(
+            [duplicate_header],
+            tempname(),
+            tempname(),
+        )
     catch error
         threw = error isa ArgumentError &&
             occursin("duplicate particle ID", sprint(showerror, error))
@@ -873,7 +908,11 @@ let
     )
     threw = false
     try
-        readazyhydro(extra_channel)
+        convert_azyhydro(
+            [extra_channel],
+            tempname(),
+            tempname(),
+        )
     catch error
         threw = error isa ArgumentError &&
             occursin("particle columns", sprint(showerror, error))
@@ -883,6 +922,8 @@ let
     rm.(
         (
             combined_path,
+            converted_particle_path,
+            converted_decay_path,
             particle_path,
             decay_path,
             empty_particle_path,
@@ -903,9 +944,15 @@ let
     particle_path = tempname()
     reordered_particle_path = tempname()
     decay_path = tempname()
+    particle_output = tempname()
+    decay_output = tempname()
+    reordered_particle_output = tempname()
+    reordered_decay_output = tempname()
     bad_decay_path = tempname()
     flagged_decay_path = tempname()
     cgc_path = tempname()
+    cgc_particle_output = tempname()
+    cgc_decay_output = tempname()
     bad_cgc_path = tempname()
     particle_rows = [
         "rho 0.775 0.149 1 1 0 1 0 1 0 0 0 113",
@@ -929,11 +976,31 @@ let
             "omega pip pim gam 0.5 0\r\n",
     )
 
-    therminator = readtherminator(particle_path, decay_path)
-    reordered = readtherminator(reordered_particle_path, decay_path)
+    convert_therminator(
+        particle_path,
+        decay_path,
+        particle_output,
+        decay_output,
+    )
+    convert_therminator(
+        reordered_particle_path,
+        decay_path,
+        reordered_particle_output,
+        reordered_decay_output,
+    )
+    therminator = DecayList(
+        readparticles(particle_output),
+        readdecays(decay_output),
+    )
+    reordered = DecayList(
+        readparticles(reordered_particle_output),
+        readdecays(reordered_decay_output),
+    )
     @assert particle(therminator, "rho").id == 113
     @assert particle(therminator, "rho").degeneracy == 3
+    @assert spin(particle(therminator, "rho")) == 1
     @assert particle(therminator, "gam").degeneracy == 2
+    @assert spin(particle(therminator, "gam")) == 1
     @assert particle(therminator, "Kplu").strangeness == 1
     @assert particle(therminator, "Kplu").charge == 1
     @assert particle(therminator, "Dzero").charm == 1
@@ -951,7 +1018,12 @@ let
     write(bad_decay_path, "rho pip missing 1.0 0\n")
     threw = false
     try
-        readtherminator(particle_path, bad_decay_path)
+        convert_therminator(
+            particle_path,
+            bad_decay_path,
+            tempname(),
+            tempname(),
+        )
     catch error
         threw = error isa ArgumentError &&
             occursin("unknown daughter name", sprint(showerror, error)) &&
@@ -966,28 +1038,46 @@ let
     )
     threw = false
     try
-        readtherminator(particle_path, flagged_decay_path)
+        convert_therminator(
+            particle_path,
+            flagged_decay_path,
+            tempname(),
+            tempname(),
+        )
     catch error
         threw = error isa ArgumentError &&
-            occursin("supply cgc_path", sprint(showerror, error))
+            occursin("supply --cgc", sprint(showerror, error))
     end
     @assert threw
     write(cgc_path, "# j1 m1 j2 m2 J M CGC\n1 1 1 -1 1 0 0.25\n")
-    cgc_model = readtherminator(
+    convert_therminator(
         particle_path,
-        flagged_decay_path;
-        cgc_path,
+        flagged_decay_path,
+        cgc_particle_output,
+        cgc_decay_output;
+        cgc_path = cgc_path,
+    )
+    cgc_model = DecayList(
+        readparticles(cgc_particle_output),
+        readdecays(cgc_decay_output),
     )
     @assert cgc_model.byparent[113][1].br == 0.25
     # FastReso treats a coefficient absent from CGC.dat as zero.
     @assert cgc_model.byparent[9001][1].br == 0.0
-    @assert occursin(cgc_path, cgc_model.network.path)
+    enrolled_parents = Set{Int}()
+    CascadeTables.eachchannelkey(cgc_model) do parent_id, _channel, _daughter, _key
+        push!(enrolled_parents, parent_id)
+    end
+    @assert 9001 ∉ enrolled_parents
+    @assert occursin(cgc_path, read(cgc_decay_output, String))
     write(bad_cgc_path, "1 1 1 -1 1 0 NaN\n")
     threw = false
     try
-        readtherminator(
+        convert_therminator(
             particle_path,
-            flagged_decay_path;
+            flagged_decay_path,
+            tempname(),
+            tempname();
             cgc_path = bad_cgc_path,
         )
     catch error
@@ -1001,9 +1091,15 @@ let
             particle_path,
             reordered_particle_path,
             decay_path,
+            particle_output,
+            decay_output,
+            reordered_particle_output,
+            reordered_decay_output,
             bad_decay_path,
             flagged_decay_path,
             cgc_path,
+            cgc_particle_output,
+            cgc_decay_output,
             bad_cgc_path,
         );
         force = true,
@@ -2246,6 +2342,37 @@ let
     @assert all(isapprox.(result.F[101][1], expected_p; rtol = 1.0e-14))
     @assert all(isapprox.(result.F[102][1], expected_q; rtol = 1.0e-14))
     @assert all(isapprox.(result.F[103][1], expected_x; rtol = 1.0e-14))
+
+    # A heavy particle downstream of a cycle still runs after the complete
+    # cyclic component; only the irreducible edges inside that component are
+    # approximated.
+    ordering_parts = Dict(
+        1 => ParticleInfo(1, "A", 3.0, 0.0, 1.0, 0, 0),
+        2 => ParticleInfo(2, "B", 2.0, 0.0, 1.0, 0, 0),
+        3 => ParticleInfo(3, "C", 10.0, 0.0, 1.0, 0, 0),
+        4 => ParticleInfo(4, "stable", 0.1, 0.0, 1.0, 0, 0),
+    )
+    ordering_channels = Dict(
+        1 => [DecayChannel(1, 1.0, [4, 4])],
+        2 => [DecayChannel(2, 1.0, [4, 4])],
+        3 => [DecayChannel(3, 1.0, [4, 4])],
+    )
+    ordering_list = DecayList(
+        ordering_parts,
+        ordering_channels,
+        "cycle ordering",
+        "cycle ordering",
+    )
+    dependencies = Set([(1, 2), (2, 1), (2, 3)])
+    repeated_log = IOBuffer()
+    orders = with_logger(SimpleLogger(repeated_log, Logging.Warn)) do
+        [
+            CascadeTables._cascadeorder(ordering_list, dependencies),
+            CascadeTables._cascadeorder(ordering_list, dependencies),
+        ]
+    end
+    @assert orders == [[1, 2, 3], [1, 2, 3]]
+    @assert length(findall("cycle components", String(take!(repeated_log)))) == 2
 end
 
 println("   PASS")
@@ -2257,6 +2384,10 @@ println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
 # above; this asserts the *contract* every extension must preserve.
 @assert all(
     name -> name in names(CascadeTables),
+    (:readparticles, :readdecays),
+)
+@assert all(
+    name -> name ∉ names(CascadeTables),
     (
         :readgenericparticles,
         :readgenericdecays,
@@ -2265,6 +2396,8 @@ println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
         :readtherminator,
     ),
 )
+@assert !isdefined(CascadeTables.ParticleList, :read_decaylist)
+@assert !hasmethod(DecayList, Tuple{String})
 @assert !isdefined(CascadeTables, :ParticleSchema)
 @assert !isdefined(CascadeTables, :DecaySchema)
 let g = range(0.0, 4.0, length = 40), pT8 = collect(0.1:0.1:1.5)
@@ -2472,47 +2605,47 @@ println("   PASS")
 # ---------------------------------------------------------------- test 9
 println("== 9. Heavy-flavour supplement: parser and merged-list invariants ==")
 let
-    base_path = joinpath(@__DIR__, "decays_QM2016Plus_massorder.dat")
-    supplement_path = joinpath(@__DIR__, "decays_charm_bottom.dat")
-    base = readazyhydro(base_path)
-    supplement = CascadeTables.ParticleList._readazyhydro(supplement_path)
+    data_directory = joinpath(@__DIR__, "data")
+    base_particle_path = joinpath(data_directory, "particles_QM2016Plus.dat")
+    base_decay_path = joinpath(data_directory, "decays_QM2016Plus.dat")
+    supplement_particle_path =
+        joinpath(data_directory, "particles_charm_bottom.dat")
+    supplement_decay_path =
+        joinpath(data_directory, "decays_charm_bottom.dat")
+    base = DecayList(
+        readparticles(base_particle_path),
+        readdecays(base_decay_path),
+    )
+    supplement = (
+        catalog = readparticles(supplement_particle_path),
+        network = readdecays(supplement_decay_path),
+    )
 
-    # Mechanically splitting the production source changes only storage, not
-    # the resolved model or its enrolled numerical keys.
-    split_particles_path = tempname()
-    split_decays_path = tempname()
-    open(split_particles_path, "w") do particle_io
-        open(split_decays_path, "w") do decay_io
-            for line in eachline(base_path)
-                fields = split(line)
-                isempty(fields) && continue
-                if length(fields) == 12
-                    println(particle_io, join(fields[1:11], ' '))
-                elseif length(fields) == 8
-                    daughter_count = parse(Int, fields[2])
-                    println(
-                        decay_io,
-                        join(fields[1:3 + daughter_count], ' '),
-                    )
-                else
-                    error("unexpected production row width $(length(fields))")
-                end
-            end
-        end
-    end
-    split_base = readgeneric(split_particles_path, split_decays_path)
-    @assert split_base.parts == base.parts
-    @assert split_base.stable_ids == base.stable_ids
+    # The checked-in canonical production pair remains an exact conversion of
+    # the external-format source used by the FastReso cross-check.
+    converted_particles_path = tempname()
+    converted_decays_path = tempname()
+    convert_azyhydro(
+        [joinpath(@__DIR__, "decays_QM2016Plus_massorder.dat")],
+        converted_particles_path,
+        converted_decays_path,
+    )
+    converted_base = DecayList(
+        readparticles(converted_particles_path),
+        readdecays(converted_decays_path),
+    )
+    @assert converted_base.parts == base.parts
+    @assert converted_base.stable_ids == base.stable_ids
     signatures(decay_list) = Dict(
         parent_id => [
             (channel.parent, channel.br, Tuple(channel.daughters))
                 for channel in channels
         ] for (parent_id, channels) in decay_list.byparent
     )
-    @assert signatures(split_base) == signatures(base)
-    @assert CascadeTables.neededkeys(split_base) ==
+    @assert signatures(converted_base) == signatures(base)
+    @assert CascadeTables.neededkeys(converted_base) ==
         CascadeTables.neededkeys(base)
-    rm.((split_particles_path, split_decays_path); force = true)
+    rm.((converted_particles_path, converted_decays_path); force = true)
 
     @assert length(supplement.catalog.byid) == 150
     @assert isempty(intersect(keys(base.parts), keys(supplement.catalog.byid)))
@@ -2530,18 +2663,32 @@ let
         sprint(showerror, unresolved_supplement),
     )
 
-    combined = readazyhydro(base_path, supplement_path)
-    legacy_combined = DecayList(base_path, supplement_path)
-    @assert legacy_combined.parts == combined.parts
-    @assert signatures(legacy_combined) == signatures(combined)
+    combined = DecayList(
+        merge(base.catalog, supplement.catalog),
+        merge(base.network, supplement.network),
+    )
     @assert combined.parts !== base.parts
     @assert combined.parts !== supplement.catalog.byid
     @assert combined.byparent !== base.byparent
     @assert combined.byparent !== supplement.network.byparent
-    @assert combined.path == string(
-        base.path, " + ", supplement.catalog.path,
+    @assert combined.path == join(
+        (
+            base.catalog.path,
+            supplement.catalog.path,
+            base.network.path,
+            supplement.network.path,
+        ),
+        " + ",
     )
-    @assert combined.sha == string(base.sha, "+", supplement.catalog.sha)
+    @assert combined.sha == join(
+        (
+            base.catalog.sha,
+            supplement.catalog.sha,
+            base.network.sha,
+            supplement.network.sha,
+        ),
+        "+",
+    )
     supplement_stable_ids = collect(setdiff(
         keys(supplement.catalog.byid),
         supplement.network.decaying_ids,

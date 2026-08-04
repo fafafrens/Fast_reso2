@@ -2,8 +2,8 @@
     ParticleList
 
 Particle metadata and unresolved decay topology. Shared input mechanics live
-here; the generic, AZYHYDRO, and THERMINATOR adapters are included from
-`readers/`.
+here; only the canonical split-file reader is part of the runtime module.
+External formats are converted by standalone tools.
 """
 module ParticleList
 
@@ -11,7 +11,7 @@ using SHA
 
 export ParticleInfo, DecayChannel,
        ParticleCatalog, DecayNetwork,
-       read_decaylist,
+       readparticles, readdecays,
        particle, particleids,
        isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, isbottom
 
@@ -43,8 +43,11 @@ ParticleInfo(
 
 "Physical isospin I (half-integer), recovered from the stored 2I."
 isospin(particle::ParticleInfo) = particle.twiceisospin / 2
-"Physical spin J (half-integer), recovered from the 2J+1 spin degeneracy."
-spin(particle::ParticleInfo) = (particle.degeneracy - 1) / 2
+_spindegeneracyoffset(mass) = mass > 0.001 ? 1 : 0
+
+"Physical spin J, recovered from the massive 2J+1 or massless 2J degeneracy."
+spin(particle::ParticleInfo) =
+    (particle.degeneracy - _spindegeneracyoffset(particle.mass)) / 2
 "True for a baryon (nonzero baryon number)."
 isbaryon(particle::ParticleInfo) = particle.baryon != 0
 "True for a meson (zero baryon number)."
@@ -240,8 +243,12 @@ function Base.merge(
     )
 end
 
-_isselfchannel(channel::DecayChannel, parent_id::Integer = channel.parent) =
+_isselfchannel(channel::DecayChannel, parent_id::Integer) =
     length(channel.daughters) == 1 && only(channel.daughters) == parent_id
+
+_isterminalblock(channels, parent_id) =
+    !isempty(channels) &&
+    all(channel -> _isselfchannel(channel, parent_id), channels)
 
 function _channelsignature(channel::DecayChannel)
     return (channel.parent, channel.br, Tuple(sort(channel.daughters)))
@@ -298,20 +305,18 @@ function DecayNetwork(
             throw(ArgumentError(
                 "channel parent disagrees with dictionary key $parent_id",
             ))
-        any(channel -> !_isselfchannel(channel, parent_id), channels) &&
+        if _isterminalblock(channels, parent_id)
+            push!(inferred_terminal, parent_id)
+        elseif !isempty(channels)
             push!(inferred_decaying, parent_id)
-        !isempty(channels) && all(
-            channel -> _isselfchannel(channel, parent_id), channels,
-        ) && push!(inferred_terminal, parent_id)
+        end
     end
 
-    selected_decaying = decaying_ids === nothing ?
-        inferred_decaying : collect(Int, decaying_ids)
+    selected_decaying = collect(Int, something(decaying_ids, ()))
     append!(selected_decaying, inferred_decaying)
     sort!(unique!(selected_decaying))
 
-    selected_terminal = terminal_ids === nothing ?
-        inferred_terminal : collect(Int, terminal_ids)
+    selected_terminal = collect(Int, something(terminal_ids, ()))
     append!(selected_terminal, inferred_terminal)
     sort!(unique!(selected_terminal))
 
@@ -344,8 +349,14 @@ function Base.merge(
     for network in networks
         append!(decaying_ids, network.decaying_ids)
         append!(terminal_ids, network.terminal_ids)
+    end
+
+    decaying_set = Set(decaying_ids)
+    for network in networks
         for parent_id in sort!(collect(keys(network.byparent)))
             channels = network.byparent[parent_id]
+            parent_id in decaying_set &&
+                _isterminalblock(channels, parent_id) && continue
             if haskey(channels_by_parent, parent_id)
                 _samechannels(channels_by_parent[parent_id], channels) ||
                     throw(ArgumentError(
@@ -358,7 +369,6 @@ function Base.merge(
         end
     end
 
-    decaying_set = Set(decaying_ids)
     filter!(particle_id -> particle_id ∉ decaying_set, terminal_ids)
 
     return DecayNetwork(
@@ -371,7 +381,7 @@ function Base.merge(
 end
 
 # ---------------------------------------------------------------------------
-# Fixed-format readers
+# Canonical split-file reader
 # ---------------------------------------------------------------------------
 
 function _sourceidentity(path::AbstractString)
@@ -413,7 +423,7 @@ function _parsecanonicalparticle(fields, location, kind)
     return _parseat(location, "$kind particle") do
         particle_id = parse(Int, fields[1])
         particle_id != 0 || throw(ArgumentError(
-            "particle ID 0 is reserved for AZYHYDRO daughter padding",
+            "particle ID 0 is reserved and cannot identify a particle",
         ))
         return ParticleInfo(
             particle_id,
@@ -453,19 +463,11 @@ function _parsedaughters(values, daughter_count)
     ))
     daughters = [parse(Int, values[index]) for index in 1:daughter_count]
     any(==(0), daughters) && throw(ArgumentError(
-        "particle ID 0 is reserved for daughter padding",
+        "particle ID 0 is reserved and cannot identify a daughter",
     ))
     return daughters
 end
 
-include(joinpath(@__DIR__, "readers", "Generic.jl"))
-include(joinpath(@__DIR__, "readers", "AZYHYDRO.jl"))
-include(joinpath(@__DIR__, "readers", "THERMINATOR.jl"))
-
-"Compatibility reader for the original single-file AZYHYDRO API."
-function read_decaylist(path::AbstractString)
-    source = _readazyhydro(path)
-    return source.catalog.byid, source.network.byparent
-end
+include(joinpath(@__DIR__, "readers", "Canonical.jl"))
 
 end # module

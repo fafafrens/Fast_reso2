@@ -1,16 +1,16 @@
-# Fixed AZYHYDRO combined-file adapter, included inside `ParticleList`.
+# AZYHYDRO combined-file conversion. Included inside `DecayDataConverter`.
 
 function _parseazyhydrochannel(fields, location)
-    _expectcolumns(fields, 8, location, "AZYHYDRO decay")
-    return _parseat(location, "AZYHYDRO decay") do
+    PL._expectcolumns(fields, 8, location, "AZYHYDRO decay")
+    return PL._parseat(location, "AZYHYDRO decay") do
         daughter_count = parse(Int, fields[2])
-        daughters = _parsedaughters(fields[4:8], daughter_count)
+        daughters = PL._parsedaughters(fields[4:8], daughter_count)
         all(value -> parse(Int, value) == 0, fields[4 + daughter_count:8]) ||
             throw(ArgumentError(
                 "channel declares $daughter_count daughters but has " *
                     "nonzero padding",
             ))
-        return DecayChannel(
+        return PL.DecayChannel(
             parse(Int, fields[1]),
             parse(Float64, fields[3]),
             daughters,
@@ -18,27 +18,27 @@ function _parseazyhydrochannel(fields, location)
     end
 end
 
-function _readazyhydrofile(path::AbstractString)
-    rows = _datarows(path)
-    particles = Dict{Int, ParticleInfo}()
-    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
+function _loadazyhydrofile(path::AbstractString)
+    rows = PL._datarows(path)
+    particles = Dict{Int, PL.ParticleInfo}()
+    channels_by_parent = Dict{Int, Vector{PL.DecayChannel}}()
     row_index = 1
 
     while row_index <= length(rows)
         line_number, fields = rows[row_index]
         location = "$(String(path)):$line_number"
-        _expectcolumns(fields, 12, location, "AZYHYDRO particle")
-        particle_info = _parsecanonicalparticle(
+        PL._expectcolumns(fields, 12, location, "AZYHYDRO particle")
+        particle_info = PL._parsecanonicalparticle(
             fields[1:11], location, "AZYHYDRO",
         )
-        channel_count = _parseat(location, "AZYHYDRO particle") do
+        channel_count = PL._parseat(location, "AZYHYDRO particle") do
             count = parse(Int, fields[12])
             count >= 0 || throw(ArgumentError(
                 "channel count must be nonnegative",
             ))
             return count
         end
-        _insertparticle!(particles, particle_info, location)
+        PL._insertparticle!(particles, particle_info, location)
 
         available = length(rows) - row_index
         available >= channel_count || throw(ArgumentError(
@@ -53,19 +53,19 @@ function _readazyhydrofile(path::AbstractString)
                 "$channel_location: channel parent $(channel.parent) does not " *
                     "match block parent $(particle_info.id)",
             ))
-            _pushchannel!(channels_by_parent, channel)
+            PL._pushchannel!(channels_by_parent, channel)
         end
         row_index += channel_count + 1
     end
 
-    source_path, source_sha = _sourceidentity(path)
+    source_path, source_sha = PL._sourceidentity(path)
     return (
-        catalog = ParticleCatalog(
+        catalog = PL.ParticleCatalog(
             particles;
             path = source_path,
             sha = source_sha,
         ),
-        network = DecayNetwork(
+        network = PL.DecayNetwork(
             channels_by_parent;
             path = source_path,
             sha = source_sha,
@@ -73,22 +73,8 @@ function _readazyhydrofile(path::AbstractString)
     )
 end
 
-"""
-    _readazyhydro(first_path, remaining_paths...) -> (catalog, network)
-
-Read and merge one or more fixed AZYHYDRO combined files. Each particle header
-
-    id name mass width degeneracy B S C Bot I Q n_channels
-
-is followed by exactly `n_channels` padded decay rows
-
-    parent n_daughters BR d1 d2 d3 d4 d5
-"""
-function _readazyhydro(
-        first_path::AbstractString,
-        remaining_paths::AbstractString...,
-    )
-    sources = map(_readazyhydrofile, (first_path, remaining_paths...))
+function _loadazyhydro(paths::AbstractVector{<:AbstractString})
+    sources = map(_loadazyhydrofile, paths)
     length(sources) == 1 && return only(sources)
     return (
         catalog = merge((source.catalog for source in sources)...),

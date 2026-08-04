@@ -3,14 +3,16 @@
 
 Structured, persistent decay-matrix tables for the full resonance cascade.
 
-    dl = readazyhydro("decays_QM2016Plus_massorder.dat")
+    dl = DecayList(
+        readparticles("particles.dat"),
+        readdecays("decays.dat"),
+    )
     res = runcascade(                                 # build, compile, and run
         dl; primary = myprimaries, cache = "Wtables.jls",
     )
 
 Design (see matrix_notes.pdf for details):
-  * decay matrices are serialized; source identity remains in table metadata,
-    with source bytes retained for directly file-backed lists;
+  * decay matrices are serialized; source path and hash remain in table metadata;
   * matrices are keyed by `ChannelKey` (the masses plus the parent width,
     observed daughter fixed, unobserved partners sorted), allowing physically
     equivalent channels to share an entry;
@@ -34,8 +36,7 @@ import LinearAlgebra: mul!
 include("CascadeLinearAlgebra.jl")
 
 export ParticleCatalog, DecayNetwork, DecayList,
-    readgenericparticles, readgenericdecays, readgeneric,
-    readazyhydro, readtherminator,
+    readparticles, readdecays,
     particle, particleids,
     ChannelKey, CascadeTable, CascadePlan, runcascade,
     prune!, validate,
@@ -249,85 +250,6 @@ function DecayList(
 end
 
 """
-    readazyhydro(first_path, remaining_paths...) -> DecayList
-
-Read one or more fixed AZYHYDRO combined files, merge their raw catalogs and
-networks, and resolve once.
-"""
-function readazyhydro(
-        first_path::AbstractString,
-        remaining_paths::AbstractString...,
-    )
-    source = ParticleList._readazyhydro(first_path, remaining_paths...)
-    return DecayList(source.catalog, source.network)
-end
-
-"""
-    readgenericparticles(particle_path) -> ParticleCatalog
-
-Read particle metadata from a fixed generic particle file. The returned
-catalog can be inspected or merged before it is resolved with a decay network.
-"""
-readgenericparticles(particle_path::AbstractString) =
-    ParticleList._readgenericparticles(particle_path)
-
-"""
-    readgenericdecays(decay_path) -> DecayNetwork
-
-Read unresolved decay topology from a fixed generic decay file. Particle IDs
-are resolved only when the network is combined with a particle catalog.
-"""
-readgenericdecays(decay_path::AbstractString) =
-    ParticleList._readgenericdecays(decay_path)
-
-"""
-    readgeneric(particle_path, decay_path) -> DecayList
-
-Read the fixed generic particle and decay files, then resolve them.
-"""
-function readgeneric(
-        particle_path::AbstractString,
-        decay_path::AbstractString,
-    )
-    return DecayList(
-        readgenericparticles(particle_path),
-        readgenericdecays(decay_path),
-    )
-end
-
-"""
-    readtherminator(particle_path, decay_path; cgc_path = nothing) -> DecayList
-
-Read fixed THERMINATOR particle and name-based decay files. Supply the
-THERMINATOR `CGC.dat` path when any decay row requests Clebsch-Gordan
-rescaling.
-"""
-function readtherminator(
-        particle_path::AbstractString,
-        decay_path::AbstractString;
-        cgc_path::Union{Nothing, AbstractString} = nothing,
-    )
-    source = ParticleList._readtherminator(
-        particle_path,
-        decay_path;
-        cgc_path,
-    )
-    return DecayList(source.catalog, source.network)
-end
-
-"Compatibility shorthand for one or more AZYHYDRO combined files."
-DecayList(
-    first_path::AbstractString,
-    remaining_paths::AbstractString...,
-) = readazyhydro(first_path, remaining_paths...)
-
-"The fixed generic format is the default for separate particle/decay files."
-DecayList(;
-    particles::AbstractString,
-    decays::AbstractString,
-) = readgeneric(particles, decays)
-
-"""
     merge(first::DecayList, remaining::DecayList...) -> DecayList
 
 Copy or combine resolved decay lists. A particle may occur in several inputs
@@ -336,9 +258,8 @@ parent channel block may also repeat when
 it contains the same multiset of channels; channel-row and daughter ordering
 do not matter, but branching ratios must agree exactly. Conflicting particle
 or channel definitions are rejected instead of overwritten or concatenated.
-For cross-list daughters, pass all AZYHYDRO sources together to
-`readazyhydro(base_path, supplement_path)` so resolution happens only after
-every source is present.
+For cross-list daughters, merge all catalogs and networks before constructing
+the resolved `DecayList` so every source is present at the resolution boundary.
 
 The result owns new outer dictionaries and a new terminal-ID vector, preserves
 the terminal-particle classification of every input, and records source paths
@@ -387,8 +308,7 @@ allparticles(decay_list::DecayList) = allparticles(decay_list.catalog)
 
 Return particles marked terminal by the decay list in ascending particle-ID
 order. A sole one-body self-channel marks an explicit terminal; particles not
-marked decaying are also terminal, including particles without a channel block
-in GENERIC and THERMINATOR inputs.
+marked decaying are also terminal, including particles without a channel block.
 """
 stableparticles(decay_list::DecayList) =
     [decay_list.catalog.byid[particle_id] for particle_id in decay_list.stable_ids]
@@ -689,8 +609,9 @@ end
 Call `visit(parent_id, channel, daughter_id, key)` for every enrolled
 observed-daughter slot. Table construction and plan compilation share the same
 threshold, width-tail, nonpositive-mass, and self-slot rules. Returns
-enrollment and skip statistics. Multiplicity and particle references were
-already checked when the `DecayList` was resolved.
+enrollment and skip statistics. Rows with exactly zero branching weight are
+ignored. Multiplicity and particle references were already checked when the
+`DecayList` was resolved.
 """
 function eachchannelkey(
         visit,
@@ -714,6 +635,7 @@ function eachchannelkey(
         broad_parent = parent_width > width_cut
 
         for channel in dl.network.byparent[parent_id]
+            iszero(channel.br) && continue
             daughter_ids = channel.daughters
             multiplicity = length(daughter_ids)
 
@@ -785,45 +707,126 @@ function neededkeys(
 end
 
 function _cascadeorder(dl::DecayList, dependencies)
-    decaying_parents = collect(keys(dl.network.byparent))
-    incoming_count = Dict(parent_id => 0 for parent_id in decaying_parents)
+    decaying_parents = sort!(collect(keys(dl.network.byparent)))
     downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
 
     for (parent_id, daughter_id) in dependencies
         push!(downstream[parent_id], daughter_id)
-        incoming_count[daughter_id] += 1
+    end
+    foreach(daughters -> sort!(unique!(daughters)), values(downstream))
+
+    # Collapse every mutually dependent set before sorting. The resulting
+    # component graph is acyclic, so only edges inside a component need an
+    # approximate order.
+    next_index = 0
+    indices = Dict{Int, Int}()
+    lowlinks = Dict{Int, Int}()
+    stack = Int[]
+    on_stack = Set{Int}()
+    components = Vector{Vector{Int}}()
+
+    function visit!(parent_id)
+        next_index += 1
+        indices[parent_id] = next_index
+        lowlinks[parent_id] = next_index
+        push!(stack, parent_id)
+        push!(on_stack, parent_id)
+
+        for daughter_id in downstream[parent_id]
+            if !haskey(indices, daughter_id)
+                visit!(daughter_id)
+                lowlinks[parent_id] = min(
+                    lowlinks[parent_id], lowlinks[daughter_id],
+                )
+            elseif daughter_id in on_stack
+                lowlinks[parent_id] = min(
+                    lowlinks[parent_id], indices[daughter_id],
+                )
+            end
+        end
+
+        if lowlinks[parent_id] == indices[parent_id]
+            component = Int[]
+            while true
+                member = pop!(stack)
+                delete!(on_stack, member)
+                push!(component, member)
+                member == parent_id && break
+            end
+            sort!(
+                component;
+                by = member -> (-dl.catalog.byid[member].mass, member),
+            )
+            push!(components, component)
+        end
+        return nothing
+    end
+
+    for parent_id in decaying_parents
+        haskey(indices, parent_id) || visit!(parent_id)
+    end
+
+    component_of = Dict{Int, Int}()
+    for (component_id, component) in pairs(components)
+        for parent_id in component
+            component_of[parent_id] = component_id
+        end
+    end
+
+    component_downstream = [Int[] for _ in components]
+    for (parent_id, daughter_ids) in downstream
+        parent_component = component_of[parent_id]
+        for daughter_id in daughter_ids
+            daughter_component = component_of[daughter_id]
+            parent_component == daughter_component ||
+                push!(component_downstream[parent_component], daughter_component)
+        end
+    end
+
+    incoming_count = zeros(Int, length(components))
+    for daughter_components in component_downstream
+        sort!(unique!(daughter_components))
+        for daughter_component in daughter_components
+            incoming_count[daughter_component] += 1
+        end
+    end
+
+    cycle_count = 0
+    cycle_species = 0
+    for component in components
+        cyclic = length(component) > 1 ||
+            first(component) in downstream[first(component)]
+        if cyclic
+            cycle_count += 1
+            cycle_species += length(component)
+        end
+    end
+    if cycle_count > 0
+        @warn "cascade feed-down graph has $cycle_count cycle components " *
+              "involving $cycle_species species; members ordered by mass " *
+              "within each component, cyclic feed-down approximate"
     end
 
     order = Int[]
-    unprocessed = Set(decaying_parents)
-
-    while !isempty(unprocessed)
-        ready_parents = [
-            parent_id for parent_id in unprocessed
-                if incoming_count[parent_id] == 0
-        ]
-
-        if isempty(ready_parents)
-            blocked_parents = sort!(
-                collect(unprocessed);
-                by = parent_id -> (-dl.catalog.byid[parent_id].mass, parent_id),
-            )
-            @warn "cascade feed-down graph has a cycle (mutually reopening broad \
-                   parents); $(length(blocked_parents)) species ordered by mass, cross \
-                   feed-down approximate" maxlog = 1
-            append!(order, blocked_parents)
-            break
-        end
-
-        parent_id = argmax(
-            candidate -> (dl.catalog.byid[candidate].mass, -candidate),
-            ready_parents,
+    ready_components = findall(iszero, incoming_count)
+    while !isempty(ready_components)
+        component_id = argmax(
+            candidate -> begin
+                parent_id = first(components[candidate])
+                (dl.catalog.byid[parent_id].mass, -parent_id)
+            end,
+            ready_components,
         )
-        push!(order, parent_id)
-        delete!(unprocessed, parent_id)
+        deleteat!(
+            ready_components,
+            findfirst(==(component_id), ready_components),
+        )
+        append!(order, components[component_id])
 
-        for daughter_id in downstream[parent_id]
-            incoming_count[daughter_id] -= 1
+        for daughter_component in component_downstream[component_id]
+            incoming_count[daughter_component] -= 1
+            incoming_count[daughter_component] == 0 &&
+                push!(ready_components, daughter_component)
         end
     end
 
@@ -1060,11 +1063,9 @@ function prune!(table::CascadeTable, decay_list::DecayList)
 end
 
 function _table_metadata(decay_list::DecayList)
-    source_bytes = isfile(decay_list.path) ? read(decay_list.path) : UInt8[]
     return Dict{Symbol, Any}(
         :sha => decay_list.sha,
         :path => decay_list.path,
-        :file => source_bytes,
         :created => string(now()),
     )
 end
@@ -1535,12 +1536,12 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
     charge_violations = Tuple{Int, Vector{Int}}[]
     baryon_violations = Tuple{Int, Vector{Int}}[]
     multiplicity_counts = Dict{Int, Int}()
-    branching_ratio_sums = Dict{Int, Float64}()
+    branching_ratio_sums = Dict(
+        parent_id => 0.0 for parent_id in decay_list.network.decaying_ids
+    )
 
     for (parent_id, channels) in decay_list.network.byparent
         parent = decay_list.catalog.byid[parent_id]
-        branching_ratio_sum = 0.0
-        has_nonself_channel = false
         seen_channels = Set{Tuple{Float64, Tuple}}()
 
         for channel in channels
@@ -1560,9 +1561,8 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
                 continue
             end
 
-            has_nonself_channel = true
             channel_count += 1
-            branching_ratio_sum += channel.br
+            branching_ratio_sums[parent_id] += channel.br
 
             if !(0.0 ≤ channel.br ≤ 1 + 1.0e-6)
                 invalid_branching_ratio_count += 1
@@ -1596,10 +1596,6 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
             if parent.mass + 1.0e-6 < sum(daughter -> daughter.mass, daughters)
                 subthreshold_count += 1
             end
-        end
-
-        if has_nonself_channel
-            branching_ratio_sums[parent_id] = branching_ratio_sum
         end
     end
 

@@ -61,7 +61,10 @@ W = decaymatrices(ρ, [0, 2], grid, grid)          # one matrix per Fourier mode
 ## 2. The whole cascade
 include("CascadeTables.jl"); using .CascadeTables
 
-dl = readazyhydro("decays_QM2016Plus_massorder.dat")
+dl = DecayList(
+    readparticles("data/particles_QM2016Plus.dat"),
+    readdecays("data/decays_QM2016Plus.dat"),
+)
 T  = 0.155
 primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
     (n == 0 ? 1.0 : 0.04) * p.degeneracy * [exp(-hypot(p.mass, q) / T) for q in qs]
@@ -111,8 +114,9 @@ cache build/load timings depend on the system and should be measured there.
 
 ## Files
 
-Core modules, the test suite and the data live at the root; everything that
-produces a figure (script **and** its output) lives in `figures/`.
+Core modules and the test suite live at the root, canonical runtime data lives
+in `data/`, and everything that produces a figure (script **and** its output)
+lives in `figures/`.
 
 | File | Role |
 |------|------|
@@ -123,13 +127,14 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
 | `benchmarks/fastreso_crosscheck/` | Cross-check against upstream [FastReso](https://github.com/amazeliauskas/FastReso) — see its own README |
 | `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
-| `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and shared reader mechanics |
-| `readers/`          | Isolated fixed-format adapters for GENERIC, AZYHYDRO, and THERMINATOR inputs |
+| `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and canonical reader mechanics |
+| `readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
 | `runtests.jl`       | Test suite (see below) |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
-| `decays_QM2016Plus_massorder.dat` | Decay list (mass-ordered) |
-| `decays_charm_bottom.dat` | Charm+bottom supplement (150 states), generated from PDG — see `tools/` |
+| `data/particles_QM2016Plus.dat` / `data/decays_QM2016Plus.dat` | Canonical mass-ordered particle catalog and decay network |
+| `data/particles_charm_bottom.dat` / `data/decays_charm_bottom.dat` | Canonical charm+bottom supplement (150 states) |
+| `tools/convert_decay_data.jl` | Converts AZYHYDRO or THERMINATOR input into the canonical split format |
 | `tools/gen_heavy_flavour.py` | Regenerates and validates the charm+bottom list from the pinned PDG database |
 | `figures/cascade.jl` | Full cascade driver (builds/loads the packed `Wtables.jls` cache) → `cascade.png` |
 | `figures/physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
@@ -138,7 +143,7 @@ produces a figure (script **and** its output) lives in `figures/`.
 | `figures/demo_filter.jl` | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
 
 The figure scripts resolve paths from their own location (`@__DIR__`), so they
-run from anywhere; data is read from the root and figures are written next to
+run from anywhere; data is read from `data/` and figures are written next to
 the script that makes them.
 
 ## Usage
@@ -183,95 +188,72 @@ Particle metadata and decay topology are independent input layers:
 - `DecayList` resolves the two. It is the strict, runnable model accepted by
   filtering, tables, plans, validation, and cascade execution.
 
-Three fixed formats replace configurable schemas. Their readers do not guess:
-
-| reader | particle identity | file layout |
-|--------|-------------------|-------------|
-| `readgenericparticles(particles)` / `readgenericdecays(decays)` | integer ID | two fixed, separate files |
-| `readazyhydro(paths...)` | integer ID | one or more combined AZYHYDRO files |
-| `readtherminator(particles, decays)` | exact name | THERMINATOR particle and decay files |
-
-The generic convention is the default for separate files:
+The runtime accepts one canonical split format and does not guess the source
+convention:
 
 ```text
 # particles
-id name mass width degeneracy B S C Bot I Q
+id name mass width degeneracy B S C Bot I Q [aliases...]
 
 # decays
 parent n_daughters branching_fraction daughters...
 ```
 
-The daughter tail must contain exactly `n_daughters` IDs. The two files can be
-loaded independently, then resolved together:
+Aliases are optional whitespace-free labels. The daughter tail must contain
+exactly `n_daughters` integer IDs. Particle metadata and decay topology load
+independently and are resolved only when constructing the model:
 
 ```julia
-catalog = readgenericparticles("particles.dat")
-network = readgenericdecays("channels.dat")
+catalog = readparticles("particles.dat")
+network = readdecays("decays.dat")
 dl = DecayList(catalog, network)
 ```
 
-The combined reader and keyword constructor are equivalent conveniences:
+Supplements remain independent until resolution. This lets a decay network
+refer to daughters supplied by another catalog:
 
 ```julia
-dl = readgeneric("particles.dat", "channels.dat")
-dl = DecayList(particles = "particles.dat", decays = "channels.dat")
-```
-
-AZYHYDRO stores a 12-column particle header followed by its declared number of
-eight-column, zero-padded channel rows. Supplements may refer to particles from
-the base source, so pass every source in one call and resolve only after they
-have been merged:
-
-```julia
-dl = readazyhydro(
-    "decays_QM2016Plus_massorder.dat",
-    "decays_charm_bottom.dat",
+catalog = merge(
+    readparticles("data/particles_QM2016Plus.dat"),
+    readparticles("data/particles_charm_bottom.dat"),
 )
-```
-
-`DecayList(path...)` remains a compatibility shorthand for `readazyhydro`.
-The heavy supplement is not runnable alone because many of its daughters are
-defined by the base catalog.
-
-THERMINATOR uses the fixed particle layout
-
-```text
-name mass width spin I I3 Nq Ns Naq Nas Nc Nac MC
-```
-
-and name-based two-/three-body channel rows. The reader derives degeneracy,
-`B`, `S`, `C`, and electric charge from those fields. Unique nonzero MC codes
-remain particle IDs. When an MC code is duplicated, every colliding particle
-receives a deterministic internal ID; `particleids(dl, "MC:3128")` retrieves
-all particles carrying the original code. Unambiguous MC-code signs are
-preserved, so `isantiparticle` reflects the source convention and cannot repair
-sign mistakes in an input table. If a decay row requests
-Clebsch–Gordan rescaling, provide the coefficient table:
-
-```julia
-dl = readtherminator(
-    "particles.data",
-    "decays.data";
-    cgc_path = "CGC.dat",
+network = merge(
+    readdecays("data/decays_QM2016Plus.dat"),
+    readdecays("data/decays_charm_bottom.dat"),
 )
+dl = DecayList(catalog, network)
 ```
 
-The coefficient table is authoritative: a requested coefficient absent from
-`CGC.dat` contributes zero, matching FastReso's THERMINATOR implementation.
-THERMINATOR branching weights depend on particle metadata during CG rescaling;
-the resolved `DecayList.path` and `.sha` include every particle, decay, and CGC
-source. The checked-in `particles_charm.data` and `decays_charm.data` are
-partial legacy snippets, not a matching standalone pair; use a complete
-THERMINATOR catalog/network pair.
+Format-specific parsing is an offline conversion step under `tools/`, so new
+source formats can be added without expanding the runtime API. Convert one or
+more AZYHYDRO combined files with:
 
-Each reader constructs the relevant `ParticleCatalog` or `DecayNetwork` layer;
-the combined readers then apply the same strict resolution. Raw programmatic
-data can still use `DecayList(catalog, network)`. Resolution accepts only a sole
-`parent → parent` terminal row or runnable 2-/3-/4-body channels; unsupported
-multiplicities and unresolved particle references fail before table
-construction. Branching fractions must be finite but are neither clamped nor
-renormalized; `validate(dl)` reports values outside the physical `[0, 1]`
-range and incomplete parent sums.
+```bash
+julia --project=. tools/convert_decay_data.jl azyhydro INPUT... \
+  --particles-out particles.dat --decays-out decays.dat
+```
+
+Convert THERMINATOR particle and name-based decay files with an optional
+Clebsch–Gordan table:
+
+```bash
+julia --project=. tools/convert_decay_data.jl therminator \
+  particles.data decays.data --cgc CGC.dat \
+  --particles-out particles.dat --decays-out decays.dat
+```
+
+The converter resolves names, derives quantum numbers, applies requested CG
+coefficients, preserves source aliases in the canonical particle rows, and
+refuses to replace an existing output unless `--force` is supplied. Its output
+is then loaded through the same `readparticles` and `readdecays` functions as
+every other model.
+
+Raw programmatic data can also use `DecayList(catalog, network)`. Resolution
+accepts only a sole `parent → parent` terminal row or runnable 2-/3-/4-body
+channels; unsupported multiplicities and unresolved particle references fail
+before table construction. Branching fractions must be finite but are neither
+clamped nor renormalized; `validate(dl)` reports values outside the physical
+`[0, 1]` range and incomplete parent sums.
 
 `ParticleInfo.name` is the canonical display name. Catalog merges retain a
 different spelling for the same ID as an alias. `particle(catalog, id)` and
@@ -385,6 +367,10 @@ provenance:
   *Review of Particle Physics* if you use it. The generated header records the
   exact database release, schema version, license, and citation.
 
+The corresponding files under `data/` are deterministic canonical conversions
+of these sources and retain the source path and SHA-256 in their headers. They
+carry the same data provenance and licensing.
+
 ### Regenerating the charm/bottom supplement
 
 The generator is pinned to the PDG edition used by the checked-in artifact:
@@ -393,6 +379,10 @@ The generator is pinned to the PDG edition used by the checked-in artifact:
 python -m pip install -r tools/requirements-heavy-flavour.txt
 python tools/gen_heavy_flavour.py --check
 python tools/gen_heavy_flavour.py --force  # regenerate after reviewing drift
+julia --project=. tools/convert_decay_data.jl azyhydro \
+  decays_charm_bottom.dat \
+  --particles-out data/particles_charm_bottom.dat \
+  --decays-out data/decays_charm_bottom.dat --force
 ```
 
 Generation is validated in memory and replacement is atomic. Missing required

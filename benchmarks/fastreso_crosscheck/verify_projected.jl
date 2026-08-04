@@ -3,9 +3,11 @@ const REPOSITORY_ROOT = normpath(joinpath(BENCHMARK_DIR, "..", ".."))
 
 include(joinpath(BENCHMARK_DIR, "CrosscheckTools.jl"))
 include(joinpath(REPOSITORY_ROOT, "CascadeTables.jl"))
+include(joinpath(REPOSITORY_ROOT, "tools", "convert_decay_data.jl"))
 
 using .CrosscheckTools
 using .CascadeTables
+using .DecayDataConverter
 using FastGaussQuadrature: gausslegendre
 using Printf
 using Statistics
@@ -20,6 +22,15 @@ function file_fnv1a64(path)
         hash = (hash ⊻ UInt64(byte)) * UInt64(0x100000001b3)
     end
     return lowercase(string(hash; base = 16, pad = 16))
+end
+
+function canonical_decay_list(azyhydro_path)
+    return mktempdir() do directory
+        particle_path = joinpath(directory, "particles.dat")
+        decay_path = joinpath(directory, "decays.dat")
+        convert_azyhydro([azyhydro_path], particle_path, decay_path)
+        DecayList(readparticles(particle_path), readdecays(decay_path))
+    end
 end
 
 function thermal_projector(temperature, eta_maximum, order)
@@ -84,7 +95,7 @@ function main(arguments)
             "(expected $expected_hash, got $actual_hash)",
         )
 
-    raw_decay_list = DecayList(decay_path)
+    raw_decay_list = canonical_decay_list(decay_path)
     # Upstream FastReso is sharp-parent and implements only 2-/3-body rows.
     decay_list = filter(nbody(2, 3), raw_decay_list)
     projector = thermal_projector(

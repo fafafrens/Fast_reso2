@@ -12,7 +12,11 @@ using Printf
 const T   = 0.145        # GeV
 const v2p = 0.05         # primary elliptic-flow amplitude (all species)
 
-dl = DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
+const DATA = joinpath(ROOT, "data")
+dl = DecayList(
+    readparticles(joinpath(DATA, "particles_QM2016Plus.dat")),
+    readdecays(joinpath(DATA, "decays_QM2016Plus.dat")),
+)
 
 t0 = time()
 plan = CascadePlan(dl; cache = joinpath(ROOT, "Wtables.jls"))

@@ -15,12 +15,19 @@ const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
 using .CascadeTables
 using Printf
 
+const DATA = joinpath(ROOT, "data")
+
 # Resolve the main catalog and charm+bottom supplement together. Supplement
-# channels may refer directly to particle IDs supplied by the base source.
-dl = readazyhydro(
-    joinpath(ROOT, "decays_QM2016Plus_massorder.dat"),
-    joinpath(ROOT, "decays_charm_bottom.dat"),
+# channels may refer directly to particle IDs supplied by the base catalog.
+catalog = merge(
+    readparticles(joinpath(DATA, "particles_QM2016Plus.dat")),
+    readparticles(joinpath(DATA, "particles_charm_bottom.dat")),
 )
+network = merge(
+    readdecays(joinpath(DATA, "decays_QM2016Plus.dat")),
+    readdecays(joinpath(DATA, "decays_charm_bottom.dat")),
+)
+dl = DecayList(catalog, network)
 dlc = filter(charmparent(), dl)                   # only charm-parent decays matter
 
 const T  = 0.145                                  # freeze-out temperature

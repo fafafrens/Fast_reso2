@@ -90,8 +90,10 @@ function print_measurement(label, measurement; relative_to = nothing)
     )
 end
 
-decay_list =
-    DecayList(joinpath(ROOT, "decays_QM2016Plus_massorder.dat"))
+decay_list = DecayList(
+    readparticles(joinpath(ROOT, "data", "particles_QM2016Plus.dat")),
+    readdecays(joinpath(ROOT, "data", "decays_QM2016Plus.dat")),
+)
 grid = range(0.0, 4.0, length = GRID_LENGTH)
 table, transfer_count = deterministic_table(decay_list, grid)
 plan = CascadePlan(table, decay_list)
