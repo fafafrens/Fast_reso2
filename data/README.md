@@ -64,6 +64,36 @@ them as 13-column THERMINATOR would give every `D*` degeneracy 1 instead of 3.
 invented IDs (`43140`, `43141`) name states PDG does number, as
 `104324`/`104314` and `104322`/`104312`.
 
+## Charge-conjugation repair
+
+`light_qm` contains **103 self-conjugate parents whose channel sets are not
+symmetric under charge conjugation**. `rho(1921)3(0)` gives BR 0.0110 to
+`rho+ pi-` but 0.0076 to `rho- pi+`, and its `rho- pi+ pi0` channel has no
+mirror at all. Every channel conserves charge on its own, so `validate` accepts
+them; only the ensemble is wrong.
+
+It is measurable: thermal yields drift by `dQ = -0.236` over this layer against
+`1e-13` for `light_pdg`, because feed-down hands a charged species more than its
+antiparticle.
+
+`decays_light_qm_csym.dat` is the repair — each channel averaged with its
+mirror, which leaves every parent's total branching ratio untouched. Swap it in
+for `decays_light_qm.dat`, keeping the same `particles_light_qm.dat`:
+
+```
+dQ  -2.3617e-01  ->  -1.7941e-13
+pi+ yield, K/pi and p/pi all unchanged
+```
+
+Regenerate with `tools/symmetrize_conjugation.jl`, passing **every** particle
+file the decays refer to — conjugation is resolved by looking for `-id`, so a
+partial catalog reads `pi+` as its own antiparticle and silently repairs 16
+parents instead of 103. The tool refuses rather than guessing.
+
+Note this is a different defect from the one `isofix` addresses: that patches
+three named entries (eta, a1(1260), K(1630)) whose isospin decompositions were
+wrong, and leaves the drift unchanged.
+
 ## Three things to know
 
 **`QM2016Plus` is upstream FastReso's list with two corrected daughter

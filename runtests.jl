@@ -2975,6 +2975,30 @@ let
         @assert abs(after - before) / scale < 1.0e-12 "$label drifted: $before -> $after"
     end
 
+    # The quark-model layer only conserves once charge conjugation is repaired.
+    # tools/symmetrize_conjugation.jl averages each channel of a self-conjugate
+    # parent with its mirror, which is why the yields below are unchanged while
+    # the drift disappears.
+    for (layer, tolerance) in (("light_qm", 1.0e-4), ("light_qm_csym", 1.0e-12))
+        stacked = DecayList(
+            merge(catalog, readparticles(joinpath(data_directory, "particles_light_qm.dat"))),
+            merge(readdecays(joinpath(data_directory, "decays_light_pdg.dat")),
+                  readdecays(joinpath(data_directory, "decays_$layer.dat"))),
+        )
+        stacked_yields = thermalyields(stacked, temperature; muB = 0.0, V = 5300.0)
+        stacked_records = stacked.catalog.byid
+        charge(book) = sum(stacked_records[id].charge * book[id] for id in keys(book))
+        drift = abs(charge(stacked_yields.total) - charge(stacked_yields.primary))
+        scale = sum(abs(stacked_records[id].charge) * stacked_yields.total[id]
+                    for id in keys(stacked_yields.total))
+        if layer == "light_qm_csym"
+            @assert drift / scale < tolerance "repaired layer still drifts: $drift"
+        else
+            @assert drift / scale > 1.0e-6 "unrepaired layer unexpectedly conserves"
+        end
+    end
+    @printf("   charge drift removed by symmetrize_conjugation\n")
+
     # Feed-down dominates the pion yield, as it must at freeze-out.
     @assert yields.total[211] > 2 * yields.primary[211]
     @printf("   feed-down conserves B, Q, S; pion total/primary = %.2f\n",
