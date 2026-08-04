@@ -5,12 +5,21 @@
 # multiplied by the fireball volume and then fed down through the decay list.
 # Parameters follow Andronic et al. for Pb-Pb 0-10% at the LHC.
 #
-# Three lists are run, each a superset of the one before it, so every difference
-# between the curves is attributable to the species that were added:
+# Four modelling choices are separated here, each measured against the one
+# before it, so no effect is attributed to more than one cause:
 #
-#   light_pdg          the 351 species carrying a PDG MC ID
-#   QM2016Plus         the production list, 1518 species
-#   QM2016Plus + sigma the same plus f0(500)
+#   light_pdg               the 351 species carrying a PDG MC ID
+#   QM2016Plus              the quark-model list, 1518 species
+#   QM2016Plus_isofix       three corrected isospin decompositions
+#   + sigma                 f0(500)
+#   pole mass vs width      the same list with the Breit-Wigner average off
+#
+# The last three are small in species count and large in effect, which is the
+# point of separating them.
+#
+# `isofix` patches eta, a1(1260) and K(1630), whose isospin decompositions were
+# wrong. All three feed pions and nothing else, so it moves the pion yield by
+# -3% and leaves every other species identical to the digit.
 #
 # The sigma is the most extreme entry in any of these tables -- m = 0.475 GeV
 # with Gamma = 0.55 -- so it is also the sharpest test of the finite-width
@@ -18,6 +27,13 @@
 # integrated from there would credit the thermal density with unphysical mass;
 # `thermaldensity` cuts the support at the 2*m_pi decay threshold instead. It
 # decays only to pions, so it moves the pion yield and nothing else.
+#
+# Finite widths are the largest correction of the four and the least uniform.
+# A resonance averaged over its Breit-Wigner has weight below its pole mass,
+# where the Boltzmann factor is cheaper, so every yield rises -- but by 40% for
+# the proton, which is fed by the broad Delta(1232) and the N* tower, against
+# 0.2% for the Omega-, whose few feeders are all narrow. Turning widths off is
+# therefore not a small perturbation on the ratios; it is a different model.
 #
 # Two caveats worth reading before comparing with data:
 #
@@ -85,14 +101,20 @@ const SPECIES = [
     (3334, "Omega-", raw"$\Omega^-$"),
 ]
 
+# isofix + sigma reproduces the whole-file QM2016Plus_isofix_sigma exactly --
+# every yield agrees to 0.0e+00 -- so the layered form is used, which lets the
+# sigma be switched on and off without swapping tables.
+const ISOFIX_SIGMA = ["QM2016Plus_isofix", "sigma"]
+
 load(layers) = DecayList(
     reduce(merge, [readparticles(joinpath(ROOT, "data", "particles_$n.dat")) for n in layers]),
     reduce(merge, [readdecays(joinpath(ROOT, "data", "decays_$n.dat")) for n in layers]),
 )
 
-function report(label, layers)
+function report(label, layers; width = true)
     decay_list = load(layers)
-    elapsed = @elapsed yields = thermalyields(decay_list, T; muB = MUB, V = VOL)
+    elapsed = @elapsed yields =
+        thermalyields(decay_list, T; muB = MUB, V = VOL, width = width)
     @printf("\n%s  (%d species, %.1f s)\n", label, length(decay_list.catalog.byid), elapsed)
     @printf("  %-9s %10s %10s %10s %8s\n", "species", "primary", "feed-down", "total", "feed/tot")
     for (particle_id, name, _) in SPECIES
@@ -111,8 +133,11 @@ end
 
 @printf("T = %.4f GeV   muB = %.3f GeV   V = %.0f fm^3\n", T, MUB, VOL)
 pdg_only = report("light_pdg (PDG-numbered species only)", ["light_pdg"])
-full     = report("QM2016Plus (production list)", ["QM2016Plus"])
-sigma    = report("QM2016Plus + f0(500)", ["QM2016Plus", "sigma"])
+raw_qm   = report("QM2016Plus (uncorrected isospin)", ["QM2016Plus"])
+full     = report("QM2016Plus_isofix (production list)", ["QM2016Plus_isofix"])
+sigma    = report("QM2016Plus_isofix + f0(500)", ISOFIX_SIGMA)
+pole     = report("QM2016Plus_isofix + f0(500), pole mass (no width average)",
+                  ISOFIX_SIGMA; width = false)
 
 # ---------------------------------------------------------------------------
 # What the sigma alone does. It is one species out of 1519 and decays only to
@@ -131,17 +156,34 @@ end
         full.total[2212] / full.total[211], sigma.total[2212] / sigma.total[211])
 
 # ---------------------------------------------------------------------------
-# Left:   yields per species, primary against total, for all three lists.
+# What the finite widths are worth. Unlike the three list changes above this
+# one touches every species, and unevenly: the proton is fed by the broad
+# Delta(1232) and the N* tower, the Omega- by a handful of narrow states.
+# ---------------------------------------------------------------------------
+println("\npole mass vs Breit-Wigner average, same list")
+@printf("  %-9s %10s %10s %9s\n", "species", "pole", "width", "change")
+for (particle_id, name, _) in SPECIES
+    before, after = pole.total[particle_id], sigma.total[particle_id]
+    @printf("  %-9s %10.2f %10.2f %+8.2f%%\n",
+            name, before, after, 100 * (after - before) / before)
+end
+@printf("  K+/pi+  %.4f -> %.4f     p/pi+  %.4f -> %.4f\n",
+        pole.total[321] / pole.total[211], sigma.total[321] / sigma.total[211],
+        pole.total[2212] / pole.total[211], sigma.total[2212] / sigma.total[211])
+
+# ---------------------------------------------------------------------------
+# Left:   yields per species, primary against total, for the three lists.
 # Middle: what fraction of each total arrives as feed-down.
-# Right:  what each added layer is worth, as a percentage of the total.
+# Right:  what each modelling choice is worth, as a percentage of the total.
 #
-# The third panel exists because the first cannot show the sigma. Adding it
-# moves the pion yield by 3.4%, which on a log axis spanning three decades is
-# less than the marker. Plotted as a relative change next to what the
-# quark-model states contribute, both are legible on one linear scale.
+# The third panel exists because the first cannot show any of the small
+# choices. The sigma moves the pion yield by 3.4% and isofix by -3%, both less
+# than a marker on a log axis spanning three decades. As relative changes they
+# sit on one linear scale beside the two large effects, the quark-model states
+# and the finite widths.
 #
 # In the first two panels the series are drawn at small x-offsets. Without them
-# the QM2016Plus and +sigma markers sit exactly on top of each other everywhere
+# the isofix and +sigma markers sit exactly on top of each other everywhere
 # except the pion -- which is the point being made, but is invisible if they
 # overlap.
 # ---------------------------------------------------------------------------
@@ -160,7 +202,7 @@ left.plot(positions .- 0.18, primaries(full), "o", color = "0.55", ms = 6,
 left.plot(positions .- 0.06, present(pdg_only), "^", color = "C1", ms = 6,
           mfc = "none", mew = 1.2, label = raw"total, PDG-numbered only")
 left.plot(positions .+ 0.06, present(full), "s", color = "C0", ms = 6,
-          label = "total, QM2016Plus")
+          label = "total, QM2016Plus\\_isofix")
 left.plot(positions .+ 0.18, present(sigma), "D", color = "C2", ms = 5,
           mfc = "none", mew = 1.2, label = raw"total, $+\,f_0(500)$")
 left.set_yscale("log")
@@ -173,7 +215,7 @@ left.grid(alpha = 0.25, axis = "y")
 right.plot(positions .- 0.12, fractions(pdg_only), "^", color = "C1", ms = 6,
            mfc = "none", mew = 1.2, label = "PDG-numbered only")
 right.plot(positions, fractions(full), "s", color = "C0", ms = 6,
-           label = "QM2016Plus")
+           label = "QM2016Plus\\_isofix")
 right.plot(positions .+ 0.12, fractions(sigma), "D", color = "C2", ms = 5,
            mfc = "none", mew = 1.2, label = raw"$+\,f_0(500)$")
 right.set_xticks(positions); right.set_xticklabels(labels)
@@ -185,14 +227,18 @@ right.grid(alpha = 0.25, axis = "y")
 
 percent(after, before) = [100 * (after.total[id] - before.total[id]) / before.total[id]
                           for (id, _, _) in SPECIES]
-delta.bar(positions .- 0.19, percent(full, pdg_only), 0.36, color = "C0",
+delta.bar(positions .- 0.30, percent(full, pdg_only), 0.19, color = "C0",
           label = "quark-model states")
-delta.bar(positions .+ 0.19, percent(sigma, full), 0.36, color = "C2",
+delta.bar(positions .- 0.10, percent(sigma, pole), 0.19, color = "C4",
+          label = "finite widths")
+delta.bar(positions .+ 0.10, percent(sigma, full), 0.19, color = "C2",
           label = raw"$f_0(500)$")
+delta.bar(positions .+ 0.30, percent(full, raw_qm), 0.19, color = "C3",
+          label = "isospin fix")
 delta.axhline(0, color = "0.3", lw = 0.8)
 delta.set_xticks(positions); delta.set_xticklabels(labels)
 delta.set_ylabel("change in total yield [\\%]")
-delta.set_title("what each layer adds")
+delta.set_title("what each choice is worth")
 delta.legend(frameon = false, loc = "upper left")
 delta.grid(alpha = 0.25, axis = "y")
 
@@ -208,4 +254,6 @@ println("""
 
 Measured, Pb-Pb 0-10% (ALICE): K+/pi+ ~ 0.15, p/pi+ ~ 0.05.
 The excess above those values is dominated by feed-down from the quark-model
-resonances, which is why all three lists are shown.""")
+resonances, which is why every list is shown separately. Finite widths are the
+largest single correction and the least uniform across species: dropping them
+is not a small perturbation on the ratios.""")
