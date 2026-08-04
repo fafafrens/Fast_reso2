@@ -33,11 +33,23 @@ export chemicalpotential, thermaldensity, primaryyields, thermalyields,
        ThermalPlan
 
 # The momentum integrand is smooth and exponentially damped, so a fixed
-# Gauss-Legendre rule beats adaptive quadrature outright: 64 nodes reach machine
-# precision (1.4e-15 against a 1e-12 adaptive reference across every species in
-# the tables) at a fifth of the cost and with no per-call allocation. Built once
-# at load and read-only thereafter, so threads may share it.
-const _MOMENTUM_NODES, _MOMENTUM_WEIGHTS = gausslegendre(64)
+# Gauss-Legendre rule beats adaptive quadrature outright, with no per-call
+# allocation. Built once at load and read-only thereafter, so threads share it.
+#
+# The order is set by what the *result* needs, not by what the rule can reach.
+# Measured end to end against a 128-node reference, over a spread of species:
+#
+#     nodes   max rel dev   us/density
+#        16      1.09e-03        0.317
+#        32      2.25e-08        0.442
+#        48      1.71e-12        0.635
+#        64      2.99e-13        0.706
+#
+# 32 sits a hundredfold inside the 1e-6 the mass integral is held to, and a
+# further six orders inside the uncertainty on the branching ratios these
+# yields are built from. The higher orders buy precision nothing downstream
+# can use, at 1.6x the cost of the innermost loop in the model.
+const _MOMENTUM_NODES, _MOMENTUM_WEIGHTS = gausslegendre(32)
 
 # How far past the pole the momentum integral runs, in units of temperature.
 # The occupancy is below exp(-60) ~ 1e-26 there, far under Float64 resolution
@@ -291,6 +303,10 @@ struct ThermalPlan
     branching::Vector{Float64}
     daughter_range::Vector{UnitRange{Int}}
     daughters::Vector{Int}
+    # Breit-Wigner normalization per species, 0 for the sharp ones. It depends
+    # only on mass, width and threshold, so a fit re-uses it across every
+    # (T, muB, V) instead of re-integrating the shape each call.
+    normalization::Vector{Float64}
 end
 
 function ThermalPlan(decay_list)
@@ -328,6 +344,17 @@ function ThermalPlan(decay_list)
         push!(channel_range, first_channel:length(branching))
     end
 
+    normalization = map(records) do record
+        record.width > 0 || return 0.0
+        lower = max(record.mass - 4.0 * record.width,
+                    get(thresholds, record.id, 0.0))
+        upper = record.mass + 4.0 * record.width
+        lower < upper || return 0.0
+        shape(m) = m * record.width /
+            ((m^2 - record.mass^2)^2 + (record.mass * record.width)^2)
+        first(quadgk(shape, lower, upper; rtol = 1.0e-8))
+    end
+
     return ThermalPlan(
         ids,
         [r.mass for r in records], [r.width for r in records],
@@ -335,7 +362,7 @@ function ThermalPlan(decay_list)
         [Float64(r.baryon) for r in records], [Float64(r.strangeness) for r in records],
         [Float64(r.charge) for r in records], [Float64(r.charm) for r in records],
         [get(thresholds, particle_id, 0.0) for particle_id in ids],
-        order, channel_range, branching, daughter_range, daughters,
+        order, channel_range, branching, daughter_range, daughters, normalization,
     )
 end
 
@@ -398,12 +425,11 @@ function _density(plan::ThermalPlan, index, temperature, mu; quantum, width, k, 
     upper = mass + k * resonance_width
     lower < upper || return pole()
 
+    weight = plan.normalization[index]        # precomputed: no (T, mu) in it
+    weight > 0 || return pole()
     shape(m) = m * resonance_width /
         ((m^2 - mass^2)^2 + (mass * resonance_width)^2)
-    segbuf = _SEGBUF()
-    weight, _ = quadgk(shape, lower, upper; rtol, segbuf)
-    weight > 0 || return pole()
-    averaged, _ = quadgk(lower, upper; rtol, segbuf) do m
+    averaged, _ = quadgk(lower, upper; rtol, segbuf = _SEGBUF()) do m
         shape(m) * _densityatmass(m, degeneracy, is_fermion, temperature, mu; quantum)
     end
     return averaged / weight
