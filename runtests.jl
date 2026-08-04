@@ -2626,7 +2626,7 @@ let
     converted_particles_path = tempname()
     converted_decays_path = tempname()
     convert_azyhydro(
-        [joinpath(@__DIR__, "decays_QM2016Plus_massorder.dat")],
+        [joinpath(@__DIR__, "data/azyhydro/decays_QM2016Plus_massorder.dat")],
         converted_particles_path,
         converted_decays_path,
     )

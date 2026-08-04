@@ -142,8 +142,8 @@ it can be deferred if the goal is only to bracket the σ.
    convergence in `nma` (the same four checks the constant-width path uses,
    `matrix_notes.tex` §"The main case").
 4. **Re-run the σ comparison** against
-   `decays_QM2016Plus_massorder_isofix.dat` and
-   `decays_QM2016Plus_massorder_isofix_sigma.dat`.
+   `data/azyhydro/decays_QM2016Plus_massorder_isofix.dat` and
+   `data/azyhydro/decays_QM2016Plus_massorder_isofix_sigma.dat`.
 
 Expected outcome of steps 2–3 alone: the 2.56% threshold leak disappears and
 the +17% at 1 GeV stays. If that excess is what needs bracketing, step 1 is

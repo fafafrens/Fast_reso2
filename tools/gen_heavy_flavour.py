@@ -1098,13 +1098,13 @@ def parse_arguments(arguments=None):
     parser.add_argument(
         "--main",
         type=Path,
-        default=repository / "decays_QM2016Plus_massorder.dat",
+        default=repository / "data/azyhydro/decays_QM2016Plus_massorder.dat",
         help="base light-flavour decay list",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=repository / "decays_charm_bottom.dat",
+        default=repository / "data/azyhydro/decays_charm_bottom.dat",
         help="generated supplement",
     )
     parser.add_argument(

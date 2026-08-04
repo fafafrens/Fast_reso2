@@ -39,7 +39,7 @@ import pdg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.environ.get("RESO_REPO", os.path.dirname(HERE))
-SRC = os.path.join(REPO, "decays_QM2016Plus_massorder.dat")
+SRC = os.path.join(REPO, "data/azyhydro/decays_QM2016Plus_massorder.dat")
 
 PHOTON = 22
 MASS_TOL = 0.005          # GeV, absolute
@@ -258,7 +258,7 @@ def main():
     findings.sort(key=lambda f: -f["imp"])
     with open(args.out, "w") as fh:
         w = fh.write
-        w("# PDG audit of `decays_QM2016Plus_massorder.dat`\n\n")
+        w("# PDG audit of `data/azyhydro/decays_QM2016Plus_massorder.dat`\n\n")
         w(f"PDG edition {db.api.edition}. Report only -- no `.dat` file was modified.\n\n")
         w("`importance` = largest fraction of the pi0 or pi+ spectrum (at 0.33 or "
           "1.0 GeV) that disappears when this particle's decays are switched off.\n\n")

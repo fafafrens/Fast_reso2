@@ -63,7 +63,7 @@ regression check.
 | notebook | input | runtime |
 |---|---|---|
 | `compare_fjout_fixtures.ipynb` | the four fixtures in `fixtures/` | ~15 s |
-| `compare_fjout_runcascade.ipynb` | `decays_QM2016Plus_massorder.dat`, trimmed by `MASS_CUT` | ~90 s at 1.4 GeV |
+| `compare_fjout_runcascade.ipynb` | `data/azyhydro/decays_QM2016Plus_massorder.dat`, trimmed by `MASS_CUT` | ~90 s at 1.4 GeV |
 
 Both run `run_fastreso_azyhydro.exe`, convert `Feq 2` to a spectrum, project it
 over rapidity, and compare against `CascadeTable` → `CascadePlan` →

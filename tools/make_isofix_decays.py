@@ -3,9 +3,9 @@
 Header (12 fields):  id name mass width degeneracy B S C Bot I Q n_channels
 Channel (8 fields):  id n_daughters BR d1 d2 d3 d4 d5     (unused slots 0)
 
-Reads  decays_QM2016Plus_massorder.dat
-Writes decays_QM2016Plus_massorder_isofix.dat        isospin fixes only
-       decays_QM2016Plus_massorder_isofix_sigma.dat  the same, plus the sigma
+Reads  data/azyhydro/decays_QM2016Plus_massorder.dat
+Writes data/azyhydro/decays_QM2016Plus_massorder_isofix.dat        isospin fixes only
+       data/azyhydro/decays_QM2016Plus_massorder_isofix_sigma.dat  the same, plus the sigma
 
 The two outputs differ by exactly three lines, so the corrections below -- which
 are unambiguous fixes -- can be used without also buying into the sigma, which
@@ -80,9 +80,9 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.environ.get("RESO_REPO", os.path.dirname(HERE))
-SRC = os.path.join(REPO, "decays_QM2016Plus_massorder.dat")
-OUT = os.path.join(REPO, "decays_QM2016Plus_massorder_isofix.dat")
-OUT_SIGMA = os.path.join(REPO, "decays_QM2016Plus_massorder_isofix_sigma.dat")
+SRC = os.path.join(REPO, "data/azyhydro/decays_QM2016Plus_massorder.dat")
+OUT = os.path.join(REPO, "data/azyhydro/decays_QM2016Plus_massorder_isofix.dat")
+OUT_SIGMA = os.path.join(REPO, "data/azyhydro/decays_QM2016Plus_massorder_isofix_sigma.dat")
 
 GAMMA, PI0, PIP, PIM = 22, 111, 211, -211
 RHOP, RHO0, RHOM = 213, 113, -213

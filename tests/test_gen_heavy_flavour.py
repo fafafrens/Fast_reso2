@@ -409,8 +409,8 @@ class GeneratorUnitTests(unittest.TestCase):
 class CheckedInArtifactTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.supplement = ROOT / "decays_charm_bottom.dat"
-        cls.main = ROOT / "decays_QM2016Plus_massorder.dat"
+        cls.supplement = ROOT / "data/azyhydro/decays_charm_bottom.dat"
+        cls.main = ROOT / "data/azyhydro/decays_QM2016Plus_massorder.dat"
         cls.headers = {}
         cls.header_order = []
         cls.channels = {}

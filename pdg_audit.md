@@ -1,4 +1,4 @@
-# PDG audit of `decays_QM2016Plus_massorder.dat`
+# PDG audit of `data/azyhydro/decays_QM2016Plus_massorder.dat`
 
 PDG edition 2026. Report only -- no `.dat` file was modified.
 
