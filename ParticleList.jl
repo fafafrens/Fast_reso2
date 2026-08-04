@@ -13,7 +13,8 @@ export ParticleInfo, DecayChannel,
        ParticleCatalog, DecayNetwork,
        readparticles, readdecays,
        particle, particleids,
-       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, isbottom
+       isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, ischarm,
+       isbottom, quarkdigits, hasflavour
 
 struct ParticleInfo
     id::Int
@@ -56,8 +57,49 @@ ismeson(particle::ParticleInfo) = particle.baryon == 0
 isantiparticle(particle::ParticleInfo) = particle.id < 0
 "True for a strange hadron (nonzero strangeness)."
 isstrange(particle::ParticleInfo) = particle.strangeness != 0
+"True for a charm hadron (nonzero charm)."
+ischarm(particle::ParticleInfo) = particle.charm != 0
 "True for a bottom hadron (nonzero bottomness)."
 isbottom(particle::ParticleInfo) = particle.bottomness != 0
+
+"""
+    quarkdigits(id) -> (q1, q2, q3)
+
+Quark-content digits of a Monte-Carlo ID, most significant first, using the
+standard `n_q1 n_q2 n_q3 n_J` layout: `q1` is zero for a meson and names the
+third quark of a baryon. Flavours are `1 = d, 2 = u, 3 = s, 4 = c, 5 = b`.
+
+Returns zeros for anything below 100 — leptons and gauge bosons have no quark
+content, and reading their digits would report the photon (22) as carrying an
+up quark.
+"""
+function quarkdigits(id::Integer)
+    abs(id) < 100 && return (0, 0, 0)
+    text = lpad(string(abs(id)), 4, '0')
+    return (
+        parse(Int, text[end - 3]),
+        parse(Int, text[end - 2]),
+        parse(Int, text[end - 1]),
+    )
+end
+quarkdigits(particle::ParticleInfo) = quarkdigits(particle.id)
+
+"""
+    hasflavour(particle, flavour) -> Bool
+
+True when the species contains a quark of this flavour, as quark *or*
+antiquark.
+
+This is a different question from `ischarm`/`isbottom`, which test the net
+flavour quantum number. Quarkonia carry zero net flavour because quark and
+antiquark cancel, so `ischarm(J/psi)` is false while `hasflavour(J/psi, 4)` is
+true. Use the net-number predicates for open flavour and this one to select a
+sector: partitioning a charm+bottom list by net flavour files every J/psi,
+Upsilon, chi_c and chi_b under neither heading.
+"""
+hasflavour(particle::ParticleInfo, flavour::Integer) =
+    flavour in quarkdigits(particle)
+hasflavour(id::Integer, flavour::Integer) = flavour in quarkdigits(id)
 
 struct DecayChannel
     parent::Int
