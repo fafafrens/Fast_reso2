@@ -2999,6 +2999,18 @@ let
     end
     @printf("   charge drift removed by symmetrize_conjugation\n")
 
+    # (e) A compiled plan must reproduce the decay-list path exactly: it hoists
+    # only work that does not depend on (T, muB, V), so nothing may shift.
+    plan = ThermalPlan(decay_list)
+    planned = thermalyields(plan, temperature; muB = 0.0, V = 5300.0)
+    @assert Set(keys(planned.total)) == Set(keys(yields.total))
+    @assert all(planned.total[id] == yields.total[id] for id in keys(yields.total))
+    @assert all(planned.primary[id] == yields.primary[id] for id in keys(yields.primary))
+    # and it must still track a changed temperature, not cache the first answer
+    hotter = thermalyields(plan, 0.17; muB = 0.0, V = 5300.0)
+    @assert hotter.total[211] > planned.total[211]
+    @printf("   ThermalPlan reproduces the direct path exactly\n")
+
     # Feed-down dominates the pion yield, as it must at freeze-out.
     @assert yields.total[211] > 2 * yields.primary[211]
     @printf("   feed-down conserves B, Q, S; pion total/primary = %.2f\n",
