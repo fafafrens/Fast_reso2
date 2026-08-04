@@ -74,12 +74,14 @@ content, and reading their digits would report the photon (22) as carrying an
 up quark.
 """
 function quarkdigits(id::Integer)
-    abs(id) < 100 && return (0, 0, 0)
-    text = lpad(string(abs(id)), 4, '0')
+    magnitude = abs(id)
+    magnitude < 100 && return (0, 0, 0)
+    # The three digits left of n_J. Division and modulo read them directly;
+    # going through a padded string would allocate one per call.
     return (
-        parse(Int, text[end - 3]),
-        parse(Int, text[end - 2]),
-        parse(Int, text[end - 1]),
+        (magnitude ÷ 1000) % 10,
+        (magnitude ÷ 100) % 10,
+        (magnitude ÷ 10) % 10,
     )
 end
 quarkdigits(particle::ParticleInfo) = quarkdigits(particle.id)
@@ -461,7 +463,11 @@ end
 _parsequantum(value) = round(Int, parse(Float64, value))
 
 function _parsecanonicalparticle(fields, location, kind)
-    _expectcolumns(fields, 11, location, "$kind particle")
+    # Shared with the AZYHYDRO converter, whose first 11 columns are this exact
+    # layout -- hence `kind`, which names the format in any error.
+    #
+    # No column check here: both callers validate the row width and then slice
+    # exactly 11 fields, so one could never fire.
     return _parseat(location, "$kind particle") do
         particle_id = parse(Int, fields[1])
         particle_id != 0 || throw(ArgumentError(
