@@ -354,6 +354,75 @@ constants.
 Disabling four-body channels or widths does not renormalize the retained
 branching fractions.
 
+## Thermal yields
+
+Statistical hadronization in the Andronic–Stachel sense: number densities at
+chemical freeze-out, multiplied by a volume and fed down through the decay
+network. This path does not touch `CascadeTable` — no grid and no matrices,
+just one density integral per species and one mass-ordered pass over the
+parents.
+
+```julia
+using .ThermalModel
+
+dl = DecayList(readparticles("data/particles_QM2016Plus_isofix.dat"),
+               readdecays("data/decays_QM2016Plus_isofix.dat"))
+
+y = thermalyields(dl, 0.1565; muB = 0.0, V = 5300.0)     # T [GeV], V [fm³]
+y.primary[211], y.feeddown[211], y.total[211]            # π⁺ 249.5, 684.0, 933.4
+```
+
+Quantum statistics (`quantum`) and Breit–Wigner mass averaging (`width`) are
+both on by default and are independent keywords. `thermaldensity` and
+`primaryyields` are exported for the pieces.
+
+For repeated evaluation — a fit scanning `(T, μ, V)` — compile a plan. It
+hoists everything that does not depend on the thermodynamic parameters: the
+momentum quadrature, a Breit–Wigner rule per broad resonance, and the feed-down
+order with its channels flattened.
+
+```julia
+plan = ThermalPlan(dl)                                 # 301 ms, once
+thermalyields(plan, 0.1565; muB = 0.0, V = 5300.0)     # 0.70 ms, 66× the list path
+```
+
+The plan agrees with the direct path to `4e-7`, not to machine precision: it
+averages each resonance on a fixed 24-node rule where the direct path drives an
+adaptive integral. That is the tolerance this model claims.
+
+### What each modelling choice is worth
+
+At `T = 156.5 MeV, μ_B = 0, V = 5300 fm³`, each row measured against the row
+above it. `figures/thermal_yields.jl` prints all of it and plots the last three.
+
+| | π⁺ | K⁺ | p | Λ | Ξ⁻ | Ω⁻ |
+|---|---:|---:|---:|---:|---:|---:|
+| quark-model states over PDG-numbered | +14.2% | +12.9% | +38.8% | +54.9% | +76.5% | +36.5% |
+| finite widths over pole mass | +20.0% | +12.1% | +40.1% | +10.8% | +0.6% | +0.2% |
+| `f0(500)` | +3.6% | 0 | 0 | 0 | 0 | 0 |
+| isospin fix (`isofix`) | −3.0% | 0 | 0 | 0 | 0 | 0 |
+
+Finite widths are the largest correction and the least uniform. Averaging a
+resonance over its Breit–Wigner puts weight below the pole mass where the
+Boltzmann factor is cheaper, so every yield rises — but by 40% for the proton,
+fed by the broad Δ(1232) and the N\* tower, against 0.2% for the Ω⁻, whose few
+feeders are all narrow. It moves `p/π` from 0.0678 to 0.0792 and `K/π` from
+0.1784 to 0.1667, in opposite directions, so switching widths off is a
+different model rather than a small perturbation.
+
+`isofix` and the σ are the same kind of change from opposite directions. The
+three entries `isofix` patches (η, a₁(1260), K(1630)) feed pions and nothing
+else, which is why both rows are zero to the digit everywhere but π⁺.
+
+Two caveats before comparing with data. Feed-down supplies **73%** of the pions
+on this list (74% with the σ), so the answer is dominated by branching ratios
+that are curated
+rather than measured — 1167 of the 1518 light species are quark-model states,
+and `pdg_audit.md` records that only η and ω regenerate from PDG. And more
+states means more feed-down, so this list sits above the published SHM ratios;
+the PDG-numbered layer is reported alongside to size that effect. Agreement at
+the 10% level is the realistic target.
+
 ## License
 
 The code in this repository is released under the [MIT License](LICENSE).
