@@ -9,10 +9,6 @@ using .DecaySpectra
 using Printf
 using Statistics
 
-environment_int(name, default) = parse(Int, get(ENV, name, string(default)))
-environment_float(name, default) =
-    parse(Float64, get(ENV, name, string(default)))
-
 thermal(mass, degeneracy, temperature) =
     (qT, eta, phi) -> begin
         energy = hypot(mass, qT) * cosh(eta)

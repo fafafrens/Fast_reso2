@@ -1,17 +1,15 @@
 const BENCHMARK_DIR = @__DIR__
 const REPOSITORY_ROOT = normpath(joinpath(BENCHMARK_DIR, "..", ".."))
 
+include(joinpath(BENCHMARK_DIR, "CrosscheckTools.jl"))
 include(joinpath(REPOSITORY_ROOT, "CascadeTables.jl"))
 include(joinpath(REPOSITORY_ROOT, "tools", "convert_decay_data.jl"))
 
+using .CrosscheckTools
 using .CascadeTables
 using .DecayDataConverter
 using Printf
 using Statistics
-
-environment_int(name, default) = parse(Int, get(ENV, name, string(default)))
-environment_float(name, default) =
-    parse(Float64, get(ENV, name, string(default)))
 
 function canonical_decay_list(azyhydro_path)
     return mktempdir() do directory

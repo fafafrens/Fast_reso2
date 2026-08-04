@@ -5,7 +5,21 @@ using Statistics
 
 export SpectrumRow, ReferenceData, ErrorSummary,
        read_reference, reference_grid, metadata_float,
-       closest_rows, error_summary, print_summary
+       closest_rows, error_summary, print_summary,
+       environment_int, environment_float
+
+"""
+    environment_int(name, default)
+    environment_float(name, default)
+
+Read a numeric tuning knob from the environment, falling back to `default`.
+The default is returned as-is rather than round-tripped through `string` and
+`parse`.
+"""
+environment_int(name, default) =
+    haskey(ENV, name) ? parse(Int, ENV[name]) : default
+environment_float(name, default) =
+    haskey(ENV, name) ? parse(Float64, ENV[name]) : default
 
 struct SpectrumRow
     momentum::Float64

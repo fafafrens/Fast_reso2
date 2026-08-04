@@ -12,10 +12,6 @@ using FastGaussQuadrature: gausslegendre
 using Printf
 using Statistics
 
-environment_int(name, default) = parse(Int, get(ENV, name, string(default)))
-environment_float(name, default) =
-    parse(Float64, get(ENV, name, string(default)))
-
 function file_fnv1a64(path)
     hash = UInt64(0xcbf29ce484222325)
     for byte in read(path)

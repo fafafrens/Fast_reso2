@@ -2372,7 +2372,7 @@ let
         ]
     end
     @assert orders == [[1, 2, 3], [1, 2, 3]]
-    @assert length(findall("cycle components", String(take!(repeated_log)))) == 2
+    @assert count("cycle components", String(take!(repeated_log))) == 2
 end
 
 println("   PASS")
