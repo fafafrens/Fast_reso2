@@ -191,7 +191,7 @@ def isospin_weights(combinations, parent, model):
 
 
 # ----------------------------------------------------------------- the driver
-def channels(mcid, model, manual=None, min_coverage=0.9, max_coverage=1.02):
+def channels(mcid, model, min_coverage=0.9, max_coverage=1.02):
     """Decay channels for one species.
 
     Returns (channels, report). `channels` maps a sorted daughter tuple to a
@@ -202,7 +202,6 @@ def channels(mcid, model, manual=None, min_coverage=0.9, max_coverage=1.02):
     it decays long after freeze-out, so it takes a self-channel and zero width
     rather than a decay table.
     """
-    manual = manual or {}
     api = model.api
     report = {"reasons": {}, "coverage": 0.0, "sources": [], "approximate": 0}
 
@@ -237,10 +236,6 @@ def channels(mcid, model, manual=None, min_coverage=0.9, max_coverage=1.02):
 
     if merged:
         report["sources"].append("pdg")
-    for branching_ratio, daughters in manual.get(mcid, []):
-        merged[tuple(sorted(daughters))] = branching_ratio
-        if "manual" not in report["sources"]:
-            report["sources"].append("manual")
 
     coverage = sum(merged.values())
     report["coverage"] = coverage
@@ -257,20 +252,3 @@ def channels(mcid, model, manual=None, min_coverage=0.9, max_coverage=1.02):
 
     report["verdict"] = "ok"
     return {k: v / coverage for k, v in merged.items()}, report
-
-
-def read_manual(path):
-    """Hand-written channel rows, in the decay-list channel format.
-
-    Comments carry the justification for each entry and are the reason this is
-    a data file rather than a dict in code.
-    """
-    out = {}
-    for line in open(path):
-        fields = line.split("#")[0].split()
-        if len(fields) != 8:
-            continue
-        parent, count, branching_ratio = int(fields[0]), int(fields[1]), float(fields[2])
-        out.setdefault(parent, []).append(
-            (branching_ratio, [int(fields[3 + i]) for i in range(count)]))
-    return out
