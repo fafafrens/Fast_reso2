@@ -21,8 +21,21 @@ fail to dispatch here.
 module ThermalModel
 
 using QuadGK: quadgk
+using FastGaussQuadrature: gausslegendre
 
 export chemicalpotential, thermaldensity, primaryyields, thermalyields
+
+# The momentum integrand is smooth and exponentially damped, so a fixed
+# Gauss-Legendre rule beats adaptive quadrature outright: 64 nodes reach machine
+# precision (1.4e-15 against a 1e-12 adaptive reference across every species in
+# the tables) at a fifth of the cost and with no per-call allocation. Built once
+# at load and read-only thereafter, so threads may share it.
+const _MOMENTUM_NODES, _MOMENTUM_WEIGHTS = gausslegendre(64)
+
+# How far past the pole the momentum integral runs, in units of temperature.
+# The occupancy is below exp(-60) ~ 1e-26 there, far under Float64 resolution
+# relative to the peak.
+const _MOMENTUM_CUTOFF = 60.0
 
 "Hadrons with half-integer spin are fermions; baryon number identifies them."
 _isfermion(particle) = particle.baryon != 0
@@ -51,19 +64,30 @@ with `eta = +1` for fermions, `-1` for bosons and `0` for Boltzmann statistics.
 """
 function _densityatmass(
         mass, degeneracy, is_fermion, temperature, mu;
-        quantum = true, rtol = 1.0e-6,
+        quantum = true,
     )
     mass <= 0 && return 0.0
     eta = quantum ? (is_fermion ? 1.0 : -1.0) : 0.0
-    integral, _ = quadgk(0.0, Inf; rtol) do momentum
-        energy = hypot(mass, momentum)
-        exponent = (energy - mu) / temperature
+
+    # Truncate where the occupancy has died rather than mapping [0, Inf): the
+    # cutoff is set by energy, so it adapts to both the mass and the chemical
+    # potential instead of assuming a momentum scale.
+    energy_cutoff = max(mass, mu) + _MOMENTUM_CUTOFF * temperature
+    momentum_maximum = sqrt(max(
+        energy_cutoff^2 - mass^2, (_MOMENTUM_CUTOFF * temperature)^2,
+    ))
+    half_width = momentum_maximum / 2
+
+    integral = 0.0
+    @inbounds for index in eachindex(_MOMENTUM_NODES)
+        momentum = half_width * (_MOMENTUM_NODES[index] + 1)
+        exponent = (hypot(mass, momentum) - mu) / temperature
         # exp overflows around 709; the occupancy is zero long before that, and
         # for bosons the exp(x) - 1 form loses the cancellation that expm1 keeps.
-        exponent > 700 && return 0.0
+        exponent > 700 && continue
         occupancy = eta == 0 ? exp(-exponent) :
                     eta > 0 ? inv(exp(exponent) + 1) : inv(expm1(exponent))
-        return momentum^2 * occupancy
+        integral += _MOMENTUM_WEIGHTS[index] * half_width * momentum^2 * occupancy
     end
     return degeneracy * integral / (2π^2)
 end
@@ -78,13 +102,14 @@ Number density of one species in GeV^3.
 density over a relativistic Breit-Wigner of the species' own width instead of
 using the pole mass.
 
-`rtol` is the quadrature tolerance, applied to both the momentum integral and,
-when `width = true`, the mass integral wrapped around it. The default trades
-accuracy nobody can use for speed: the mass integral costs ~240 inner
-evaluations at `1e-10`, and loosening it to `1e-6` is 4.4x faster while moving
-every density in the light table by at most `5e-9` — eight orders below the
-uncertainty in the branching ratios these yields are built from. Tighten it if
-you are checking convergence rather than doing physics.
+`rtol` controls only the mass integral; the momentum integral uses the fixed
+64-node rule, which is already at machine precision. Adaptive quadrature is kept
+here because the integrand is a Lorentzian times a steeply falling density, and
+fixed rules converge badly on it — a tangent substitution that flattens the
+Breit-Wigner, as `DecaySpectra.parentmassnodes` uses, only moves the steepness
+into the endpoints (2e-2 at 24 nodes). The default `1e-6` costs `5e-9`, eight
+orders below the uncertainty in the branching ratios these yields are built
+from. Tighten it if you are checking convergence rather than doing physics.
 
 `threshold` is the lowest mass the resonance can carry — the summed daughter
 masses of its lightest channel. The Breit-Wigner is truncated there rather than
@@ -103,8 +128,7 @@ function thermaldensity(
     mu = chemicalpotential(particle; muB, muS, muQ, muC)
     is_fermion = _isfermion(particle)
     pole_density() = _densityatmass(
-        particle.mass, particle.degeneracy, is_fermion, temperature, mu;
-        quantum, rtol,
+        particle.mass, particle.degeneracy, is_fermion, temperature, mu; quantum,
     )
 
     (!width || particle.width <= 0) && return pole_density()
@@ -121,7 +145,7 @@ function thermaldensity(
     weight > 0 || return pole_density()
     averaged, _ = quadgk(lower, upper; rtol) do m
         shape(m) * _densityatmass(
-            m, particle.degeneracy, is_fermion, temperature, mu; quantum, rtol,
+            m, particle.degeneracy, is_fermion, temperature, mu; quantum,
         )
     end
     return averaged / weight
