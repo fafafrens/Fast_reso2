@@ -35,8 +35,8 @@ include("LagrangeWeights.jl")
 using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
-       DecayMatrix, decaymatrices, decaymatrices!, rowscratch, BreitWigner,
-       BroadParent, Rules
+       DecayMatrix, decaymatrices, decaymatrices!, rowscratch, SpectralShape,
+       BreitWigner, BroadParent, Rules
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -377,6 +377,34 @@ FourBodyDecay(ma, mb, mc, md, me; B = 1.0, nµ = 32, nσ = 16, nq = 128, nθ = 3
 # ---------------------------------------------------------------------------
 
 """
+    SpectralShape
+
+A parent-mass distribution: an unnormalized weight `ϱ(m)`, zero off a finite
+support. [`BroadParent`] averages a decay over any of these and divides by the
+integrated weight, so only the shape matters. The contract is three methods:
+
+    support(ϱ) -> (mmin, mmax)   the finite interval outside which ϱ is zero
+    polemap(ϱ) -> (mR, Γ0)       builds the tangent map that flattens the peak
+                                 (the map only, never the weight itself)
+    (ϱ)(m)    -> Float64         the unnormalized weight at mass m
+
+plus, optionally, `_lowerendpointvanishes(ϱ)` — declare `true` when ϱ vanishes
+like a square root at its own lower support edge (a threshold), so
+[`parentmassnodes`](@ref) picks the cosine-mapped rule there.
+"""
+abstract type SpectralShape end
+
+"The finite `(mmin, mmax)` support outside which the shape is zero."
+support(shape::SpectralShape) = (shape.mmin, shape.mmax)
+
+"`(mR, Γ0)` for the tangent substitution; the map only, not the weight."
+function polemap end
+
+# `true` when ϱ ~ √(m - mmin) at its own lower edge (a decay threshold): the
+# cosine rule's sin-Jacobian absorbs that vanishing, plain Gauss does not.
+_lowerendpointvanishes(::SpectralShape) = false
+
+"""
     BreitWigner(mR, Γ; k = 4.0, mmin = mR - k*Γ, mmax = mR + k*Γ)
 
 Relativistic (constant-width) Breit–Wigner spectral function of a resonance,
@@ -386,7 +414,7 @@ the truncated support, so only the shape matters.
 
 Requires `mR > 0`, `Γ > 0` and `0 ≤ mmin < mmax`, all finite.
 """
-struct BreitWigner
+struct BreitWigner <: SpectralShape
     mR::Float64
     Γ::Float64
     mmin::Float64
@@ -410,6 +438,7 @@ BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
 @inline (bw::BreitWigner)(m) =
     bw.mmin ≤ m ≤ bw.mmax ?
     m^2 * bw.Γ / ((m^2 - bw.mR^2)^2 + bw.mR^2 * bw.Γ^2) : 0.0
+polemap(bw::BreitWigner) = (bw.mR, bw.Γ)
 
 # The tangent substitution flattens the Breit–Wigner peak. Normalization uses
 # the full support, while decay nodes cover only the open part. A threshold-cut
@@ -461,6 +490,74 @@ function parentmassnodes(bw::BreitWigner, mass_rule::MassRule,
     return parent_masses, mass_weights, normalization
 end
 
+# Generic parent-mass average for any SpectralShape: the same ψ tangent map,
+# weighted by the true shape times the substitution Jacobian,
+#
+#     ϱ(m) dm = ϱ(√s) · jacobian(s) dψ,
+#     jacobian(s) = mR Γ₀ (1 + ((s − mR²)/(mR Γ₀))²) / (2√s),
+#
+# so the map flattens the peak while the weight stays exact. For `BreitWigner`
+# the product collapses to √s/(2 mR) — a constant multiple of what the
+# specialized method above accumulates, and the constant cancels when
+# `BroadParent` divides by the normalization. The specialized method remains
+# the dispatch target for `BreitWigner`; this one serves every other shape.
+function parentmassnodes(shape::SpectralShape, mass_rule::MassRule,
+                         threshold_mass = support(shape)[1])
+    minimum_mass, maximum_mass = support(shape)
+    pole_mass, pole_width = polemap(shape)
+    normalization_nodes, normalization_weights =
+        mass_rule.gl.x, mass_rule.gl.w
+    node_count = length(mass_rule.gl)
+    psi_of_mass(mass) =
+        atan((mass^2 - pole_mass^2) / (pole_mass * pole_width))
+    mass_squared_at(psi) =
+        pole_mass^2 + pole_mass * pole_width * tan(psi)
+    jacobian(mass_squared) =
+        pole_mass * pole_width *
+        (1 + ((mass_squared - pole_mass^2) / (pole_mass * pole_width))^2) /
+        (2 * sqrt(mass_squared))
+    psi_min, psi_max = psi_of_mass(minimum_mass), psi_of_mass(maximum_mass)
+    psi_half_width = (psi_max - psi_min) / 2
+    psi_midpoint = (psi_max + psi_min) / 2
+
+    normalization = 0.0
+    for node_index in 1:node_count
+        mass_squared = mass_squared_at(
+            psi_midpoint + psi_half_width * normalization_nodes[node_index])
+        mass_squared > 0 || continue
+        normalization += normalization_weights[node_index] *
+                         jacobian(mass_squared) * shape(sqrt(mass_squared))
+    end
+
+    parent_masses, mass_weights = Float64[], Float64[]
+    open_mass_minimum = max(minimum_mass, threshold_mass)
+    open_mass_minimum < maximum_mass ||
+        return parent_masses, mass_weights, normalization
+
+    # The cosine rule earns its place at a lower endpoint where the integrand
+    # is not smooth: a threshold cutting into the support (as in the
+    # specialized method), or a shape that itself vanishes like √ there.
+    threshold_cuts_support = open_mass_minimum > minimum_mass
+    use_cosine_rule = threshold_cuts_support || _lowerendpointvanishes(shape)
+    open_nodes, open_weights = use_cosine_rule ?
+                               (mass_rule.cos.x, mass_rule.cos.w) :
+                               (normalization_nodes, normalization_weights)
+    open_half_width, open_midpoint = threshold_cuts_support ?
+        ((psi_max - psi_of_mass(open_mass_minimum)) / 2,
+         (psi_max + psi_of_mass(open_mass_minimum)) / 2) :
+        (psi_half_width, psi_midpoint)
+    open_psi_scale = open_half_width / psi_half_width
+    for node_index in 1:node_count
+        mass_squared = mass_squared_at(
+            open_midpoint + open_half_width * open_nodes[node_index])
+        mass_squared > 0 || continue
+        push!(parent_masses, sqrt(mass_squared))
+        push!(mass_weights, open_psi_scale * open_weights[node_index] *
+                            jacobian(mass_squared) * shape(sqrt(mass_squared)))
+    end
+    return parent_masses, mass_weights, normalization
+end
+
 """
     BroadParent(daughter masses..., bw::BreitWigner;
                 B = 1.0, nma = 16, rule_options...)
@@ -474,7 +571,7 @@ one. Nodes below the daughter threshold are dropped and enter only the
 normalization, so a channel closed at the pole keeps its open-tail fraction
 (channel reopening). `rule_options...` construct the shared [`Rules`].
 """
-function BroadParent(build_decay, bw::BreitWigner, threshold_mass, mb,
+function BroadParent(build_decay, bw::SpectralShape, threshold_mass, mb,
                      rules::Rules)
     sampled_masses, mass_weights, normalization =
         parentmassnodes(bw, rules.ma, threshold_mass)

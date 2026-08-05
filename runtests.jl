@@ -161,6 +161,42 @@ let mρ = 0.7752, mπ = 0.1396, mp = 0.938, g = collect(range(0, 6, length = 300
     println("   PASS")
 end
 
+# ---------------------------------------------------------------- test 3d
+println("== 3d. SpectralShape: generic parentmassnodes reproduces the BreitWigner fast path ==")
+let rules = Rules(nma = 16)
+    # The generic path weights ψ nodes by jacobian(s)·ϱ(√s); for a constant-
+    # width BreitWigner that product is √s/(2 mR), the fast path's weight times
+    # a constant. The constant cancels in BroadParent's weight/normalization
+    # ratio, so the two paths must build identical decays. `invoke` forces the
+    # generic method for a shape whose dispatch target is the specialized one.
+    for (bw, threshold) in (
+            (BreitWigner(0.7752, 0.149; mmin = 2 * 0.1396), 2 * 0.1396),
+            (BreitWigner(0.475, 0.55; mmin = 0.05), 2 * 0.1396),   # threshold cuts in
+            (BreitWigner(1.0, 0.2), 1.0777),                       # reopened: pole below cut
+        )
+        fast = DecaySpectra.parentmassnodes(bw, rules.ma, threshold)
+        generic = invoke(
+            DecaySpectra.parentmassnodes,
+            Tuple{SpectralShape, DecaySpectra.MassRule, Any},
+            bw, rules.ma, threshold,
+        )
+        @assert fast[1] == generic[1]                        # identical mass nodes
+        @assert length(fast[2]) == length(generic[2])
+        if !isempty(fast[2])
+            # weight/normalization is the physical quantity; 2 mR cancels there
+            fast_ratios = fast[2] ./ fast[3]
+            generic_ratios = generic[2] ./ generic[3]
+            deviation = maximum(abs.(fast_ratios .- generic_ratios) ./
+                                max.(abs.(fast_ratios), 1.0e-300))
+            @assert deviation < 1.0e-12 "generic path deviates: $deviation"
+        end
+    end
+    # and through BroadParent itself: the constant-width decay is unchanged
+    ρfast = BroadParent(0.1396, 0.1396, BreitWigner(0.7752, 0.149; mmin = 2 * 0.1396), rules)
+    @assert !isempty(ρfast.coef)
+    println("   generic ≡ fast on nodes, weight ratios to 1e-12: PASS")
+end
+
 # ---------------------------------------------------------------- test 4
 println("== 4. Gauss–Legendre convergence: default orders vs doubled ==")
 ρfine = TwoBodyDecay(0.7752, 0.1396, 0.1396; nq = 256, nθ = 64)
