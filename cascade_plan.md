@@ -582,6 +582,45 @@ compile-plus-run wrapper is about 10% faster with 13% fewer allocations.
 Execution of an already compiled plan is materially unchanged. All compared
 outputs were bitwise equal.
 
+The vector-backed variant no longer exists, so that column cannot be
+re-measured; the table is kept as the record of the change. Its tuple-backed
+allocations still reproduce exactly — see below.
+
+### Where the compile-side numbers moved
+
+The two compile-side rows above are stale. They moved at `cf1bd10` ("Convert
+the tables to one canonical format"), and have been flat since. Measured on an
+Apple M4 Max, Julia 1.12.6, two Julia threads, one BLAS thread, `G = 16`, two
+modes, 50 median samples, as three interleaved A/B pairs:
+
+| path | `cf1bd10~1` | current | change |
+|---|---:|---:|---:|
+| plan compilation | 33.712 ms / 67.768 MiB | 27.326 ms / 62.261 MiB | −19% / −8.1% |
+| table wrapper: compile + run | 42.838 ms / 69.824 MiB | 37.181 ms / 64.317 MiB | −13% / −7.9% |
+| reused plan, serial | 9.574 ms / 2.057 MiB | 9.723 ms / 2.057 MiB | +1.6% / — |
+| reused plan, mode-threaded | 4.955 ms / 2.058 MiB | 5.050 ms / 2.058 MiB | +1.9% / — |
+
+Execution allocations are byte-identical and the workload is unchanged:
+`keys 18299; transfers 44643; groups 39075; targets 42573; multi-target 3277`
+before and after. Execution *time* is consistently ~2% slower — every current
+run fell outside the range of every `cf1bd10~1` run across three pairs — but
+this is three samples per side on an effect small enough to be code layout, so
+it is recorded rather than explained.
+
+`cf1bd10` changed both the reader and 254 lines of `CascadeTables.jl`, so the
+compile-side gain is not attributable to either alone. Two candidate mechanisms
+were checked and ruled out: the `iszero(channel.br) && continue` added to
+`eachchannelkey` skips nothing on this list, since the counts above are
+identical; and the parent-ID reordering between the legacy and canonical files
+is neutralized by `_cascadeorder`, which sorts keys before use.
+
+Two notes on method, learned by getting them wrong first. Single invocations of
+this benchmark vary by up to 15% on this host despite its own 50-sample median,
+so A/B pairs must be interleaved rather than compared across separate sessions.
+And allocations are the reliable cross-host quantity: the tuple-backed
+`67.736 MiB` published above reproduced to the byte at `cf1bd10~1` on different
+hardware, while none of the times did.
+
 ## 12. Implementation stages
 
 ### Stage 1: compiled serial plan — complete
