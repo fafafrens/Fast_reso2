@@ -132,6 +132,8 @@ lives in `figures/`.
 | `ThermalModel.jl`   | Statistical hadronization: freeze-out number densities, feed-down yields, and `ThermalPlan` for repeated evaluation |
 | `runtests.jl`       | Test suite (see below) |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
+| `spectral_function_plan.md` | The `SpectralShape` interface and mass-dependent widths — steps 2–3 implemented |
+| `angular_momentum_plan.md` | Barrier factors and per-state ℓ: measurements, the parity data gap, and one open decision |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
 | `data/particles_QM2016Plus.dat` / `data/decays_QM2016Plus.dat` | Canonical mass-ordered particle catalog and decay network |
 | `data/particles_charm_bottom.dat` / `data/decays_charm_bottom.dat` | Canonical charm+bottom supplement (150 states) |

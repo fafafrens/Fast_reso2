@@ -155,6 +155,11 @@ the answer and steps 2–3 are correctness cleanup.
 
 ## Not in scope
 
+Barrier factors and per-state ℓ, which the `MassDependentBW` above omits, are
+scoped separately in `angular_momentum_plan.md` — including the measurement
+that a global ℓ = 1 would be *worse* than the shipped ℓ = 0, why parity is the
+blocking data, and the per-channel-vs-species fork below in its measured form.
+
 The physically correct treatment of the σ is not a spectral function at all
 but the S-matrix / phase-shift construction, where the weight is
 `dδ_I^ℓ/dm` and the repulsive I=2 channel largely cancels the attractive
