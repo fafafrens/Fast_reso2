@@ -602,10 +602,31 @@ modes, 50 median samples, as three interleaved A/B pairs:
 
 Execution allocations are byte-identical and the workload is unchanged:
 `keys 18299; transfers 44643; groups 39075; targets 42573; multi-target 3277`
-before and after. Execution *time* is consistently ~2% slower — every current
-run fell outside the range of every `cf1bd10~1` run across three pairs — but
-this is three samples per side on an effect small enough to be code layout, so
-it is recorded rather than explained.
+before and after.
+
+The ~2% on the two execution rows is **memory placement, not code**. Two probes
+establish that, each holding code, data and results fixed — all outputs
+bit-identical:
+
+- allocating the 18,299 packed matrices in **reverse** order, nothing else
+  changed, moves execution by **+23%**;
+- building **four identical tables** at different points in one session — same
+  code, same data, same allocation order, only the heap offset differing —
+  spreads execution over **12.9%**.
+
+Against a placement sensitivity that large, a 2% difference between two builds
+says nothing about the code. It looks consistent because placement is
+deterministic *within* a build: each commit gets its own stable offset, so its
+runs cluster tightly around a value that has no meaning relative to the other's.
+The executed code is in any case byte-identical — `CascadeLinearAlgebra.jl` and
+`RowBandMatrix.jl` are untouched since `cf1bd10~1`, and `runcascade` falls
+between that range's changed hunks.
+
+This is a property of the benchmark rather than of this commit range: **read its
+execution times as ~10% quantities**. Allocations are exact and reproduce across
+hosts, so they are what a claim about execution should rest on. The compile-side
+rows survive this caveat because their allocation delta is deterministic
+(−5.5 MiB), which no amount of placement noise produces.
 
 `cf1bd10` changed both the reader and 254 lines of `CascadeTables.jl`, so the
 compile-side gain is not attributable to either alone. Two candidate mechanisms
