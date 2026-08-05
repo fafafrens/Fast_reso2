@@ -1382,12 +1382,17 @@ function _apply_plan!(
     if parallel === :modes && Threads.nthreads() > 1 && N > 1
         @sync for mode_index in 1:N
             Threads.@spawn begin
-                scratch = Vector{Float64}(undef, grid_length)
+                # Deliberately not named `scratch`. `@spawn` builds a closure,
+                # and a name assigned both inside it and in the serial branch
+                # below is treated as one shared variable: Julia boxes it, and
+                # `_apply_plan!` infers it as `Core.Box`. Distinct names keep
+                # each buffer local to its branch and the function inferred.
+                mode_scratch = Vector{Float64}(undef, grid_length)
                 _apply_plan_mode!(
                     spectra_by_mode[mode_index],
                     plan,
                     mode_index,
-                    scratch,
+                    mode_scratch,
                 )
             end
         end
