@@ -5,16 +5,17 @@
 # multiplied by the fireball volume and then fed down through the decay list.
 # Parameters follow Andronic et al. for Pb-Pb 0-10% at the LHC.
 #
-# Four modelling choices are separated here, each measured against the one
+# Five modelling choices are separated here, each measured against the one
 # before it, so no effect is attributed to more than one cause:
 #
 #   light_pdg               the 351 species carrying a PDG MC ID
 #   QM2016Plus              the quark-model list, 1518 species
 #   QM2016Plus_isofix       three corrected isospin decompositions
 #   + sigma                 f0(500)
-#   pole mass vs width      the same list with the Breit-Wigner average off
+#   pole mass vs width      the same list with the mass average off
+#   spectral shape          threshold-vanishing Gamma(m) vs constant Gamma
 #
-# The last three are small in species count and large in effect, which is the
+# The last four are small in species count and large in effect, which is the
 # point of separating them.
 #
 # `isofix` patches eta, a1(1260) and K(1630), whose isospin decompositions were
@@ -28,12 +29,19 @@
 # `thermaldensity` cuts the support at the 2*m_pi decay threshold instead. It
 # decays only to pions, so it moves the pion yield and nothing else.
 #
-# Finite widths are the largest correction of the four and the least uniform.
-# A resonance averaged over its Breit-Wigner has weight below its pole mass,
-# where the Boltzmann factor is cheaper, so every yield rises -- but by 40% for
-# the proton, which is fed by the broad Delta(1232) and the N* tower, against
-# 0.2% for the Omega-, whose few feeders are all narrow. Turning widths off is
-# therefore not a small perturbation on the ratios; it is a different model.
+# Finite widths are the largest correction and the least uniform: the proton is
+# fed by the broad Delta(1232) and the N* tower, the Omega- by a handful of
+# narrow states. Turning them off is not a small perturbation on the ratios; it
+# is a different model.
+#
+# Which spectral shape carries the width is a physics choice in its own right,
+# so it gets its own bar. The default `:massdep` gives each resonance a
+# threshold-vanishing width Gamma(m) ~ (mR/m) q(m)/q(mR), so it carries no
+# weight below the mass of its own decay products; `:constant` freezes
+# Gamma(m) = Gamma. At l = 0 the two do not order universally -- the truncation
+# removes low-mass weight while the tail adds high-mass weight, and which wins
+# depends on where the threshold sits inside the window. The sigma, whose
+# threshold cuts deep into its window, is where they part company.
 #
 # Two caveats worth reading before comparing with data:
 #
@@ -111,10 +119,10 @@ load(layers) = DecayList(
     reduce(merge, [readdecays(joinpath(ROOT, "data", "decays_$n.dat")) for n in layers]),
 )
 
-function report(label, layers; width = true)
+function report(label, layers; width = true, shape = :massdep)
     decay_list = load(layers)
-    elapsed = @elapsed yields =
-        thermalyields(decay_list, T; muB = MUB, V = VOL, width = width)
+    elapsed = @elapsed yields = thermalyields(
+        decay_list, T; muB = MUB, V = VOL, width = width, shape = shape)
     @printf("\n%s  (%d species, %.1f s)\n", label, length(decay_list.catalog.byid), elapsed)
     @printf("  %-9s %10s %10s %10s %8s\n", "species", "primary", "feed-down", "total", "feed/tot")
     for (particle_id, name, _) in SPECIES
@@ -138,6 +146,8 @@ full     = report("QM2016Plus_isofix (production list)", ["QM2016Plus_isofix"])
 sigma    = report("QM2016Plus_isofix + f0(500)", ISOFIX_SIGMA)
 pole     = report("QM2016Plus_isofix + f0(500), pole mass (no width average)",
                   ISOFIX_SIGMA; width = false)
+constant = report("QM2016Plus_isofix + f0(500), constant-width shape",
+                  ISOFIX_SIGMA; shape = :constant)
 
 # ---------------------------------------------------------------------------
 # What the sigma alone does. It is one species out of 1519 and decays only to
@@ -160,16 +170,21 @@ end
 # one touches every species, and unevenly: the proton is fed by the broad
 # Delta(1232) and the N* tower, the Omega- by a handful of narrow states.
 # ---------------------------------------------------------------------------
-println("\npole mass vs Breit-Wigner average, same list")
-@printf("  %-9s %10s %10s %9s\n", "species", "pole", "width", "change")
+println("\npole mass vs mass average, and the two shapes, on the same list")
+@printf("  %-9s %10s %10s %10s %9s %9s\n",
+        "species", "pole", "constant", "massdep", "width[%]", "shape[%]")
 for (particle_id, name, _) in SPECIES
-    before, after = pole.total[particle_id], sigma.total[particle_id]
-    @printf("  %-9s %10.2f %10.2f %+8.2f%%\n",
-            name, before, after, 100 * (after - before) / before)
+    p0 = pole.total[particle_id]
+    pc = constant.total[particle_id]
+    pm = sigma.total[particle_id]
+    @printf("  %-9s %10.2f %10.2f %10.2f %+8.2f%% %+8.2f%%\n",
+            name, p0, pc, pm, 100 * (pm - p0) / p0, 100 * (pm - pc) / pc)
 end
-@printf("  K+/pi+  %.4f -> %.4f     p/pi+  %.4f -> %.4f\n",
-        pole.total[321] / pole.total[211], sigma.total[321] / sigma.total[211],
-        pole.total[2212] / pole.total[211], sigma.total[2212] / sigma.total[211])
+ratio(y, a, b) = y.total[a] / y.total[b]
+@printf("  K+/pi+  pole %.4f  constant %.4f  massdep %.4f\n",
+        ratio(pole, 321, 211), ratio(constant, 321, 211), ratio(sigma, 321, 211))
+@printf("  p/pi+   pole %.4f  constant %.4f  massdep %.4f\n",
+        ratio(pole, 2212, 211), ratio(constant, 2212, 211), ratio(sigma, 2212, 211))
 
 # ---------------------------------------------------------------------------
 # Left:   yields per species, primary against total, for the three lists.
@@ -227,19 +242,21 @@ right.grid(alpha = 0.25, axis = "y")
 
 percent(after, before) = [100 * (after.total[id] - before.total[id]) / before.total[id]
                           for (id, _, _) in SPECIES]
-delta.bar(positions .- 0.30, percent(full, pdg_only), 0.19, color = "C0",
+delta.bar(positions .- 0.32, percent(full, pdg_only), 0.15, color = "C0",
           label = "quark-model states")
-delta.bar(positions .- 0.10, percent(sigma, pole), 0.19, color = "C4",
+delta.bar(positions .- 0.16, percent(sigma, pole), 0.15, color = "C4",
           label = "finite widths")
-delta.bar(positions .+ 0.10, percent(sigma, full), 0.19, color = "C2",
+delta.bar(positions, percent(sigma, constant), 0.15, color = "C5",
+          label = raw"shape: $\Gamma(m)$ vs $\Gamma$")
+delta.bar(positions .+ 0.16, percent(sigma, full), 0.15, color = "C2",
           label = raw"$f_0(500)$")
-delta.bar(positions .+ 0.30, percent(full, raw_qm), 0.19, color = "C3",
+delta.bar(positions .+ 0.32, percent(full, raw_qm), 0.15, color = "C3",
           label = "isospin fix")
 delta.axhline(0, color = "0.3", lw = 0.8)
 delta.set_xticks(positions); delta.set_xticklabels(labels)
 delta.set_ylabel("change in total yield [\\%]")
 delta.set_title("what each choice is worth")
-delta.legend(frameon = false, loc = "upper left")
+delta.legend(frameon = false, loc = "upper left", ncol = 1, fontsize = 8)
 delta.grid(alpha = 0.25, axis = "y")
 
 figure_handle.text(0.5, 0.955,
@@ -256,4 +273,5 @@ Measured, Pb-Pb 0-10% (ALICE): K+/pi+ ~ 0.15, p/pi+ ~ 0.05.
 The excess above those values is dominated by feed-down from the quark-model
 resonances, which is why every list is shown separately. Finite widths are the
 largest single correction and the least uniform across species: dropping them
-is not a small perturbation on the ratios.""")
+is not a small perturbation on the ratios. The spectral shape carrying that
+width is a separate choice, and the sigma is where the two shapes part.""")

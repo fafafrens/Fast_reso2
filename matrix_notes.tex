@@ -669,12 +669,30 @@ $m=m_1+m_2$, so $\varrho_i$ carries no weight below threshold, and
 $\varrho_i\to\delta(m-m_i)$ as $\Gamma_i\to0$.
 
 Equations above describe the general mass-dependent-width construction.
-The current \texttt{BreitWigner} implementation uses the constant-width
-specialization $\Gamma_i(m)=\Gamma_i$, truncates it to a caller-specified
-mass window, and returns an \emph{unnormalized} spectral shape.  The
-normalization is performed by \texttt{BroadParent} when forming the
-parent-mass average.  A mass-dependent width and the barrier factor in
-\eqref{eq:massdep-width} are not yet implemented.
+Both specializations are implemented, as subtypes of
+\texttt{SpectralShape}, and selected by the \texttt{spectral} table option
+(\texttt{CascadeTable}) or the \texttt{shape} keyword
+(\texttt{ThermalModel}).  Each returns an \emph{unnormalized} shape on a
+caller-specified window; \texttt{BroadParent} normalizes when forming the
+parent-mass average.
+
+\texttt{MassDependentBW} is the default.  It implements
+\eqref{eq:massdep-width} at $\ell=0$ and \emph{without} the Blatt--Weisskopf
+factor, with the symmetric split $q(m)=\sqrt{m^{2}-m_{\rm th}^{2}}/2$, where
+$m_{\rm th}$ is the summed daughter mass of the resonance's \emph{lightest}
+channel --- so the shape is a property of the species, while each individual
+channel's closure remains handled by dropping parent-mass nodes below its own
+threshold.  The split is exact for $\sigma\to\pi\pi$ and approximates the
+$q$-ratio for asymmetric pairs.  Since $\Gamma(m)$ vanishes at $m_{\rm th}$,
+the shape carries no weight where the state cannot decay; for the $\sigma$
+that removes the $2.56\%$ of constant-width weight below $2m_\pi$.  A
+resonance whose pole lies at or below its own threshold has no $q(m_i)$ and
+falls back to the constant shape.
+
+\texttt{BreitWigner} is the constant-width specialization
+$\Gamma_i(m)=\Gamma_i$, retained both as that fallback and as the
+\texttt{:constant} option.  Barrier factors and per-channel $\ell$ remain
+unimplemented.
 
 \paragraph{One principle, two costs.}
 Whether a given width is cheap or expensive to include is decided by

@@ -9,13 +9,21 @@ the yields that follow once resonances decay.
     primary, total, feeddown = thermalyields(dl, 0.1565; muB = 0.0, V = 5300.0)
 
 For a fit, compile the list once and reuse it -- `ThermalPlan` hoists
-everything independent of `(T, muB, V)` and threads the density loop:
+everything independent of `(T, muB, V)`, precomputes one spectral quadrature
+rule per broad species, and chunks the density loop across threads:
 
     plan = ThermalPlan(dl)
-    yields = thermalyields(plan, T; muB, V)      # 4x faster, 4.5x less garbage
+    yields = thermalyields(plan, T; muB, V)      # ~0.7 ms vs ~50 ms direct
 
 Densities are integrated directly rather than summed as Bessel functions, which
 keeps `QuadGK` as the only dependency.
+
+Broad resonances are averaged over a spectral shape. `shape = :massdep` (the
+default) uses the threshold-vanishing mass-dependent width; `:constant` the
+constant-width Breit-Wigner. The formulas are defined character for character
+as in `DecaySpectra` -- this module cannot import it without instantiating a
+second copy (the same reason particle records are duck-typed), so the test
+suite pins the two implementations equal pointwise instead.
 
 Functions take any object exposing `.mass`, `.width`, `.degeneracy`, `.baryon`,
 `.charge`, `.strangeness`, `.charm` and `.bottomness`, rather than annotating
@@ -26,7 +34,7 @@ fail to dispatch here.
 """
 module ThermalModel
 
-using QuadGK: quadgk, alloc_segbuf, Segment
+using QuadGK: quadgk
 using FastGaussQuadrature: gausslegendre
 
 export chemicalpotential, thermaldensity, primaryyields, thermalyields,
@@ -58,6 +66,35 @@ const _MOMENTUM_CUTOFF = 60.0
 
 "Hadrons with half-integer spin are fermions; baryon number identifies them."
 _isfermion(particle) = particle.baryon != 0
+
+# The two spectral shapes, matching DecaySpectra.BreitWigner and
+# DecaySpectra.MassDependentBW exactly (same expressions, same evaluation
+# order, so the suite can assert pointwise equality). Unnormalized -- every
+# consumer divides by its own integrated weight.
+_constantshape(m, mass, width) =
+    m^2 * width / ((m^2 - mass^2)^2 + mass^2 * width^2)
+
+function _massdepshape(m, mass, width, threshold)
+    m > threshold || return 0.0
+    q = sqrt(max((m - threshold) * (m + threshold), 0.0)) / 2
+    qR = sqrt((mass - threshold) * (mass + threshold)) / 2
+    scaled_width = mass * width * q / qR               # = m·Γ(m)
+    return m * scaled_width /
+           ((m^2 - mass^2)^2 + scaled_width^2)
+end
+
+# :massdep needs q at the pole, which a species whose pole sits at or below
+# its own threshold does not have; those reopened states use the constant
+# shape, exactly as CascadeTables.decayfor decides per key.
+function _shapefunction(shape, mass, width, threshold)
+    shape === :massdep || shape === :constant || throw(ArgumentError(
+        "shape must be :massdep or :constant, got $(repr(shape))",
+    ))
+    if shape === :massdep && threshold < mass
+        return m -> _massdepshape(m, mass, width, threshold)
+    end
+    return m -> _constantshape(m, mass, width)
+end
 
 """
     chemicalpotential(particle; muB, muS = 0.0, muQ = 0.0, muC = 0.0)
@@ -118,30 +155,30 @@ end
 Number density of one species in GeV^3.
 
 `quantum = false` selects Boltzmann statistics. `width = true` averages the
-density over a relativistic Breit-Wigner of the species' own width instead of
-using the pole mass.
+density over the species' spectral shape instead of using the pole mass;
+`shape` picks it. `:massdep` (default) carries the threshold-vanishing
+mass-dependent width `Γ(m) ∝ (mR/m)·q(m)/q(mR)` with the symmetric-split
+`q(m) = √(m² − threshold²)/2`; `:constant` the constant-width Breit-Wigner.
+With `threshold = 0` the two differ only by the frozen width's placement, and
+`:massdep` degenerates to a constant width exactly.
 
 `rtol` controls only the mass integral; the momentum integral uses the fixed
-64-node rule, which is already at machine precision. Adaptive quadrature is kept
-here because the integrand is a Lorentzian times a steeply falling density, and
-fixed rules converge badly on it — a tangent substitution that flattens the
-Breit-Wigner, as `DecaySpectra.parentmassnodes` uses, only moves the steepness
-into the endpoints (2e-2 at 24 nodes). The default `1e-6` costs `5e-9`, eight
-orders below the uncertainty in the branching ratios these yields are built
-from. Tighten it if you are checking convergence rather than doing physics.
+32-node rule, which is already far inside every other tolerance here. This
+reference path keeps adaptive quadrature; `ThermalPlan` instead precomputes a
+rule per species that carries the shape as its weight function, and the suite
+holds the two paths together within the model tolerance.
 
 `threshold` is the lowest mass the resonance can carry — the summed daughter
-masses of its lightest channel. The Breit-Wigner is truncated there rather than
-at `mR - k*Gamma`, because a constant-width shape carries weight below the
-decay threshold: `spectral_function_plan.md` measures 2.56% of the sigma's
-weight below `2*m_pi`. For a density that weight is unphysical mass, so it is
-removed and the remainder renormalized.
+masses of its lightest channel. Both shapes truncate their support there
+(`spectral_function_plan.md` measures 2.56% of the sigma's constant-width
+weight below `2*m_pi`; for a density that weight is unphysical mass), and
+`:massdep` additionally vanishes there by construction.
 """
 function thermaldensity(
         particle, temperature;
         muB = 0.0, muS = 0.0, muQ = 0.0, muC = 0.0,
-        quantum = true, width = true, threshold = 0.0, k = 4.0,
-        rtol = 1.0e-6,
+        quantum = true, width = true, shape = :massdep,
+        threshold = 0.0, k = 4.0, rtol = 1.0e-6,
     )
     temperature > 0 || throw(ArgumentError("temperature must be positive"))
     mu = chemicalpotential(particle; muB, muS, muQ, muC)
@@ -156,14 +193,13 @@ function thermaldensity(
     upper = particle.mass + k * particle.width
     lower < upper || return pole_density()
 
-    # Relativistic Breit-Wigner in the mass variable, normalized over whatever
-    # support survives the threshold cut.
-    shape(m) = m * particle.width /
-        ((m^2 - particle.mass^2)^2 + (particle.mass * particle.width)^2)
-    weight, _ = quadgk(shape, lower, upper; rtol)
+    # The spectral shape, normalized over whatever support survives the
+    # threshold cut.
+    spectral = _shapefunction(shape, particle.mass, particle.width, threshold)
+    weight, _ = quadgk(spectral, lower, upper; rtol)
     weight > 0 || return pole_density()
     averaged, _ = quadgk(lower, upper; rtol) do m
-        shape(m) * _densityatmass(
+        spectral(m) * _densityatmass(
             m, particle.degeneracy, is_fermion, temperature, mu; quantum,
         )
     end
@@ -182,6 +218,10 @@ function _thresholds(decay_list)
     for (parent_id, channels) in decay_list.network.byparent
         best = Inf
         for channel in channels
+            # Zero-branching rows are skipped, matching
+            # CascadeTables.eachchannelkey -- the two modules must agree on
+            # every species' threshold or the shapes stop being one shape.
+            iszero(channel.br) && continue
             daughters = channel.daughters
             length(daughters) == 1 && only(daughters) == parent_id && continue
             total = 0.0
@@ -259,13 +299,6 @@ end
 # Compiled plan
 # ---------------------------------------------------------------------------
 
-# One adaptive-quadrature buffer per task, so the mass integral stops
-# allocating on every call and threaded species still get their own. `Vector`
-# is not thread-safe to grow, hence per task rather than one shared buffer.
-const _SEGBUF = OncePerTask{Vector{Segment{Float64, Float64, Float64}}}() do
-    alloc_segbuf()
-end
-
 "Mass window a resonance is averaged over: `mR +- k*Gamma`, cut at threshold."
 function _support(record, threshold, k)
     record.width > 0 || return (0.0, 0.0)
@@ -273,14 +306,21 @@ function _support(record, threshold, k)
             record.mass + k * record.width)
 end
 
-# Dense rule used only when building the plan, to integrate the Breit-Wigner
-# against each Lagrange basis function. Its order is irrelevant at evaluation.
+# Dense rules used only when building the plan, to integrate the spectral
+# shape against each Lagrange basis function. Their order is irrelevant at
+# evaluation. The cosine-mapped variant serves shapes that vanish like a
+# square root at the lower endpoint (:massdep at its threshold): the sin
+# Jacobian absorbs the vanishing that plain Gauss-Legendre resolves slowly.
 const _BUILD_NODES, _BUILD_WEIGHTS = gausslegendre(256)
+const _BUILD_COS_NODES, _BUILD_COS_WEIGHTS = let
+    angles = π .* (_BUILD_NODES .+ 1) ./ 2
+    (-cos.(angles), π / 2 .* _BUILD_WEIGHTS .* sin.(angles))
+end
 
 """
-    _breitwignerrule(record, lower, upper, mass_order) -> (nodes, weights)
+    _spectralrule(spectral, lower, upper, mass_order; vanishing) -> (nodes, weights)
 
-A quadrature rule carrying the Breit-Wigner as its weight function:
+A quadrature rule carrying the spectral shape as its weight function:
 `sum(w .* f.(nodes))` approximates `int S(m) f(m) dm / int S(m) dm` for smooth
 `f`. Nodes are Chebyshev points, weights are `int S(m) l_j(m) dm` with `l_j` the
 Lagrange basis through them, so the rule is exact wherever the degree-`order`
@@ -291,10 +331,14 @@ subdivides to resolve the Lorentzian and pays a full density evaluation at every
 point it adds — 150 per resonance — although the density itself is smooth there.
 
 Nothing here depends on temperature or chemical potential, so a fit builds it
-once. The accuracy floor is polynomial approximation of the density, which
-spans three decades across the window of a broad state: 6.6e-6 at order 24.
+once. The accuracy floor is polynomial approximation of the density across a
+window spanning three decades. The `:massdep` shape's square-root vanishing at
+threshold costs roughly an order there: against the adaptive reference the plan
+deviates by 1.3e-6 at 24 nodes and 3.6e-8 at 32, where it meets the reference's
+own tolerance and stops improving — hence the default of 32. `vanishing`
+selects the cosine-mapped build sweep for such a shape.
 """
-function _breitwignerrule(record, lower, upper, order)
+function _spectralrule(spectral, lower, upper, order; vanishing = false)
     half = (upper - lower) / 2
     midpoint = (upper + lower) / 2
     reference = [cos((2j - 1) * π / (2order)) for j in 1:order]
@@ -302,14 +346,14 @@ function _breitwignerrule(record, lower, upper, order)
     # Barycentric weights for Chebyshev points of the first kind.
     barycentric = [(-1)^j * sin((2j - 1) * π / (2order)) for j in 1:order]
 
-    shape(m) = m * record.width /
-        ((m^2 - record.mass^2)^2 + (record.mass * record.width)^2)
+    build_nodes = vanishing ? _BUILD_COS_NODES : _BUILD_NODES
+    build_weights = vanishing ? _BUILD_COS_WEIGHTS : _BUILD_WEIGHTS
 
     weights = zeros(order)
     basis = zeros(order)
-    for index in eachindex(_BUILD_NODES)
-        x = _BUILD_NODES[index]
-        weight = _BUILD_WEIGHTS[index] * half * shape(midpoint + half * x)
+    for index in eachindex(build_nodes)
+        x = build_nodes[index]
+        weight = build_weights[index] * half * spectral(midpoint + half * x)
 
         # Barycentric Lagrange basis at x, guarding the node-coincident case.
         hit = findfirst(j -> x == reference[j], 1:order)
@@ -333,7 +377,7 @@ function _breitwignerrule(record, lower, upper, order)
 end
 
 """
-    ThermalPlan(decay_list; mass_order = 24, k = 4.0)
+    ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
 
 Everything about a decay list that does not depend on `(T, muB, V)`, resolved
 once: dense species indices, the quantum numbers each density needs, the decay
@@ -377,9 +421,15 @@ struct ThermalPlan
     mass_range::Vector{UnitRange{Int}}
     mass_nodes::Vector{Float64}
     mass_weights::Vector{Float64}
+    # The spectral shape the rules above were built for; evaluation never
+    # rebuilds them, so a plan answers for exactly one shape.
+    shape::Symbol
 end
 
-function ThermalPlan(decay_list; mass_order = 24, k = 4.0)
+function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
+    shape === :massdep || shape === :constant || throw(ArgumentError(
+        "shape must be :massdep or :constant, got $(repr(shape))",
+    ))
     catalog = decay_list.catalog.byid
     ids = sort!(collect(keys(catalog)))
     index_of = Dict(particle_id => index for (index, particle_id) in pairs(ids))
@@ -418,12 +468,18 @@ function ThermalPlan(decay_list; mass_order = 24, k = 4.0)
     mass_nodes = Float64[]
     mass_weights = Float64[]
     for record in records
-        lower, upper = _support(record, get(thresholds, record.id, 0.0), k)
+        threshold = get(thresholds, record.id, 0.0)
+        lower, upper = _support(record, threshold, k)
         if lower >= upper
             push!(mass_range, 1:0)
             continue
         end
-        nodes, weights = _breitwignerrule(record, lower, upper, mass_order)
+        spectral = _shapefunction(shape, record.mass, record.width, threshold)
+        # The shape dies like √(m − threshold) when the window starts there.
+        vanishing = shape === :massdep && threshold < record.mass &&
+                    lower <= threshold
+        nodes, weights =
+            _spectralrule(spectral, lower, upper, mass_order; vanishing)
         first_node = length(mass_nodes) + 1
         append!(mass_nodes, nodes)
         append!(mass_weights, weights)
@@ -439,6 +495,7 @@ function ThermalPlan(decay_list; mass_order = 24, k = 4.0)
         [get(thresholds, particle_id, 0.0) for particle_id in ids],
         order, channel_range, branching, daughter_range, daughters,
         mass_range, mass_nodes, mass_weights,
+        shape,
     )
 end
 
@@ -447,10 +504,11 @@ Base.length(plan::ThermalPlan) = length(plan.ids)
 """
     thermalyields(plan::ThermalPlan, temperature; muB = 0.0, V, kwargs...)
 
-The same result as the decay-list method, reusing a compiled plan. Densities are
-computed with `Threads.@threads :greedy`, which suits a workload where a narrow
-species costs one fixed-rule evaluation and a broad one costs an adaptive mass
-integral around it.
+The same result as the decay-list method, reusing a compiled plan. The density
+loop runs in a few chunks per thread; each broad species costs one dot product
+over its precomputed spectral rule, each sharp one a single fixed-rule
+evaluation. The plan's `shape` was fixed when it was built -- compile another
+plan to compare shapes.
 """
 function thermalyields(
         plan::ThermalPlan, temperature;

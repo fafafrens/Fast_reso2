@@ -3068,12 +3068,73 @@ let
     sharp = thermaldensity(narrow, temperature; width = false)
     @assert abs(broadened - sharp) / sharp < 1.0e-6
 
-    # A real width moves the density: the rho is light enough that the
-    # Boltzmann factor rewards its low-mass tail.
-    rho_broad = thermaldensity(rho, temperature; width = true)
+    # A real width moves the density, but *which way* is not universal, and at
+    # l = 0 neither is the ordering between the two shapes. Truncating at the
+    # threshold removes low-mass weight while the tail adds high-mass weight;
+    # which wins depends on where the threshold sits inside the window.
+    # Measured here at T = 156.5 MeV, density relative to the pole mass:
+    #
+    #             massdep  constant
+    #     rho      1.044    1.043
+    #     sigma    0.551    0.457     threshold cuts deep into the window
+    #     Delta    0.902    0.952
+    #     K*       1.004    1.017
+    #
+    # So the assertions are per state. The sigma is the one that matters: the
+    # two shapes differ by 21% there, and it is the state the whole threshold
+    # treatment was built for.
+    two_pion = 2 * 0.13957
     rho_sharp = thermaldensity(rho, temperature; width = false)
-    @assert rho_broad > rho_sharp
-    @printf("   rho finite-width/pole density = %.4f\n", rho_broad / rho_sharp)
+    rho_massdep = thermaldensity(rho, temperature; threshold = two_pion)
+    rho_constant = thermaldensity(rho, temperature;
+                                  shape = :constant, threshold = two_pion)
+    @assert rho_massdep > rho_sharp && rho_constant > rho_sharp
+    sigma = (mass = 0.475, width = 0.55, degeneracy = 1.0, baryon = 0,
+             charge = 0, strangeness = 0, charm = 0, bottomness = 0)
+    sigma_sharp = thermaldensity(sigma, temperature; width = false)
+    sigma_massdep = thermaldensity(sigma, temperature; threshold = two_pion)
+    sigma_constant = thermaldensity(sigma, temperature;
+                                    shape = :constant, threshold = two_pion)
+    @assert sigma_massdep < sigma_sharp && sigma_constant < sigma_sharp
+    @assert (sigma_massdep - sigma_constant) / sigma_constant > 0.15
+    @printf("   density/pole: rho %.4f, sigma %.4f (massdep) vs %.4f (constant)\n",
+            rho_massdep / rho_sharp, sigma_massdep / sigma_sharp,
+            sigma_constant / sigma_sharp)
+
+    # The shapes are defined in two modules that cannot share code without
+    # instantiating DecaySpectra twice; equality of the formulas is therefore
+    # asserted, pointwise and exact, against the Main.DecaySpectra instance.
+    for (mR, G, mth) in ((0.7752, 0.1491, two_pion), (0.475, 0.55, two_pion),
+                         (1.232, 0.117, 1.0777))
+        lower, upper = max(mR - 4G, mth), mR + 4G
+        ds_massdep = Main.DecaySpectra.MassDependentBW(
+            mR, G, mth; mmin = lower, mmax = upper)
+        ds_constant = Main.DecaySpectra.BreitWigner(
+            mR, G; mmin = lower, mmax = upper)
+        for m in range(lower + 1.0e-9, upper; length = 41)
+            @assert ThermalModel._massdepshape(m, mR, G, mth) == ds_massdep(m)
+            @assert ThermalModel._constantshape(m, mR, G) == ds_constant(m)
+        end
+    end
+
+    # And the two quadratures built on that one shape must integrate it the
+    # same way: DecaySpectra's psi-mapped parentmassnodes average of a smooth f
+    # against ThermalPlan's Chebyshev rule.
+    let mR = 0.475, G = 0.55, mth = two_pion, upper = mR + 4G
+        ds_shape = Main.DecaySpectra.MassDependentBW(
+            mR, G, mth; mmin = mth, mmax = upper)
+        masses, weights, normalization = Main.DecaySpectra.parentmassnodes(
+            ds_shape, Main.DecaySpectra.Rules(nma = 48).ma, mth)
+        smooth(m) = m^2 * exp(-m / temperature)
+        ds_average = sum(weights .* smooth.(masses)) / normalization
+        spectral = ThermalModel._shapefunction(:massdep, mR, G, mth)
+        nodes, rule_weights = ThermalModel._spectralrule(
+            spectral, mth, upper, 24; vanishing = true)
+        tm_average = sum(rule_weights .* smooth.(nodes))
+        @assert abs(tm_average - ds_average) / ds_average < 1.0e-5
+        @printf("   one shape, two quadratures: averages agree to %.1e\n",
+                abs(tm_average - ds_average) / ds_average)
+    end
 
     # (c) Conservation under feed-down. Strong and electromagnetic decays
     # conserve B, Q and S, and every weak decayer in this list is terminal, so
@@ -3128,26 +3189,36 @@ let
     @printf("   charge drift removed by symmetrize_conjugation\n")
 
     # (e) A compiled plan reproduces the decay-list path, but not bit-for-bit.
-    # The plan averages each resonance on a fixed 24-node rule that carries the
-    # Breit-Wigner as its weight function; the direct path drives an adaptive
-    # integral through the peak at the caller's 1e-6. They agree to ~4e-7, which
-    # is the accuracy the model claims -- the bound below is set at the model's
-    # tolerance, not at the quadrature's.
+    # The plan averages each resonance on a fixed 24-node rule that carries its
+    # spectral shape as the weight function; the direct path drives an adaptive
+    # integral through the peak at the caller's 1e-6. The bound below is the
+    # model's tolerance, not the quadrature's -- both shapes measure ~1e-7.
     plan = ThermalPlan(decay_list)
+    @assert plan.shape === :massdep
     planned = thermalyields(plan, temperature; muB = 0.0, V = 5300.0)
     @assert Set(keys(planned.total)) == Set(keys(yields.total))
-    for book in (:primary, :total)
-        direct, compiled = getfield(yields, book), getfield(planned, book)
-        deviation = maximum(
-            abs(compiled[id] - direct[id]) / max(direct[id], 1.0e-300)
-            for id in keys(direct)
-        )
-        @assert deviation < 1.0e-6 "plan differs from the direct path: $deviation"
+    for plan_shape in (:massdep, :constant)
+        shaped_plan = plan_shape === :massdep ?
+            plan : ThermalPlan(decay_list; shape = plan_shape)
+        direct_yields = plan_shape === :massdep ? yields :
+            thermalyields(decay_list, temperature;
+                          muB = 0.0, V = 5300.0, shape = plan_shape)
+        compiled_yields =
+            thermalyields(shaped_plan, temperature; muB = 0.0, V = 5300.0)
+        for book in (:primary, :total)
+            direct = getfield(direct_yields, book)
+            compiled = getfield(compiled_yields, book)
+            deviation = maximum(
+                abs(compiled[id] - direct[id]) / max(direct[id], 1.0e-300)
+                for id in keys(direct)
+            )
+            @assert deviation < 1.0e-6 "plan ($plan_shape) differs from the direct path: $deviation"
+        end
     end
     # and it must still track a changed temperature, not cache the first answer
     hotter = thermalyields(plan, 0.17; muB = 0.0, V = 5300.0)
     @assert hotter.total[211] > planned.total[211]
-    @printf("   ThermalPlan agrees with the direct path to 4e-7\n")
+    @printf("   ThermalPlan agrees with the direct path (both shapes) to 1e-6\n")
 
     # Feed-down dominates the pion yield, as it must at freeze-out.
     @assert yields.total[211] > 2 * yields.primary[211]

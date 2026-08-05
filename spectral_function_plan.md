@@ -1,6 +1,10 @@
 # Plan: a generic spectral-function type
 
-Status: proposed, not implemented. Background and formulae are in
+Status: **steps 2 and 3 implemented** (`SpectralShape` + generic
+`parentmassnodes`; `MassDependentBW` at ℓ = 0, no barrier factor, now the
+default in both the cascade and the thermal model). Step 1, the support cap,
+and the per-channel/summed-width question below remain open — `width_window`
+is still the only tail control. Background and formulae are in
 `matrix_notes.tex`, §"What the width shape controls, and what it does not"
 and §"A spectral-function interface".
 
