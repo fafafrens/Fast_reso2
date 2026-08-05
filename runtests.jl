@@ -197,6 +197,62 @@ let rules = Rules(nma = 16)
     println("   generic ≡ fast on nodes, weight ratios to 1e-12: PASS")
 end
 
+# ---------------------------------------------------------------- test 3e
+println("== 3e. MassDependentBW: threshold, sharp limit, convergence, closure ==")
+let mπ = 0.1396, mρ = 0.7752, g = collect(range(0, 6, length = 300))
+    # (a) The shape is exactly zero below its threshold and positive above.
+    σshape = MassDependentBW(0.475, 0.55, 2mπ)
+    @assert σshape(2mπ - 1.0e-9) == 0.0 && σshape(2mπ) == 0.0
+    @assert σshape(0.3) > 0 && σshape(0.475) > 0
+    # mth = 0 degenerates to a constant width: Γ(m) = Γ0 exactly, so the shape
+    # equals m²Γ0/((m²−mR²)² + m²Γ0²) — check against the explicit formula.
+    flat = MassDependentBW(1.0, 0.2, 0.0; mmin = 0.5, mmax = 1.5)
+    for m in (0.6, 1.0, 1.4)
+        @assert isapprox(flat(m), m^2 * 0.2 / ((m^2 - 1)^2 + m^2 * 0.04); rtol = 1.0e-14)
+    end
+    # a pole at or below threshold must be rejected, not silently misweighted
+    caught = try MassDependentBW(1.0, 0.2, 1.0); false catch e; e isa ArgumentError end
+    @assert caught
+
+    # (b) Γ0 → 0 recovers the sharp two-body matrix (number-weighted), through
+    # the generic parentmassnodes path and its cosine threshold rule.
+    Wsharp = decaymatrices(TwoBodyDecay(mρ, mπ, mπ), [0], g, g)[1]
+    Wnarrow = decaymatrices(
+        BroadParent(mπ, mπ, MassDependentBW(mρ, 1.0e-3, 2mπ); nma = 24), [0], g, g)[1]
+    Fa = [exp(-hypot(mρ, q) / 0.145) for q in g]
+    relw(F, R) = sum(abs.(F .- R) .* g) / sum(abs.(R) .* g)
+    dnarrow = relw(Wnarrow * Fa, Wsharp * Fa)
+    @assert dnarrow < 5.0e-3
+
+    # (c) nma convergence on the σ, the broadest state in any table.
+    Wref = decaymatrices(BroadParent(mπ, mπ, MassDependentBW(0.475, 0.55, 2mπ); nma = 96), [0], g, g)[1]
+    r16 = relw(decaymatrices(BroadParent(mπ, mπ, MassDependentBW(0.475, 0.55, 2mπ); nma = 16), [0], g, g)[1] * Fa, Wref * Fa)
+    r32 = relw(decaymatrices(BroadParent(mπ, mπ, MassDependentBW(0.475, 0.55, 2mπ); nma = 32), [0], g, g)[1] * Fa, Wref * Fa)
+    @assert r32 < r16 && r32 < 5.0e-3
+
+    # (d) Defect-1 closure. A constant-width σ normalizes in below-threshold
+    # weight that emits nothing, so daughters-per-decay falls short of the
+    # branching ratios; the threshold-vanishing shape has no such weight. Count
+    # daughters per parent through the functor in a static thermal cell.
+    #
+    # The constant shape uses mmin = 0.05, the floor `decayfor` applies in
+    # production — NOT mmin = 2mπ, which would pre-cut the leak this test
+    # exists to demonstrate (the plan doc's 2.56% of the σ's weight).
+    Faσ = thermal(0.475)
+    countdaughters(shape) = 2π * quadgk(
+        pT -> quadgk(ηp -> pT * BroadParent(mπ, mπ, shape; B = 1.0, nma = 16,
+                                            nq = 64, nθ = 16)(Faσ, pT, ηp, 0.0),
+                     -Inf, Inf; rtol = 2.0e-3)[1],
+        0, Inf; rtol = 2.0e-3)[1] / number(Faσ)
+    leaked = countdaughters(BreitWigner(0.475, 0.55; mmin = 0.05))
+    closed = countdaughters(MassDependentBW(0.475, 0.55, 2mπ))
+    @printf("   daughters/decay: constant-Γ %.4f (leaks ~2.5%%), Γ(m) %.4f (must be 1)\n",
+            leaked, closed)
+    @assert abs(closed - 1) < 1.0e-2
+    @assert closed - leaked > 0.015   # the leak is the 2.56% the plan doc measured
+    println("   PASS")
+end
+
 # ---------------------------------------------------------------- test 4
 println("== 4. Gauss–Legendre convergence: default orders vs doubled ==")
 ρfine = TwoBodyDecay(0.7752, 0.1396, 0.1396; nq = 256, nθ = 64)

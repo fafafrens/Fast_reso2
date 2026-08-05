@@ -36,7 +36,7 @@ using .LagrangeWeights
 
 export kallen, MassAverage, TwoBodyDecay, ThreeBodyDecay, FourBodyDecay,
        DecayMatrix, decaymatrices, decaymatrices!, rowscratch, SpectralShape,
-       BreitWigner, BroadParent, Rules
+       BreitWigner, MassDependentBW, BroadParent, Rules
 
 "Källén triangle function λ(x, y, z), Eq. (7)."
 kallen(x, y, z) = x^2 + y^2 + z^2 - 2x * y - 2x * z - 2y * z
@@ -440,6 +440,64 @@ BreitWigner(mR, Γ; k = 4.0, mmin = mR - k * Γ, mmax = mR + k * Γ) =
     m^2 * bw.Γ / ((m^2 - bw.mR^2)^2 + bw.mR^2 * bw.Γ^2) : 0.0
 polemap(bw::BreitWigner) = (bw.mR, bw.Γ)
 
+"""
+    MassDependentBW(mR, Γ0, mth; k = 4.0, mmin = mR - k*Γ0, mmax = mR + k*Γ0)
+
+Spectral function with a mass-dependent, threshold-vanishing width
+(`matrix_notes.tex` §Finite widths, at ℓ = 0):
+
+    q(m)  = √(m² − mth²)/2                  the symmetric-split break-up momentum
+    Γ(m)  = Γ0 · (mR/m) · q(m)/q(mR)        vanishes at m = mth; Γ(mR) = Γ0
+    ϱ(m)  ∝ m² Γ(m) / ((m² − mR²)² + m² Γ(m)²)
+
+`mth` is the resonance's decay threshold — the summed daughter masses of its
+*lightest* channel, so the shape is a property of the species, not of any one
+channel. The symmetric split (both effective daughters at `mth/2`) is exact for
+the σ → ππ and an approximation of the q-ratio for asymmetric pairs; barrier
+factors (ℓ ≥ 1) are deliberately not modeled. Degenerate limits: `mth = 0`
+recovers a constant width exactly, and `Γ0 → 0` recovers the sharp pole.
+
+The support's lower edge is clamped to `mth`, where ϱ vanishes like `√(m−mth)`
+— [`parentmassnodes`](@ref) is told through `_lowerendpointvanishes` to use the
+cosine-mapped rule there. Requires `0 ≤ mth < mR` (a pole below its own
+threshold has no q(mR); use [`BreitWigner`](@ref) for such reopened states).
+"""
+struct MassDependentBW <: SpectralShape
+    mR::Float64
+    Γ0::Float64
+    mth::Float64
+    mmin::Float64
+    mmax::Float64
+
+    function MassDependentBW(mR, Γ0, mth, mmin, mmax)
+        all(isfinite, (mR, Γ0, mth, mmin, mmax)) ||
+            throw(ArgumentError("MassDependentBW: non-finite (mR, Γ0, mth, mmin, mmax) = $((mR, Γ0, mth, mmin, mmax))"))
+        Γ0 > 0 || throw(ArgumentError("MassDependentBW: width must be positive, got Γ0 = $Γ0"))
+        0 ≤ mth < mR || throw(ArgumentError(
+            "MassDependentBW: need 0 ≤ mth < mR, got mth = $mth, mR = $mR; " *
+            "a pole at or below threshold has no q(mR) — use BreitWigner"))
+        mth ≤ mmin < mmax || throw(ArgumentError(
+            "MassDependentBW: support must satisfy mth ≤ mmin < mmax, got [$mmin, $mmax]"))
+        new(mR, Γ0, mth, mmin, mmax)
+    end
+end
+MassDependentBW(mR, Γ0, mth; k = 4.0, mmin = mR - k * Γ0, mmax = mR + k * Γ0) =
+    MassDependentBW(mR, Γ0, mth, max(mmin, mth), mmax)
+
+# ϱ = m·(mΓ(m))/((m²−mR²)² + (mΓ(m))²) with mΓ(m) = mR Γ0 q(m)/q(mR): the
+# division by m cancels analytically, so m = 0 needs no guard.
+@inline function (md::MassDependentBW)(m)
+    md.mmin ≤ m ≤ md.mmax || return 0.0
+    q = sqrt(max((m - md.mth) * (m + md.mth), 0.0)) / 2
+    qR = sqrt((md.mR - md.mth) * (md.mR + md.mth)) / 2
+    scaled_width = md.mR * md.Γ0 * q / qR              # = m·Γ(m)
+    return m * scaled_width /
+           ((m^2 - md.mR^2)^2 + scaled_width^2)
+end
+polemap(md::MassDependentBW) = (md.mR, md.Γ0)
+# The shape vanishes like √(m − mth) when its support starts at the threshold.
+_lowerendpointvanishes(md::MassDependentBW) = md.mmin ≤ md.mth
+
 # The tangent substitution flattens the Breit–Wigner peak. Normalization uses
 # the full support, while decay nodes cover only the open part. A threshold-cut
 # lower endpoint uses the cosine rule to absorb its integrable 1/√ singularity.
@@ -601,21 +659,21 @@ function BroadParent(build_decay, bw::SpectralShape, threshold_mass, mb,
                        coefficients, rules.kern)
 end
 
-BroadParent(mb, mc, bw::BreitWigner, rules::Rules; B = 1.0) =
+BroadParent(mb, mc, bw::SpectralShape, rules::Rules; B = 1.0) =
     BroadParent(ma -> TwoBodyDecay(ma, mb, mc, rules; B),
                 bw, mb + mc, mb, rules)
-BroadParent(mb, mc, md, bw::BreitWigner, rules::Rules; B = 1.0) =
+BroadParent(mb, mc, md, bw::SpectralShape, rules::Rules; B = 1.0) =
     BroadParent(ma -> ThreeBodyDecay(ma, mb, mc, md, rules; B),
                 bw, mb + mc + md, mb, rules)
-BroadParent(mb, mc, md, me, bw::BreitWigner, rules::Rules; B = 1.0) =
+BroadParent(mb, mc, md, me, bw::SpectralShape, rules::Rules; B = 1.0) =
     BroadParent(ma -> FourBodyDecay(ma, mb, mc, md, me, rules; B),
                 bw, mb + mc + md + me, mb, rules)
 
-BroadParent(mb, mc, bw::BreitWigner; B = 1.0, nma = 16, rule_options...) =
+BroadParent(mb, mc, bw::SpectralShape; B = 1.0, nma = 16, rule_options...) =
     BroadParent(mb, mc, bw, Rules(; nma, rule_options...); B)
-BroadParent(mb, mc, md, bw::BreitWigner; B = 1.0, nma = 16, rule_options...) =
+BroadParent(mb, mc, md, bw::SpectralShape; B = 1.0, nma = 16, rule_options...) =
     BroadParent(mb, mc, md, bw, Rules(; nma, rule_options...); B)
-BroadParent(mb, mc, md, me, bw::BreitWigner; B = 1.0, nma = 16, rule_options...) =
+BroadParent(mb, mc, md, me, bw::SpectralShape; B = 1.0, nma = 16, rule_options...) =
     BroadParent(mb, mc, md, me, bw, Rules(; nma, rule_options...); B)
 
 # ---------------------------------------------------------------------------
