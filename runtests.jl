@@ -1391,6 +1391,7 @@ invalid_table7 = CascadeTable(
     tab7.modes,
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     invalid_W7,
 )
@@ -1521,6 +1522,32 @@ let g = range(0, 3, length = 61), ord = (nq = 32, nθ = 8, nµ = 8, nσ = 8, nma
     window_key = only(keys(tablewindow.W))
     @assert tablewindow.W[window_key][1].values !=
         tableb.W[window_key][1].values
+
+    # The spectral shape is a table option and a cache setting like the width
+    # options: same keys, different matrices, and switching it on one cache
+    # path rebuilds. The broad key carries the species threshold 2 m_pi.
+    @assert tableb.spectral === :massdep
+    @assert only(keys(tableb.W)).mth == 2 * 0.1396
+    tableconst = CascadeTable(
+        dlb;
+        grid = g,
+        orders = ord,
+        modes = [0],
+        spectral = :constant,
+        cache = width_cache,
+    )
+    @assert tableconst.spectral === :constant
+    @assert loadtables(width_cache).spectral === :constant
+    const_key = only(keys(tableconst.W))
+    @assert const_key == only(keys(tableb.W))          # keys don't depend on the shape
+    @assert tableconst.W[const_key][1].values != tableb.W[const_key][1].values
+    caught_spectral = try
+        CascadeTable(dlb; grid = g, spectral = :ebw)
+        false
+    catch e
+        e isa ArgumentError
+    end
+    @assert caught_spectral
 
     r0 = runcascade(table0, dl0; primary = prim)
     rb = runcascade(tableb, dlb; primary = prim)
@@ -2094,6 +2121,7 @@ snapshot_table7 = CascadeTable(
     tab7.modes,
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     copy(tab7.W),
 )
@@ -2112,6 +2140,7 @@ reversed_table7 = CascadeTable(
     reverse(tab7.modes),
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     reversed_W7,
 )
@@ -2138,6 +2167,7 @@ one_mode_table7 = CascadeTable(
     (tab7.modes[1],),
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     one_mode_W7,
 )
@@ -2223,6 +2253,7 @@ missing_table7 = CascadeTable(
     tab7.modes,
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     missing_W7,
 )
@@ -2278,6 +2309,7 @@ bad_shape_table7 = CascadeTable(
     tab7.modes,
     tab7.width_cut,
     tab7.width_window,
+    tab7.spectral,
     copy(tab7.meta),
     bad_shape_W7,
 )
@@ -2411,6 +2443,7 @@ let
         (0,),
         1.0e-3,
         4.0,
+        :massdep,
         Dict{Symbol, Any}(),
         matrices,
     )
@@ -2970,7 +3003,10 @@ let
     @assert stats.br_norm_outliers == 30
 
     required_keys, enrollment = CascadeTables.neededkeys(combined)
-    @assert length(required_keys) == 18841
+    # 18841 before broad keys carried the species threshold: 447 keys were
+    # shared by parents with equal (masses, width) but different lightest
+    # channels elsewhere, and those are now — correctly — distinct decays.
+    @assert length(required_keys) == 19288
     @assert enrollment == Dict(
         :self => 122,
         :closed => 0,

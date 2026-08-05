@@ -49,7 +49,7 @@ export ParticleCatalog, DecayNetwork, DecayList,
     parentstrangeness, strangeparent, charmparent, parentisospin
 
 # Increment when the serialized layout or generated matrix values change.
-const FORMAT = 10
+const FORMAT = 11
 const CACHE_MAGIC = "FastReso.CascadeTables\n"
 
 # ---------------------------------------------------------------------------
@@ -490,6 +490,8 @@ struct ChannelKey
     ma::Float64          # parent mass
     mb::Float64          # observed daughter; never sorted with partners
     Γ::Float64           # parent width; zero selects the sharp path
+    mth::Float64         # species decay threshold; zero on sharp keys, where
+                         # no spectral shape is built and sharing stays maximal
     mc::Float64          # partner masses, sorted and zero-padded
     md::Float64
     me::Float64
@@ -498,7 +500,8 @@ end
 function ChannelKey(
         parent_mass::Real, observed_mass::Real,
         partner_masses::AbstractVector{<:Real},
-        parent_width::Real = 0.0
+        parent_width::Real = 0.0,
+        species_threshold::Real = 0.0,
     )
     partner_count = length(partner_masses)
     1 ≤ partner_count ≤ 3 ||
@@ -509,7 +512,7 @@ function ChannelKey(
         ntuple(index -> index ≤ partner_count ? sorted_partners[index] : 0.0, 3)
     return ChannelKey(
         Int8(partner_count + 1), parent_mass, observed_mass,
-        parent_width, padded_partners...
+        parent_width, species_threshold, padded_partners...
     )
 end
 
@@ -527,6 +530,7 @@ struct CascadeTable{
     modes::NTuple{N, Int}
     width_cut::Float64
     width_window::Float64
+    spectral::Symbol     # broad-parent mass distribution: :massdep or :constant
     meta::Dict{Symbol, Any}
     W::Dict{ChannelKey, NTuple{N, M}}
 end
@@ -635,6 +639,27 @@ function eachchannelkey(
         parent_width = parent.width
         broad_parent = parent_width > width_cut
 
+        # The species decay threshold: the lightest channel's summed daughter
+        # masses (zero-branching rows are ignored here exactly as below). It
+        # rides in broad keys so `decayfor` can build a threshold-vanishing
+        # shape -- the shape belongs to the species, while each channel's own
+        # closure keeps being handled by node dropping. Sharp keys carry 0.
+        species_threshold = 0.0
+        if broad_parent
+            species_threshold = Inf
+            for channel in dl.network.byparent[parent_id]
+                iszero(channel.br) && continue
+                channel_daughters = channel.daughters
+                length(channel_daughters) == 1 &&
+                    only(channel_daughters) == parent_id && continue
+                species_threshold = min(species_threshold, sum(
+                    dl.catalog.byid[daughter_id].mass
+                        for daughter_id in channel_daughters
+                ))
+            end
+            isfinite(species_threshold) || (species_threshold = 0.0)
+        end
+
         for channel in dl.network.byparent[parent_id]
             iszero(channel.br) && continue
             daughter_ids = channel.daughters
@@ -683,6 +708,7 @@ function eachchannelkey(
                     daughter_mass,
                     partner_masses,
                     key_parent_width,
+                    key_parent_width > 0 ? species_threshold : 0.0,
                 )
                 visit(parent_id, channel, daughter_id, key)
             end
@@ -958,15 +984,26 @@ function decayfor(
         key::ChannelKey,
         rules::Rules,
         width_window::Float64,
+        spectral::Symbol,
     )
     if key.Γ > 0
         minimum_mass = max(key.ma - width_window * key.Γ, 0.05)
         maximum_mass = key.ma + width_window * key.Γ
-        mass_distribution = BreitWigner(
-            key.ma, key.Γ;
-            mmin = minimum_mass,
-            mmax = maximum_mass
-        )
+        # The threshold-vanishing shape needs q at the pole; a species whose
+        # pole sits at or below its own threshold (a reopened state -- the same
+        # ones the :reopened enrollment stat counts) has none, and stays on the
+        # constant shape.
+        mass_distribution = spectral === :massdep && key.mth < key.ma ?
+            MassDependentBW(
+                key.ma, key.Γ, key.mth;
+                mmin = minimum_mass,
+                mmax = maximum_mass,
+            ) :
+            BreitWigner(
+                key.ma, key.Γ;
+                mmin = minimum_mass,
+                mmax = maximum_mass,
+            )
         if key.nbody == 2
             return BroadParent(key.mb, key.mc, mass_distribution, rules)
         elseif key.nbody == 3
@@ -1011,8 +1048,10 @@ function buildkeys!(
         Vector{NTuple{N, M}}(undef, length(keys_to_build))
 
     Threads.@threads :greedy for key_index in eachindex(keys_to_build)
-        decay =
-            decayfor(keys_to_build[key_index], rules, table.width_window)
+        decay = decayfor(
+            keys_to_build[key_index], rules,
+            table.width_window, table.spectral,
+        )
         dense_matrices =
             map(_mode -> zeros(Float32, grid_length, grid_length), modes)
         # The outer key loop already uses the thread pool.
@@ -1096,6 +1135,13 @@ use every positive width. Broad-parent mass integration is truncated to
 fields and cache-compatibility settings; their physical ranges are caller
 responsibility.
 
+`spectral` selects the broad-parent mass distribution: `:massdep` (default)
+averages over the threshold-vanishing `MassDependentBW`, whose width
+`Γ(m) ∝ (mR/m)·q(m)/q(mR)` dies at the species' decay threshold; `:constant`
+keeps the constant-width `BreitWigner`. Species whose pole sits at or below
+their own threshold use the constant shape either way. Like the width options
+it is a concrete table field and a cache-compatibility setting.
+
 `grid` is an `AbstractRange{Float64}`. Matrix assembly trusts that range and
 uses the uniform-grid interpolation kernel without validation scans.
 """
@@ -1106,8 +1152,12 @@ function CascadeTable(
         modes = [0, 2],
         width_cut::Float64 = 1.0e-3,
         width_window::Float64 = 4.0,
+        spectral::Symbol = :massdep,
         cache = nothing, rebuild = false
     )
+    spectral === :massdep || spectral === :constant || throw(ArgumentError(
+        "spectral must be :massdep or :constant, got $(repr(spectral))",
+    ))
     default_orders = (nq = 32, nθ = 8, nµ = 16, nσ = 8, nma = 16)
     resolved_orders = merge(default_orders, orders)
     selected_modes = Tuple(collect(Int, modes))
@@ -1120,7 +1170,8 @@ function CascadeTable(
             cached_table.orders == resolved_orders &&
             cached_table.modes == selected_modes &&
             cached_table.width_cut == width_cut &&
-            cached_table.width_window == width_window
+            cached_table.width_window == width_window &&
+            cached_table.spectral == spectral
 
         if cache_matches
             if !isequal(
@@ -1148,6 +1199,7 @@ function CascadeTable(
         selected_modes,
         width_cut,
         width_window,
+        spectral,
         _table_metadata(decay_list),
         Dict{
             ChannelKey,
@@ -1190,6 +1242,7 @@ function savetables(table::CascadeTable, path::AbstractString)
                 table.modes,
                 table.width_cut,
                 table.width_window,
+                table.spectral,
                 table.meta,
                 table.W,
             ),
@@ -1208,13 +1261,14 @@ function loadtables(path::AbstractString)
     catch
         return nothing
     end
-    stored_data isa Tuple && length(stored_data) == 7 || return nothing
-    grid, orders, modes, width_cut, width_window, metadata, matrices =
+    stored_data isa Tuple && length(stored_data) == 8 || return nothing
+    grid, orders, modes, width_cut, width_window, spectral, metadata, matrices =
         stored_data
     grid isa AbstractRange{Float64} || return nothing
     modes isa Tuple{Vararg{Int}} || return nothing
     width_cut isa Float64 || return nothing
     width_window isa Float64 || return nothing
+    spectral === :massdep || spectral === :constant || return nothing
     metadata isa Dict{Symbol, Any} || return nothing
     return _restoretable(
         grid,
@@ -1222,6 +1276,7 @@ function loadtables(path::AbstractString)
         modes,
         width_cut,
         width_window,
+        spectral,
         metadata,
         matrices,
     )
@@ -1233,6 +1288,7 @@ function _restoretable(
         modes::NTuple{N, Int},
         width_cut::Float64,
         width_window::Float64,
+        spectral::Symbol,
         metadata,
         matrices::Dict{ChannelKey, V},
     ) where {G, N, V <: Tuple}
@@ -1261,6 +1317,7 @@ function _restoretable(
             modes,
             width_cut,
             width_window,
+            spectral,
             metadata,
             matrices,
         )
@@ -1275,6 +1332,7 @@ _restoretable(
     _modes,
     _width_cut,
     _width_window,
+    _spectral,
     _metadata,
     _matrices,
 ) = nothing
