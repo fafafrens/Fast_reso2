@@ -5,8 +5,8 @@
 #   julia --project -e 'using Pkg; Pkg.instantiate()'   # once
 #   julia --project -t auto runtests.jl
 #
-# FastGaussQuadrature is the only hard dependency of the core; QuadGK is used by
-# the test suite and Plots by the figure scripts.
+# FastGaussQuadrature and QuadGK are the core's hard dependencies -- QuadGK
+# drives ThermalModel's reference mass integral. Plots is figure-only.
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"

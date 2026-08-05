@@ -35,15 +35,15 @@ everything with `--project`:
 julia --project -e 'using Pkg; Pkg.instantiate()'
 ```
 
-The core needs only `FastGaussQuadrature` plus the standard libraries
-`LinearAlgebra`, `Serialization`, `SHA`, `Dates`, and `Printf`; the tests add
-`QuadGK`, and the figure scripts add `Plots`.
+The core needs `FastGaussQuadrature` and `QuadGK` plus the standard libraries
+`LinearAlgebra`, `Serialization`, `SHA`, `Dates`, and `Printf`; the figure
+scripts add `Plots`.
 
 ## Quick start
 
-Save this at the repository root as `quickstart.jl` and run
+Checked in as `quickstart.jl` at the repository root; run it with
 `julia --project -t auto quickstart.jl`. It goes from a single decay to the
-full 18,299-key matrix cascade and takes about 25 s from a cold start.
+full 18,746-key matrix cascade and takes about 25 s from a cold start.
 
 ```julia
 ## 1. One decay, on its own
@@ -130,6 +130,7 @@ lives in `figures/`.
 | `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and canonical reader mechanics |
 | `readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
 | `ThermalModel.jl`   | Statistical hadronization: freeze-out number densities, feed-down yields, and `ThermalPlan` for repeated evaluation |
+| `quickstart.jl`     | The Quick start walkthrough above, as a runnable script |
 | `runtests.jl`       | Test suite (see below) |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `spectral_function_plan.md` | The `SpectralShape` interface and mass-dependent widths — steps 2–3 implemented |
@@ -142,6 +143,7 @@ lives in `figures/`.
 | `figures/cascade.jl` | Full cascade driver (builds/loads the packed `Wtables.jls` cache) → `cascade.png` |
 | `figures/physics_feeddown.jl` | Physics deliverable: spectra + v₂(pT) feed-down for π/K/p/Λ → `feeddown_physics.png` |
 | `figures/physics_charm.jl` | Charm feed-down (D⁰/D⁺/D_s/Λc) from excited charm, SHM thermal primaries → `feeddown_charm.png` |
+| `figures/spectral_shape.jl` | The spectral shape's effect on pT spectra, `Γ(m)` against constant `Γ` → `spectral_shape.png` |
 | `figures/demo.jl`   | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
 | `figures/demo_filter.jl` | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
 
@@ -159,6 +161,7 @@ julia --project -t auto figures/cascade.jl           # full cascade + figure
 julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
 julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
 julia --project -t auto figures/thermal_yields.jl    # thermal yields + feed-down, SHM style → thermal_yields.png
+julia --project -t auto figures/spectral_shape.jl    # Γ(m) vs constant Γ in pT spectra → spectral_shape.png
 CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
   julia --project -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
 benchmarks/fastreso_crosscheck/run_small.sh        # cross-check against upstream FastReso

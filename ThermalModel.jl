@@ -524,6 +524,11 @@ function thermalyields(
     # work in overhead: 1518 tasks cost ~9 ms against ~7 ms of actual
     # computation. A few chunks per thread amortize that while leaving the
     # scheduler enough pieces to balance broad against sharp.
+    species_count == 0 && return (
+        primary = Dict{Int, Float64}(),
+        total = Dict{Int, Float64}(),
+        feeddown = Dict{Int, Float64}(),
+    )
     chunk_count = min(species_count, 4 * Threads.nthreads())
     chunk_size = cld(species_count, chunk_count)
     Threads.@threads :greedy for chunk in 1:chunk_count
