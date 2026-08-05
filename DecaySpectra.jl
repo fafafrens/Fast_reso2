@@ -402,6 +402,14 @@ function polemap end
 
 # `true` when ϱ ~ √(m - mmin) at its own lower edge (a decay threshold): the
 # cosine rule's sin-Jacobian absorbs that vanishing, plain Gauss does not.
+#
+# Worth its keep for the *second* consumer, not the first. Here the ψ
+# substitution already flattens most of the endpoint, so the cosine rule gains
+# only 1-2x. `ThermalModel._spectralrule` integrates ϱ(m)ℓⱼ(m) raw over the
+# window with no substitution, and there the same trait is the difference
+# between 1.4e-7 and 1.1e-14 on the σ — seven orders. Delete it and the plan's
+# quadrature silently loses that accuracy while every test still passes at the
+# model's 1e-6 tolerance.
 _lowerendpointvanishes(::SpectralShape) = false
 
 """
