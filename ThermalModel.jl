@@ -19,11 +19,10 @@ Densities are integrated directly rather than summed as Bessel functions, which
 keeps `QuadGK` as the only dependency.
 
 Broad resonances are averaged over a spectral shape. `shape = :massdep` (the
-default) uses the threshold-vanishing mass-dependent width; `:constant` the
-constant-width Breit-Wigner. The formulas are defined character for character
-as in `DecaySpectra` -- this module cannot import it without instantiating a
-second copy (the same reason particle records are duck-typed), so the test
-suite pins the two implementations equal pointwise instead.
+default) uses the threshold-vanishing `MassDependentBW`; `:constant` the
+constant-width `BreitWigner`. Both are `DecaySpectra`'s own types, so the
+cascade and the yields average over the same shape by construction -- what
+differs is only the quadrature each drives it through.
 
 Functions take any object exposing `.mass`, `.width`, `.degeneracy`, `.baryon`,
 `.charge`, `.strangeness`, `.charm` and `.bottomness`, rather than annotating
@@ -36,6 +35,16 @@ module ThermalModel
 
 using QuadGK: quadgk
 using FastGaussQuadrature: gausslegendre
+
+# The spectral shapes are DecaySpectra's, not copies of them. Including it here
+# does create a second instance of that module -- but unlike `ParticleList`,
+# nothing of it crosses this boundary: shapes are built and consumed inside
+# this module, and the public API speaks in Symbols. What the shared source
+# buys is that "the cascade and the yields average over one shape" is true by
+# construction rather than by a test comparing two transcriptions.
+include(joinpath(@__DIR__, "DecaySpectra.jl"))
+using .DecaySpectra: SpectralShape, BreitWigner, MassDependentBW
+import .DecaySpectra: _lowerendpointvanishes
 
 export chemicalpotential, thermaldensity, primaryyields, thermalyields,
        ThermalPlan
@@ -67,33 +76,22 @@ const _MOMENTUM_CUTOFF = 60.0
 "Hadrons with half-integer spin are fermions; baryon number identifies them."
 _isfermion(particle) = particle.baryon != 0
 
-# The two spectral shapes, matching DecaySpectra.BreitWigner and
-# DecaySpectra.MassDependentBW exactly (same expressions, same evaluation
-# order, so the suite can assert pointwise equality). Unnormalized -- every
-# consumer divides by its own integrated weight.
-_constantshape(m, mass, width) =
-    m^2 * width / ((m^2 - mass^2)^2 + mass^2 * width^2)
+"""
+    _spectralshape(shape, mass, width, threshold, lower, upper) -> SpectralShape
 
-function _massdepshape(m, mass, width, threshold)
-    m > threshold || return 0.0
-    q = sqrt(max((m - threshold) * (m + threshold), 0.0)) / 2
-    qR = sqrt((mass - threshold) * (mass + threshold)) / 2
-    scaled_width = mass * width * q / qR               # = m·Γ(m)
-    return m * scaled_width /
-           ((m^2 - mass^2)^2 + scaled_width^2)
-end
-
-# :massdep needs q at the pole, which a species whose pole sits at or below
-# its own threshold does not have; those reopened states use the constant
-# shape, exactly as CascadeTables.decayfor decides per key.
-function _shapefunction(shape, mass, width, threshold)
+The mass distribution one resonance is averaged over, on the window
+`[lower, upper]`. `:massdep` needs q at the pole, which a species whose pole
+sits at or below its own threshold does not have; those reopened states fall
+back to the constant shape, exactly as `CascadeTables.decayfor` decides per key.
+"""
+function _spectralshape(shape, mass, width, threshold, lower, upper)
     shape === :massdep || shape === :constant || throw(ArgumentError(
         "shape must be :massdep or :constant, got $(repr(shape))",
     ))
     if shape === :massdep && threshold < mass
-        return m -> _massdepshape(m, mass, width, threshold)
+        return MassDependentBW(mass, width, threshold; mmin = lower, mmax = upper)
     end
-    return m -> _constantshape(m, mass, width)
+    return BreitWigner(mass, width; mmin = lower, mmax = upper)
 end
 
 """
@@ -195,7 +193,8 @@ function thermaldensity(
 
     # The spectral shape, normalized over whatever support survives the
     # threshold cut.
-    spectral = _shapefunction(shape, particle.mass, particle.width, threshold)
+    spectral = _spectralshape(
+        shape, particle.mass, particle.width, threshold, lower, upper)
     weight, _ = quadgk(spectral, lower, upper; rtol)
     weight > 0 || return pole_density()
     averaged, _ = quadgk(lower, upper; rtol) do m
@@ -318,7 +317,7 @@ const _BUILD_COS_NODES, _BUILD_COS_WEIGHTS = let
 end
 
 """
-    _spectralrule(spectral, lower, upper, mass_order; vanishing) -> (nodes, weights)
+    _spectralrule(spectral::SpectralShape, order) -> (nodes, weights)
 
 A quadrature rule carrying the spectral shape as its weight function:
 `sum(w .* f.(nodes))` approximates `int S(m) f(m) dm / int S(m) dm` for smooth
@@ -332,13 +331,16 @@ point it adds — 150 per resonance — although the density itself is smooth th
 
 Nothing here depends on temperature or chemical potential, so a fit builds it
 once. The accuracy floor is polynomial approximation of the density across a
-window spanning three decades. The `:massdep` shape's square-root vanishing at
-threshold costs roughly an order there: against the adaptive reference the plan
-deviates by 1.3e-6 at 24 nodes and 3.6e-8 at 32, where it meets the reference's
-own tolerance and stops improving — hence the default of 32. `vanishing`
-selects the cosine-mapped build sweep for such a shape.
+window spanning three decades. A shape that vanishes like `√(m − lower)` at its
+lower endpoint costs roughly an order there — it asks for the cosine-mapped
+build sweep through `_lowerendpointvanishes`, the same trait
+`DecaySpectra.parentmassnodes` dispatches on. Against the adaptive reference
+the plan deviates by 1.3e-6 at 24 nodes and 3.6e-8 at 32, where it meets the
+reference's own tolerance and stops improving — hence the default of 32.
 """
-function _spectralrule(spectral, lower, upper, order; vanishing = false)
+function _spectralrule(spectral::SpectralShape, order)
+    lower, upper = DecaySpectra.support(spectral)
+    vanishing = _lowerendpointvanishes(spectral)
     half = (upper - lower) / 2
     midpoint = (upper + lower) / 2
     reference = [cos((2j - 1) * π / (2order)) for j in 1:order]
@@ -474,12 +476,9 @@ function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
             push!(mass_range, 1:0)
             continue
         end
-        spectral = _shapefunction(shape, record.mass, record.width, threshold)
-        # The shape dies like √(m − threshold) when the window starts there.
-        vanishing = shape === :massdep && threshold < record.mass &&
-                    lower <= threshold
-        nodes, weights =
-            _spectralrule(spectral, lower, upper, mass_order; vanishing)
+        spectral = _spectralshape(
+            shape, record.mass, record.width, threshold, lower, upper)
+        nodes, weights = _spectralrule(spectral, mass_order)
         first_node = length(mass_nodes) + 1
         append!(mass_nodes, nodes)
         append!(mass_weights, weights)

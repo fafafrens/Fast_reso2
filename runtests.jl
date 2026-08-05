@@ -3101,21 +3101,38 @@ let
             rho_massdep / rho_sharp, sigma_massdep / sigma_sharp,
             sigma_constant / sigma_sharp)
 
-    # The shapes are defined in two modules that cannot share code without
-    # instantiating DecaySpectra twice; equality of the formulas is therefore
-    # asserted, pointwise and exact, against the Main.DecaySpectra instance.
+    # ThermalModel builds DecaySpectra's shape types rather than transcribing
+    # their formulas, so "the cascade and the yields average over one shape" is
+    # true by construction. What still needs checking is that the arguments are
+    # wired into the right slots -- a swapped mass/threshold would construct a
+    # perfectly valid, wrong shape. Compared against the independently loaded
+    # Main.DecaySpectra instance, pointwise and exact.
     for (mR, G, mth) in ((0.7752, 0.1491, two_pion), (0.475, 0.55, two_pion),
                          (1.232, 0.117, 1.0777))
         lower, upper = max(mR - 4G, mth), mR + 4G
-        ds_massdep = Main.DecaySpectra.MassDependentBW(
-            mR, G, mth; mmin = lower, mmax = upper)
-        ds_constant = Main.DecaySpectra.BreitWigner(
-            mR, G; mmin = lower, mmax = upper)
-        for m in range(lower + 1.0e-9, upper; length = 41)
-            @assert ThermalModel._massdepshape(m, mR, G, mth) == ds_massdep(m)
-            @assert ThermalModel._constantshape(m, mR, G) == ds_constant(m)
+        for (choice, reference) in (
+                (:massdep, Main.DecaySpectra.MassDependentBW(
+                    mR, G, mth; mmin = lower, mmax = upper)),
+                (:constant, Main.DecaySpectra.BreitWigner(
+                    mR, G; mmin = lower, mmax = upper)),
+            )
+            built = ThermalModel._spectralshape(choice, mR, G, mth, lower, upper)
+            for m in range(lower + 1.0e-9, upper; length = 41)
+                @assert built(m) == reference(m)
+            end
         end
     end
+    # A pole at or below its own threshold has no q(mR): that species falls back
+    # to the constant shape instead of throwing, matching decayfor. Checked by
+    # type *name* -- ThermalModel loads its own DecaySpectra instance, so its
+    # BreitWigner is nominally a different type from Main's even though the two
+    # agree value for value above.
+    @assert nameof(typeof(
+        ThermalModel._spectralshape(:massdep, 1.0, 0.2, 1.25, 1.25, 1.8),
+    )) === :BreitWigner
+    @assert nameof(typeof(
+        ThermalModel._spectralshape(:massdep, 1.0, 0.2, 0.5, 0.5, 1.8),
+    )) === :MassDependentBW
 
     # And the two quadratures built on that one shape must integrate it the
     # same way: DecaySpectra's psi-mapped parentmassnodes average of a smooth f
@@ -3127,9 +3144,8 @@ let
             ds_shape, Main.DecaySpectra.Rules(nma = 48).ma, mth)
         smooth(m) = m^2 * exp(-m / temperature)
         ds_average = sum(weights .* smooth.(masses)) / normalization
-        spectral = ThermalModel._shapefunction(:massdep, mR, G, mth)
-        nodes, rule_weights = ThermalModel._spectralrule(
-            spectral, mth, upper, 24; vanishing = true)
+        spectral = ThermalModel._spectralshape(:massdep, mR, G, mth, mth, upper)
+        nodes, rule_weights = ThermalModel._spectralrule(spectral, 24)
         tm_average = sum(rule_weights .* smooth.(nodes))
         @assert abs(tm_average - ds_average) / ds_average < 1.0e-5
         @printf("   one shape, two quadratures: averages agree to %.1e\n",
