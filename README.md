@@ -403,7 +403,7 @@ above it. `figures/thermal_yields.jl` prints all of it and plots the last four.
 
 | | π⁺ | K⁺ | p | Λ | Ξ⁻ | Ω⁻ |
 |---|---:|---:|---:|---:|---:|---:|
-| quark-model states over PDG-numbered | +11.6% | +11.6% | +29.1% | +50.6% | +75.6% | +36.5% |
+| quark-model states over PDG-numbered | +14.5% | +11.6% | +29.1% | +50.5% | +75.9% | +36.4% |
 | finite widths over pole mass | +5.1% | +4.9% | +14.4% | +4.1% | +0.1% | +0.1% |
 | shape: `Γ(m)` vs constant `Γ` | −1.4% | −1.8% | −7.5% | −2.7% | −0.3% | −0.02% |
 | `f0(500)` | +3.3% | 0 | 0 | 0 | 0 | 0 |

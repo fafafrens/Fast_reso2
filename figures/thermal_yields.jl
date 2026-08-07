@@ -242,7 +242,10 @@ right.grid(alpha = 0.25, axis = "y")
 
 percent(after, before) = [100 * (after.total[id] - before.total[id]) / before.total[id]
                           for (id, _, _) in SPECIES]
-delta.bar(positions .- 0.32, percent(full, pdg_only), 0.15, color = "C0",
+# Against `raw_qm`, not `full`: `full` already carries the isospin fix, which
+# is its own bar, so measuring the quark-model states against it would count
+# that step twice and contradict "each measured against the one before it".
+delta.bar(positions .- 0.32, percent(raw_qm, pdg_only), 0.15, color = "C0",
           label = "quark-model states")
 delta.bar(positions .- 0.16, percent(sigma, pole), 0.15, color = "C4",
           label = "finite widths")
