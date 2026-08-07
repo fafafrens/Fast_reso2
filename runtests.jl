@@ -194,7 +194,31 @@ let rules = Rules(nma = 16)
     # and through BroadParent itself: the constant-width decay is unchanged
     ρfast = BroadParent(0.1396, 0.1396, BreitWigner(0.7752, 0.149; mmin = 2 * 0.1396), rules)
     @assert !isempty(ρfast.coef)
-    println("   generic ≡ fast on nodes, weight ratios to 1e-12: PASS")
+
+    # Exact closure. BroadParent scales each node by weight/normalization, so
+    # daughters per decay is sum(weights)/normalization — an *identity* whenever
+    # the open part is the whole support, for every shape and either rule. It
+    # was 1 - 8.9e-5 while the normalization was swept on Gauss-Legendre and the
+    # open nodes on the cosine rule, which is a silent loss of a guarantee the
+    # specialized method has always had.
+    for shape in (
+            BreitWigner(0.7752, 0.1491; mmin = 2 * 0.1396),          # no cut, GL
+            MassDependentBW(0.7752, 0.1491, 2 * 0.1396),             # no cut, cosine
+            MassDependentBW(0.475, 0.55, 2 * 0.1396),                # sigma
+            MassDependentBW(1.232, 0.117, 1.0777),                   # Delta
+        )
+        _, weights, normalization =
+            DecaySpectra.parentmassnodes(shape, rules.ma, DecaySpectra.support(shape)[1])
+        @assert sum(weights) == normalization "closure is not exact: $(sum(weights)/normalization)"
+    end
+    # When the threshold does cut, the deficit is the physics, not a defect:
+    # the closed part normalizes in and emits nothing (channel reopening).
+    let leaky = BreitWigner(0.475, 0.55; mmin = 0.05)
+        _, weights, normalization =
+            DecaySpectra.parentmassnodes(leaky, rules.ma, 2 * 0.1396)
+        @assert 0.95 < sum(weights) / normalization < 0.99
+    end
+    println("   generic ≡ fast on nodes to 1e-12; closure exact when nothing is cut: PASS")
 end
 
 # ---------------------------------------------------------------- test 3e

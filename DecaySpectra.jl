@@ -586,19 +586,23 @@ function parentmassnodes(shape::SpectralShape, mass_rule::MassRule,
     psi_half_width = (psi_max - psi_min) / 2
     psi_midpoint = (psi_max + psi_min) / 2
 
-    normalization = 0.0
-    for node_index in 1:node_count
-        mass_squared = mass_squared_at(
-            psi_midpoint + psi_half_width * normalization_nodes[node_index])
-        mass_squared > 0 || continue
-        normalization += normalization_weights[node_index] *
-                         jacobian(mass_squared) * shape(sqrt(mass_squared))
+    fullsweep(nodes, weights) = begin
+        total = 0.0
+        for node_index in eachindex(nodes)
+            mass_squared = mass_squared_at(
+                psi_midpoint + psi_half_width * nodes[node_index])
+            mass_squared > 0 || continue
+            total += weights[node_index] *
+                     jacobian(mass_squared) * shape(sqrt(mass_squared))
+        end
+        total
     end
 
     parent_masses, mass_weights = Float64[], Float64[]
     open_mass_minimum = max(minimum_mass, threshold_mass)
     open_mass_minimum < maximum_mass ||
-        return parent_masses, mass_weights, normalization
+        return parent_masses, mass_weights,
+               fullsweep(normalization_nodes, normalization_weights)
 
     # The cosine rule earns its place at a lower endpoint where the integrand
     # is not smooth: a threshold cutting into the support (as in the
@@ -621,6 +625,20 @@ function parentmassnodes(shape::SpectralShape, mass_rule::MassRule,
         push!(mass_weights, open_psi_scale * open_weights[node_index] *
                             jacobian(mass_squared) * shape(sqrt(mass_squared)))
     end
+
+    # `BroadParent` scales each node by `mass_weights[i] / normalization`, so
+    # daughters per decay is `sum(mass_weights) / normalization`. That has to be
+    # an *identity* when the open part is the whole support, not two quadratures
+    # that happen to agree: taking the sum itself makes it one. Computing the
+    # normalization separately on the Gauss-Legendre rule while the open nodes
+    # used the cosine rule cost the rho 8.9e-5 of its daughters.
+    #
+    # When the threshold does cut, the two genuinely differ: the closed part
+    # carries normalization and emits nothing, which is channel reopening, and
+    # the deficit is the physics (2.56% of the sigma under a constant width).
+    normalization = threshold_cuts_support ?
+        fullsweep(normalization_nodes, normalization_weights) :
+        sum(mass_weights)
     return parent_masses, mass_weights, normalization
 end
 
