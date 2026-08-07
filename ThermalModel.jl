@@ -147,6 +147,20 @@ function _densityatmass(
 end
 
 """
+Mass window a resonance is averaged over: `mR +- k*Gamma`, cut at `threshold`.
+Empty when the state is too narrow to average, so callers test `lower < upper`
+rather than the width.
+
+Not `support`: `DecaySpectra.support` reads the interval a shape already
+carries, while this derives the interval a shape is about to be built on.
+"""
+function _masswindow(record, threshold, k)
+    record.width > 0 || return (0.0, 0.0)
+    return (max(record.mass - k * record.width, threshold),
+            record.mass + k * record.width)
+end
+
+"""
     thermaldensity(particle, temperature; muB = 0.0, quantum = true,
                    width = true, threshold = 0.0, k = 4.0)
 
@@ -185,10 +199,9 @@ function thermaldensity(
         particle.mass, particle.degeneracy, is_fermion, temperature, mu; quantum,
     )
 
-    (!width || particle.width <= 0) && return pole_density()
+    width || return pole_density()
 
-    lower = max(particle.mass - k * particle.width, threshold)
-    upper = particle.mass + k * particle.width
+    lower, upper = _masswindow(particle, threshold, k)
     lower < upper || return pole_density()
 
     # The spectral shape, normalized over whatever support survives the
@@ -297,13 +310,6 @@ end
 # ---------------------------------------------------------------------------
 # Compiled plan
 # ---------------------------------------------------------------------------
-
-"Mass window a resonance is averaged over: `mR +- k*Gamma`, cut at threshold."
-function _support(record, threshold, k)
-    record.width > 0 || return (0.0, 0.0)
-    return (max(record.mass - k * record.width, threshold),
-            record.mass + k * record.width)
-end
 
 # Dense rules used only when building the plan, to integrate the spectral
 # shape against each Lagrange basis function. Their order is irrelevant at
@@ -471,7 +477,7 @@ function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
     mass_weights = Float64[]
     for record in records
         threshold = get(thresholds, record.id, 0.0)
-        lower, upper = _support(record, threshold, k)
+        lower, upper = _masswindow(record, threshold, k)
         if lower >= upper
             push!(mass_range, 1:0)
             continue
