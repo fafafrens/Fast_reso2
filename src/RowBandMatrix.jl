@@ -197,20 +197,11 @@ end
 RowBandMatrix(matrix::AbstractMatrix{T}) where {T <: Number} =
     RowBandMatrix(matrix, _rowbandcolumntype(size(matrix, 2)))
 
-function RowBandMatrix(
-        matrix::AbstractMatrix{T},
-        ::Type{I},
-    ) where {T <: Number, I <: Integer}
-    column_starts, band_lengths, value_count =
-        _rowbandmetadata(matrix, I)
-    return _packrowbands(
-        matrix,
-        column_starts,
-        band_lengths,
-        value_count,
-        _rowbandoffsettype(length(matrix)),
-    )
-end
+RowBandMatrix(
+    matrix::AbstractMatrix{T},
+    ::Type{I},
+) where {T <: Number, I <: Integer} =
+    RowBandMatrix(matrix, I, _rowbandoffsettype(length(matrix)))
 
 function RowBandMatrix(
         matrix::AbstractMatrix{T},

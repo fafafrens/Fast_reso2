@@ -910,8 +910,8 @@ function decaymatrices(decay::MassAverage,
     length(modes) ≤ 16 &&
         return decaymatrices(decay, Tuple(modes), daughter_grid, parent_grid;
                              P, threaded, T, scratch)
-    return [Matrix{T}(decaymatrices(decay, (Int(mode),), daughter_grid,
-                                    parent_grid; P, T)[1])
+    return [only(decaymatrices(decay, (Int(mode),), daughter_grid,
+                               parent_grid; P, T))
             for mode in modes]
 end
 

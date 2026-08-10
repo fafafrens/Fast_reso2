@@ -779,7 +779,8 @@ function loadtables(path::AbstractString)
             read(io, UInt8) == FORMAT || return nothing
             return deserialize(io)
         end
-    catch
+    catch error
+        error isa InterruptException && rethrow()
         return nothing
     end
     stored_data isa Tuple && length(stored_data) == 8 || return nothing
@@ -815,7 +816,8 @@ function _restoretable(
     ) where {G, N, V <: Tuple}
     matrix_type = try
         _tablematrixtype(length(grid))
-    catch
+    catch error
+        error isa InterruptException && rethrow()
         return nothing
     end
     V === NTuple{N, matrix_type} || return nothing
@@ -842,7 +844,8 @@ function _restoretable(
             metadata,
             matrices,
         )
-    catch
+    catch error
+        error isa InterruptException && rethrow()
         return nothing
     end
 end

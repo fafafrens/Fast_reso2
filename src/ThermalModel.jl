@@ -520,10 +520,14 @@ function thermalyields(
     end
 
     keyed(values) = Dict(zip(plan.ids, values))
+    feeddown = Dict(
+        particle_id => total[index] - primary[index]
+            for (index, particle_id) in pairs(plan.ids)
+    )
     return (
         primary = keyed(primary),
         total = keyed(total),
-        feeddown = keyed(total .- primary),
+        feeddown,
     )
 end
 
