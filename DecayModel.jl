@@ -76,8 +76,14 @@ function _resolvedstableids(
         network::DecayNetwork,
     )
     particles = catalog.byid
+
+    # Store `(owner, missing_id)` pairs so resolution can report all missing
+    # references at once. A missing declared parent is represented as `(id, id)`.
     unresolved = Tuple{Int, Int}[]
 
+    # These declarations survive topology filtering even when a parent's
+    # visible channel block becomes empty, so validate them independently of
+    # `network.byparent`.
     for parent_id in network.decaying_ids
         haskey(particles, parent_id) || push!(unresolved, (parent_id, parent_id))
     end
@@ -92,6 +98,8 @@ function _resolvedstableids(
         end
 
         for channel in channels
+            # The dictionary key is the authoritative block owner. Keeping it
+            # consistent with every row avoids ambiguous merge/filter results.
             channel.parent == parent_id || throw(ArgumentError(
                 "channel parent $(channel.parent) disagrees with network " *
                     "parent $parent_id",
@@ -102,6 +110,8 @@ function _resolvedstableids(
             ))
             multiplicity = length(channel.daughters)
             if multiplicity == 1
+                # Canonical and legacy inputs use exactly `parent -> parent`
+                # with BR 1 as a terminal marker; it is not a physical decay.
                 only(channel.daughters) == parent_id || throw(ArgumentError(
                     "one-body channel $parent_id -> " *
                         "$(only(channel.daughters)) is not a terminal self-channel",
@@ -128,6 +138,8 @@ function _resolvedstableids(
     end
 
     if !isempty(unresolved)
+        # Deduplicate and sort for a deterministic, bounded diagnostic instead
+        # of failing on whichever missing reference dictionary order finds first.
         sort!(unique!(unresolved))
         preview = join(
             ("$parent_id -> $daughter_id" for
@@ -141,6 +153,9 @@ function _resolvedstableids(
         ))
     end
 
+    # Stability is catalog membership minus the declared decaying set, not
+    # `keys(byparent)`: filtering may remove every active channel for a parent,
+    # but that must not silently turn the parent into a terminal output.
     decaying = Set(network.decaying_ids)
     return sort!([
         particle_id for particle_id in keys(particles)
@@ -450,14 +465,27 @@ channelfilter(predicate) = ChannelFilter(predicate)
 # ---------------------------------------------------------------------------
 
 function _feeddown_dependencies(decay_list::DecayList)
+    # Ordering needs only the existence of an edge, not its multiplicity or
+    # branching weight. A Set therefore collapses repeated daughters and the
+    # same parent-daughter relation appearing in multiple channels.
     dependencies = Set{Tuple{Int, Int}}()
+
+    # Only parents with an active channel block participate in the feed-down
+    # sweep. Stable daughters need no dependency because they are never
+    # processed as a later parent step.
     decaying = decay_list.network.byparent
     for (parent_id, channels) in decaying
         for channel in channels
+            # Zero-weight rows transfer nothing and must not constrain order.
             iszero(channel.br) && continue
             daughters = channel.daughters
+
+            # A one-body `parent -> parent` row is a terminal marker, not a
+            # physical self-loop in the decay graph.
             length(daughters) == 1 && only(daughters) == parent_id && continue
             for daughter_id in daughters
+                # If the daughter also decays, process the feeder parent first
+                # so the daughter receives its complete yield before its turn.
                 haskey(decaying, daughter_id) &&
                     push!(dependencies, (parent_id, daughter_id))
             end
@@ -485,11 +513,17 @@ function feeddown_order(
     cycles === :error || cycles === :warn || throw(ArgumentError(
         "cycles must be :error or :warn, got $(repr(cycles))",
     ))
+
+    # Normalize the selected edges into a deterministic adjacency list over
+    # active decaying parents. Including parents with no outgoing dependency
+    # keeps disconnected and terminal-in-the-subgraph species in the result.
     selected_dependencies =
         dependencies === nothing ? _feeddown_dependencies(decay_list) : dependencies
     decaying_parents = sort!(collect(keys(decay_list.network.byparent)))
     downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
 
+    # Explicit caller-supplied dependencies must describe this active graph;
+    # accepting an absent or stable endpoint would make the final order partial.
     for (parent_id, daughter_id) in selected_dependencies
         haskey(downstream, parent_id) || throw(ArgumentError(
             "feed-down dependency has unknown parent $parent_id",
@@ -500,8 +534,14 @@ function feeddown_order(
         ))
         push!(downstream[parent_id], daughter_id)
     end
+
+    # Repeated edges do not change ordering. Sorting also makes the depth-first
+    # traversal and resulting component numbering reproducible.
     foreach(daughters -> sort!(unique!(daughters)), values(downstream))
 
+    # Tarjan strongly connected component state. `indices` is discovery order;
+    # `lowlinks` records the earliest active vertex reachable from each parent.
+    # Ref provides a mutable counter to the nested visitor without a boxed local.
     next_index = Ref(0)
     indices = Dict{Int, Int}()
     lowlinks = Dict{Int, Int}()
@@ -510,6 +550,8 @@ function feeddown_order(
     components = Vector{Vector{Int}}()
 
     function visit!(parent_id)
+        # Discover the parent and keep it active until its complete strongly
+        # connected component has been identified.
         next_index[] += 1
         indices[parent_id] = next_index[]
         lowlinks[parent_id] = next_index[]
@@ -518,17 +560,23 @@ function feeddown_order(
 
         for daughter_id in downstream[parent_id]
             if !haskey(indices, daughter_id)
+                # Tree edge: visit the daughter, then propagate the earliest
+                # vertex reachable through its subtree.
                 visit!(daughter_id)
                 lowlinks[parent_id] = min(
                     lowlinks[parent_id], lowlinks[daughter_id],
                 )
             elseif daughter_id in on_stack
+                # Back edge into the active DFS stack closes or participates in
+                # a cycle, so the daughter's discovery index constrains lowlink.
                 lowlinks[parent_id] = min(
                     lowlinks[parent_id], indices[daughter_id],
                 )
             end
         end
 
+        # Equal lowlink and discovery indices mark an SCC root. Pop through the
+        # root to recover exactly that component from the active stack.
         if lowlinks[parent_id] == indices[parent_id]
             component = Int[]
             while true
@@ -537,6 +585,10 @@ function feeddown_order(
                 push!(component, member)
                 member == parent_id && break
             end
+
+            # Acyclic components contain one species. For a permitted cyclic
+            # component, mass-descending order preserves the historical
+            # deterministic one-pass approximation; particle ID breaks ties.
             sort!(
                 component;
                 by = member -> (-decay_list.catalog.byid[member].mass, member),
@@ -546,10 +598,14 @@ function feeddown_order(
         return nothing
     end
 
+    # Tarjan must start from every unvisited parent because the feed-down graph
+    # can contain multiple disconnected components.
     for parent_id in decaying_parents
         haskey(indices, parent_id) || visit!(parent_id)
     end
 
+    # Collapse every SCC to one vertex. `component_of` provides the species-to-
+    # component lookup needed to translate the original edges.
     component_of = Dict{Int, Int}()
     for (component_id, component) in pairs(components)
         for parent_id in component
@@ -557,6 +613,8 @@ function feeddown_order(
         end
     end
 
+    # Build the condensation graph. Edges within one SCC disappear; edges
+    # between SCCs form a directed acyclic graph by construction.
     component_downstream = [Int[] for _ in components]
     for (parent_id, daughter_ids) in downstream
         parent_component = component_of[parent_id]
@@ -567,6 +625,8 @@ function feeddown_order(
         end
     end
 
+    # Kahn's algorithm below needs each component's number of upstream feeders.
+    # Deduplicate first because several particle edges can connect the same SCCs.
     incoming_count = zeros(Int, length(components))
     for daughter_components in component_downstream
         sort!(unique!(daughter_components))
@@ -575,6 +635,8 @@ function feeddown_order(
         end
     end
 
+    # Multi-species SCCs are cyclic; a singleton is cyclic only when it has an
+    # explicit self-edge. One feed-down sweep cannot solve either exactly.
     cyclic_components = [
         component for component in components
             if length(component) > 1 ||
@@ -594,9 +656,15 @@ function feeddown_order(
             "cyclic feed-down approximate"
     end
 
+    # Topologically sort the acyclic component graph. Zero-incoming components
+    # are complete feeders and therefore safe to process next.
     order = Int[]
     ready_components = findall(iszero, incoming_count)
     while !isempty(ready_components)
+        # Several components can be ready simultaneously. Select the one with
+        # the heaviest leading member, then the lowest particle ID, to keep the
+        # historical mass preference without overriding graph dependencies.
+        # `argmax(f, itr)` returns the winning component ID, not its list index.
         component_id = argmax(
             candidate -> begin
                 parent_id = first(components[candidate])
@@ -608,8 +676,12 @@ function feeddown_order(
             ready_components,
             findfirst(==(component_id), ready_components),
         )
+
+        # In `cycles = :warn` mode, members of a cyclic SCC are appended in the
+        # deterministic mass order established when the component was formed.
         append!(order, components[component_id])
 
+        # Removing this feeder edge may make downstream components ready.
         for daughter_component in component_downstream[component_id]
             incoming_count[daughter_component] -= 1
             incoming_count[daughter_component] == 0 &&
