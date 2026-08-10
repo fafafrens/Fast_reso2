@@ -832,7 +832,7 @@ function _restoretable(
                 )
             end
         end
-        return CascadeTable(
+        return CascadeTable{G, N, matrix_type}(
             grid,
             orders,
             modes,
