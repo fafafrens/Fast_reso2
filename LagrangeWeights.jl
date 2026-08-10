@@ -57,17 +57,6 @@ end
     end
 end
 
-@inline function lweights(ξ, P::Integer) 
-    ntuple(P) do m
-        w = 1.0
-        for k in 0:(P - 1)
-            k == m - 1 && continue
-            w *= (ξ - k) / (m - 1 - k)
-        end
-        w
-    end
-end
-
 # ---------------------------------------------------------------------------
 # public entry point
 # ---------------------------------------------------------------------------

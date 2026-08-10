@@ -1,6 +1,9 @@
 # Serialized cache tables (regenerable by cascade.jl, multi-GB)
 *.jls
 
+# Historical quick-start artifact; the current quickstart writes no files.
+/pions.pdf
+
 # LaTeX build artifacts
 *.aux
 *.log

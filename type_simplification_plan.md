@@ -1,10 +1,11 @@
 # Plan: where a type would simplify the repo
 
-Status: **proposed, nothing implemented.** Written after auditing the repo's 50
-underscore helpers, its trait-shaped predicates, and its `Symbol`-valued
-options. Most of what looks like accumulated ceremony turned out to be
-load-bearing; this records the few places where introducing a type would
-genuinely remove work, and the places it would only move it.
+Status: **audit complete; the package/shared-model foundation, graph feed-down
+order, unit constant, and resolved species-threshold centralization are
+implemented.** Written after auditing the repo's underscore helpers,
+trait-shaped predicates, and `Symbol`-valued options. Most apparent ceremony is
+load-bearing; this records the few remaining places where a type would
+genuinely remove work rather than merely move it.
 
 The audit's method: count the sites, not the concepts. A type earns its place
 when the same tuple of values is declared, passed, merged, or checked
@@ -25,10 +26,10 @@ exactly one. Where a property *is* type-level the repo already dispatches
 build time and once per species at plan time, never in a loop. A type parameter
 would push `CascadeTable{G,N,M}` to `{G,N,M,S}` and propagate into
 `CascadePlan{T,N,M}`, and `spectral` is serialized into the cache, where a
-`Symbol` is trivial. The validation *is* duplicated four times, but three of
-those guard different boundaries (constructor, deserialization which must
-return `nothing` rather than throw, and a second module), so a shared validator
-would need to cross the module firewall to remove one of them.
+`Symbol` is trivial. Validation still guards distinct boundaries: construction,
+deserialization (which must return `nothing` rather than throw), and the thermal
+API. Sharing a package type world does not make those boundary contracts the
+same, so a singleton type would still add more machinery than it removes.
 
 ## Candidate A — `Provenance`, the strongest evidence
 
@@ -51,11 +52,11 @@ Removes: two helpers outright, one pair of fields from three structs, and the
 `same_source` special case in `_modelprovenance`.
 
 **The cost, and it is the reason this is a candidate and not a decision.**
-`.path` and `.sha` are read at **48 library and tool sites and 26 test sites**.
-Keeping them working means `Base.getproperty` forwarding — which `DecayList`
-already does for `.parts` and `.byparent`, so the pattern exists — or accepting
-74 mechanical edits. Do it with forwarding, and the field pair disappears while
-the accessor stays.
+`.path` and `.sha` now appear 29 times outside tests and 36 times in the root
+suite. Keeping them working means `Base.getproperty` forwarding — which
+`DecayList` already does for `.parts` and `.byparent`, so the pattern exists —
+or accepting 65 mechanical edits. Do it with forwarding, and the field pair
+disappears while the accessor stays.
 
 ## Candidate B — `QuantumNumbers`, the best payoff per line
 
@@ -86,13 +87,12 @@ quantumnumbers(p) = QuantumNumbers(p.baryon, p.charge, …)   # a *view*, not st
 Conservation becomes `sum(quantumnumbers, daughters) == quantumnumbers(parent)`,
 and the chemical potential a dot product with a `QuantumNumbers` of potentials.
 
-**Do it as an accessor, not as a field.** `ParticleInfo` must keep its flat
-fields: `ThermalModel` duck-types records on `.mass`, `.width`, `.baryon`, …
-precisely so it need not import `ParticleList` and create a second
-`ParticleInfo` that live decay lists could not dispatch to. Nesting the numbers
-would change that structural contract and break the firewall that `dbe97dc`
-documented. A `quantumnumbers(p)` view costs nothing and leaves duck typing
-intact.
+**Do it as an accessor, not as a field.** `ParticleInfo` should keep its flat
+data/API layout, and `ThermalModel` deliberately accepts records exposing
+`.mass`, `.width`, `.baryon`, and the other quantum-number properties. The
+package refactor removed the former duplicate-type constraint, but nesting the
+fields would still break this useful structural contract. A
+`quantumnumbers(p)` view costs nothing and leaves it intact.
 
 ## Candidate C — group `ChannelKey`'s shape fields
 
@@ -113,38 +113,63 @@ listed here is that it makes that decision's option 2 natural: a shape registry
 keyed by `ShapeKey` rather than a widening flat key is the difference between
 "the key carries the shape's parameters" and "the key names a shape". Deciding
 the fork first and grouping second avoids grouping for a layout that then
-changes. Note this is a serialized field order, so it costs a `FORMAT` bump —
-cheap to combine with the one ℓ needs anyway.
+changes. Cache format 12 now validates the current `ChannelKey` representation;
+grouping these serialized fields or adding ℓ would require another `FORMAT`
+bump.
 
-## Candidate D — not a type: name the conversion constant
+## Candidate D — implemented: name the conversion constant
 
-`0.1973269804` appears as a bare literal in **two** functions plus a docstring,
-converting fm³ to GeV⁻³. Not a units system — the repo has exactly one
-conversion site and Unitful in the density loop would cost more than it
-protects — just:
+`0.1973269804` appeared as a bare literal in two functions plus a docstring,
+converting fm³ to GeV⁻³. It is now the shared `HBAR_C_GEV_FM` constant in
+`ThermalModel.jl`; a units package would add more machinery than this single
+conversion needs.
 
 ```julia
-const ħc = 0.1973269804        # GeV fm
+const HBAR_C_GEV_FM = 0.1973269804
 ```
 
 Full units were considered and rejected: the hot paths are bare `Float64`
 arithmetic in `_densityatmass` and the row-band `mul!`, and the one place a
 units error could hide is this single constant.
 
-## Recommended order
+## Phase 2 foundation — implemented
 
-1. **D**, immediately — one constant, no API surface, no risk.
-2. **B** as an accessor, next — best payoff, no struct change, and it makes the
+`Project.toml` now names the `FastReso2` package, and `src/FastReso2.jl` loads
+`ParticleList`, `DecaySpectra`, `DecayModel`, `CascadeTables`, and
+`ThermalModel` exactly once. `DecayModel.jl` owns `DecayList`, filters,
+validation, thresholds, and `feeddown_order`, so cascade and thermal code share
+one model and spectral-shape type world.
+
+`feeddown_order` derives feeder-before-fed order from the decay graph, detects
+strongly connected components, and makes the historical within-cycle
+approximation explicit. Callable decay evaluation is serial by default and
+qT-node threading requires `threaded = true`; table and matrix construction
+retain their separate parallel controls.
+
+The conventional `test/runtests.jl` entry point makes `Pkg.test()` work, while
+delegating to the established root suite for now. The remaining foundation
+work is test organization, not another core type refactor: split the assertions
+into component `Test.@testset`s and fast/numerical/external tiers, then isolate
+core, figure, and benchmark dependency environments.
+
+## Remaining type candidates
+
+1. **B** as an accessor — best payoff, no struct change, and it makes the
    `chemicalpotential` bottomness omission explicit rather than silent.
-3. **A** with `getproperty` forwarding — real cleanup, but 74 read sites means
+2. **A** with `getproperty` forwarding — real cleanup, but 74 read sites means
    it wants its own commit and a careful pass, not a drive-by.
-4. **C** only when `angular_momentum_plan.md`'s fork is decided.
+3. **C** only when `angular_momentum_plan.md`'s fork is decided.
+
+The higher-payoff structural simplification is complete: `DecayList` has moved
+out of `CascadeTables.jl`, every component is loaded once from the package root,
+and both cascade and thermal code consume the shared model. Species thresholds
+remain invariant under topology filtering.
 
 ## Verification
 
 ```bash
-julia --project -t auto runtests.jl
-julia --project -t auto figures/thermal_yields.jl   # numbers must not move
+julia --project=. -e 'using Pkg; Pkg.test()'
+julia --project=. -t auto figures/thermal_yields.jl   # numbers must not move
 ```
 
 Every item here is a refactor: **no observable may change.** The check for B is

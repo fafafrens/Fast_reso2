@@ -13,7 +13,7 @@ Three unrelated-looking gaps turn out to be one:
 | gap | scoped in | blocked on |
 |---|---|---|
 | barrier factors, per-state ℓ | `angular_momentum_plan.md` | **parity** is stored nowhere |
-| `hasflavour` vs `ischarm` is a docstring warning, not a type | `type_simplification_plan.md` | **quark content** is not stored |
+| structural flavour selection | `type_simplification_plan.md` | **quark content** is not stored |
 | quantum numbers as *derived* rather than declared | `type_simplification_plan.md` §B | same |
 
 In every case the catalog stores the **derived** numbers and the source dropped
@@ -43,8 +43,9 @@ and right about the quantum numbers.
 
 **The 1167 are unrecoverable from what is checked in.** Three routes, all dead:
 
-- *MC ID digits* — the invented IDs make `quarkdigits` return junk. This is
-  already an undocumented hazard in `ParticleList.jl`.
+- *MC ID digits* — the invented IDs make digit-based inference return junk.
+  The public helper that exposed that inference was removed during the Phase 1
+  consolidation rather than offering confident false answers.
 - *Names* — the convention is `Name(mass)<deg>(<charge>)`. Of 1167, **779
   parse, and the middle digit equals the stored degeneracy in all 779**. It
   encodes only what the columns already have.
@@ -83,7 +84,7 @@ Design constraints, all inherited from decisions already taken:
 
 - **ℓ from J and P**, per `angular_momentum_plan.md` — worth −18.7% on the ρ,
   −11.4% on the Δ, and the largest unclaimed finite-width effect.
-- **`hasflavour` becomes structural.** `charm(qc) = qc.c − qc.c̄` against
+- **Flavour-sector selection becomes structural.** `charm(qc) = qc.c − qc.c̄` against
   `qc.c + qc.c̄ > 0` — two fields rather than a paragraph warning that
   `ischarm(J/ψ)` is false.
 - **`QuantumNumbers` becomes generative** rather than a view: candidate B of

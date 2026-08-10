@@ -10,13 +10,12 @@
 # do to a given input.)
 #
 # Produces feeddown_physics.png: (left) invariant spectra, primary vs total;
-# (right) v₂(pT), input vs total.  Run: julia -t auto physics_feeddown.jl
+# (right) v₂(pT), input vs total.
+# Run: julia --project -t auto figures/physics_feeddown.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-
 const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
-using .CascadeTables
+using FastReso2
 using Printf
 
 const T = 0.145                                   # GeV

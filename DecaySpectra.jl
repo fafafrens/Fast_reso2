@@ -156,7 +156,8 @@ end
 # The qT integrand has an integrable ln|qT − qT*| singularity where the Δη
 # domain splits, so the interval is divided there.
 function decaykernel(Fa::F, pT, ηp, ϕp, ma, mb, Eb,
-                     momentum_rule::QuadRule, rapidity_rule::QuadRule) where {F}
+                     momentum_rule::QuadRule, rapidity_rule::QuadRule;
+                     threaded::Bool = false) where {F}
     pb = sqrt(max(Eb^2 - mb^2, 0.0))
     C = ma * Eb
     mbT = hypot(mb, pT)
@@ -176,19 +177,32 @@ function decaykernel(Fa::F, pT, ηp, ϕp, ma, mb, Eb,
         qT_half_width = (qT_stop - qT_start) / 2
         qT_midpoint = (qT_start + qT_stop) / 2
         node_count = length(momentum_rule)
-        task_count = min(Threads.nthreads(), node_count)
+        task_count = threaded ? min(Threads.nthreads(), node_count) : 1
         if task_count == 1
             integral += qnodes(Fa, pT, ηp, ϕp, ma, C, mbT,
                                qT_half_width, qT_midpoint,
                                momentum_rule, rapidity_rule, 1:node_count)
         else
-            tasks = [Threads.@spawn qnodes(Fa, pT, ηp, ϕp, ma, C, mbT,
-                                           qT_half_width, qT_midpoint,
-                                           momentum_rule, rapidity_rule,
-                                           task_index:task_count:node_count)
-                     for task_index in 1:task_count]
-            for task in tasks
-                integral += fetch(task)::Float64
+            node_indices = 1:task_count:node_count
+            partial_type = Base.promote_op(
+                qnodes,
+                typeof(Fa), typeof(pT), typeof(ηp), typeof(ϕp),
+                typeof(ma), typeof(C), typeof(mbT),
+                typeof(qT_half_width), typeof(qT_midpoint),
+                typeof(momentum_rule), typeof(rapidity_rule),
+                typeof(node_indices),
+            )
+            partials = Vector{partial_type}(undef, task_count)
+            @sync for task_index in 1:task_count
+                Threads.@spawn partials[task_index] = qnodes(
+                    Fa, pT, ηp, ϕp, ma, C, mbT,
+                    qT_half_width, qT_midpoint,
+                    momentum_rule, rapidity_rule,
+                    task_index:task_count:node_count,
+                )
+            end
+            for partial in partials
+                integral += partial
             end
         end
     end
@@ -245,7 +259,10 @@ An isotropic decay represented as
 
 The constructors below encode two-, three-, four-body, and broad-parent decays
 only by changing the `(ma, Eb, coef)` nodes. Evaluation and matrix assembly use
-this shared representation.
+this shared representation. Callable evaluation is serial by default, so it
+does not invoke the parent-spectrum callback concurrently. Pass
+`threaded = true` to opt into qT-node parallelism for sufficiently expensive
+callbacks.
 """
 struct MassAverage
     ma::Vector{Float64}          # per-node parent mass
@@ -256,10 +273,11 @@ struct MassAverage
 end
 
 # An empty node list is a channel closed across its full parent-mass window.
-(decay::MassAverage)(parent_spectrum::F, pT, ηp, ϕp) where {F} =
+(decay::MassAverage)(parent_spectrum::F, pT, ηp, ϕp;
+                     threaded::Bool = false) where {F} =
     sum((decay.coef[index] *
          decaykernel(parent_spectrum, pT, ηp, ϕp, decay.ma[index], decay.mb,
-                     decay.Eb[index], decay.kern.q, decay.kern.θ)
+                     decay.Eb[index], decay.kern.q, decay.kern.θ; threaded)
          for index in eachindex(decay.coef));
         init = 0.0)
 
@@ -812,8 +830,8 @@ finite, nonnegative, strictly increasing, and contain at least `P` points.
 
 With a `scratch` from [`rowscratch`](@ref), the serial path
 (`threaded = false`) allocates nothing at all. `scratch` is ignored when
-`threaded`, which allocates one set per task — and a `Task` per chunk besides,
-so it can never reach zero.
+`threaded`, which allocates one set per task and, when there is more than one
+chunk, a `Task` per chunk besides, so it can never reach zero.
 
 [`decaymatrices`](@ref) is this with freshly allocated output.
 """
@@ -843,12 +861,19 @@ function decaymatrices!(output_matrices, decay::MassAverage, modes::Tuple,
 
     if threaded
         task_count = min(Threads.nthreads(), daughter_count)
-        row_chunks = Iterators.partition(eachindex(daughter_grid),
-                                         cld(daughter_count, task_count))
-        @sync for row_chunk in row_chunks
-            Threads.@spawn fillrows!(output_matrices, row_chunk, decay,
-                                     integer_modes, daughter_grid, parent_grid,
-                                     P, rowscratch(modes, parent_count))
+        if task_count == 1
+            fillrows!(output_matrices, eachindex(daughter_grid), decay,
+                      integer_modes, daughter_grid, parent_grid, P,
+                      rowscratch(modes, parent_count))
+        else
+            row_chunks = Iterators.partition(eachindex(daughter_grid),
+                                             cld(daughter_count, task_count))
+            @sync for row_chunk in row_chunks
+                Threads.@spawn fillrows!(output_matrices, row_chunk, decay,
+                                         integer_modes, daughter_grid,
+                                         parent_grid, P,
+                                         rowscratch(modes, parent_count))
+            end
         end
     else
         row_buffers =

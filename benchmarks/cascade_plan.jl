@@ -8,10 +8,8 @@
 #   CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
 #       julia --project -t 2 benchmarks/cascade_plan.jl
 
-isdefined(Main, :CascadeTables) ||
-    include(joinpath(dirname(@__DIR__), "CascadeTables.jl"))
-
-using .CascadeTables
+using FastReso2
+using FastReso2: CascadeTables
 using LinearAlgebra
 using Printf
 using Statistics

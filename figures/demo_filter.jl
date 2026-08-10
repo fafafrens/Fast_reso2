@@ -4,10 +4,8 @@
 # 2+3+4-body decays — three NESTED filters (2 ⊆ 23 ⊆ 234) applied to the ONE
 # cached table (build once, filter freely). See the README "Channel filtering".
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-
 const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
-using .CascadeTables
+using FastReso2
 using Printf
 
 const T = 0.145        # GeV

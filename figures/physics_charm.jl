@@ -6,13 +6,12 @@
 # is direct production PLUS strong feed-down from excited charm (D*, D₁, D₂*, Σc,
 # …). g_c cancels in the feed-down ratio F_tot/F_direct.
 #
-# Needs the charm+bottom supplement.  Run: julia -t auto physics_charm.jl
+# Needs the charm+bottom supplement.
+# Run: julia --project -t auto figures/physics_charm.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-
 const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
-using .CascadeTables
+using FastReso2
 using Printf
 
 const DATA = joinpath(ROOT, "data")

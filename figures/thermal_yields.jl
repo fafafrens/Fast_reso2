@@ -56,57 +56,27 @@
 # Run: julia --project -t auto figures/thermal_yields.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-isdefined(Main, :ThermalModel) || include("../ThermalModel.jl")
-
 const ROOT = dirname(@__DIR__)
-using .CascadeTables
-using .ThermalModel
+using FastReso2
 using Printf
 
-# PyPlot is a figure-only dependency: installed into the shared default
-# environment rather than the project, which describes what the library needs.
-using Pkg
-let project = Base.active_project()
-    if Base.find_package("PyPlot") === nothing
-        @info "installing PyPlot into the default environment (not Project.toml)"
-        Pkg.activate(); Pkg.add("PyPlot"); Pkg.activate(project)
-    end
-end
-using PyPlot
+ENV["GKSwstype"] = "100" # headless GR
+using Plots
 
-function plot_params(; gui = false, pHeight = 2.3)
-    close("all")
-    pygui(gui)
-    rc("text", usetex = "true")
-    rc("font", family = "serif")
-    rc("font", size = 12)
-    rc("xtick", labelsize = 12)
-    rc("ytick", labelsize = 12)
-    rc("lines", markersize = 1)
-    rc("legend", fontsize = 10)
-    rc("axes", titlesize = 12)
-    rc("axes", titlepad = 10)
-    return nothing
-end
-pHeight = 2.3
-pWidth = 1.3333333 * pHeight
-plot_params()
-
-const T   = 0.1565      # GeV, chemical freeze-out
+const T = 0.1565      # GeV, chemical freeze-out
 const MUB = 0.0         # GeV, consistent with zero at LHC energies
 const VOL = 5300.0      # fm^3, dV/dy for Pb-Pb 0-10%
 
 const SIGMA = 9000221   # f0(500)
 
 const SPECIES = [
-    (211,  "pi+",    raw"$\pi^+$"),
-    (321,  "K+",     raw"$K^+$"),
-    (311,  "K0",     raw"$K^0$"),
-    (2212, "p",      raw"$p$"),
-    (3122, "Lambda", raw"$\Lambda$"),
-    (3312, "Xi-",    raw"$\Xi^-$"),
-    (3334, "Omega-", raw"$\Omega^-$"),
+    (211, "pi+", "π⁺"),
+    (321, "K+", "K⁺"),
+    (311, "K0", "K⁰"),
+    (2212, "p", "p"),
+    (3122, "Lambda", "Λ"),
+    (3312, "Xi-", "Ξ⁻"),
+    (3334, "Omega-", "Ω⁻"),
 ]
 
 # isofix + sigma reproduces the whole-file QM2016Plus_isofix_sigma exactly --
@@ -122,48 +92,63 @@ load(layers) = DecayList(
 function report(label, layers; width = true, shape = :massdep)
     decay_list = load(layers)
     elapsed = @elapsed yields = thermalyields(
-        decay_list, T; muB = MUB, V = VOL, width = width, shape = shape)
+        decay_list, T; muB = MUB, V = VOL, width = width, shape = shape
+    )
     @printf("\n%s  (%d species, %.1f s)\n", label, length(decay_list.catalog.byid), elapsed)
     @printf("  %-9s %10s %10s %10s %8s\n", "species", "primary", "feed-down", "total", "feed/tot")
     for (particle_id, name, _) in SPECIES
         haskey(yields.total, particle_id) || continue
         total = yields.total[particle_id]
-        @printf("  %-9s %10.2f %10.2f %10.2f %8.2f\n",
-                name, yields.primary[particle_id], yields.feeddown[particle_id],
-                total, yields.feeddown[particle_id] / total)
+        @printf(
+            "  %-9s %10.2f %10.2f %10.2f %8.2f\n",
+            name, yields.primary[particle_id], yields.feeddown[particle_id],
+            total, yields.feeddown[particle_id] / total
+        )
     end
-    @printf("  ratios: K+/pi+ = %.4f   p/pi+ = %.4f   Lambda/pi+ = %.4f\n",
-            yields.total[321] / yields.total[211],
-            yields.total[2212] / yields.total[211],
-            yields.total[3122] / yields.total[211])
+    @printf(
+        "  ratios: K+/pi+ = %.4f   p/pi+ = %.4f   Lambda/pi+ = %.4f\n",
+        yields.total[321] / yields.total[211],
+        yields.total[2212] / yields.total[211],
+        yields.total[3122] / yields.total[211]
+    )
     return yields
 end
 
 @printf("T = %.4f GeV   muB = %.3f GeV   V = %.0f fm^3\n", T, MUB, VOL)
 pdg_only = report("light_pdg (PDG-numbered species only)", ["light_pdg"])
-raw_qm   = report("QM2016Plus (uncorrected isospin)", ["QM2016Plus"])
-full     = report("QM2016Plus_isofix (production list)", ["QM2016Plus_isofix"])
-sigma    = report("QM2016Plus_isofix + f0(500)", ISOFIX_SIGMA)
-pole     = report("QM2016Plus_isofix + f0(500), pole mass (no width average)",
-                  ISOFIX_SIGMA; width = false)
-constant = report("QM2016Plus_isofix + f0(500), constant-width shape",
-                  ISOFIX_SIGMA; shape = :constant)
+raw_qm = report("QM2016Plus (uncorrected isospin)", ["QM2016Plus"])
+full = report("QM2016Plus_isofix (production list)", ["QM2016Plus_isofix"])
+sigma = report("QM2016Plus_isofix + f0(500)", ISOFIX_SIGMA)
+pole = report(
+    "QM2016Plus_isofix + f0(500), pole mass (no width average)",
+    ISOFIX_SIGMA; width = false
+)
+constant = report(
+    "QM2016Plus_isofix + f0(500), constant-width shape",
+    ISOFIX_SIGMA; shape = :constant
+)
 
 # ---------------------------------------------------------------------------
 # What the sigma alone does. It is one species out of 1519 and decays only to
 # pions, so it is the one case here where a single entry's effect is separable.
 # ---------------------------------------------------------------------------
-@printf("\nf0(500), m = 0.475 GeV, Gamma = 0.55 GeV, support cut at 2*m_pi = %.4f\n",
-        2 * 0.13957)
+@printf(
+    "\nf0(500), m = 0.475 GeV, Gamma = 0.55 GeV, support cut at 2*m_pi = %.4f\n",
+    2 * 0.13957
+)
 @printf("  primary yield of the sigma itself   %8.2f\n", sigma.primary[SIGMA])
 for (particle_id, name, _) in SPECIES
     before, after = full.total[particle_id], sigma.total[particle_id]
-    @printf("  %-9s %10.2f -> %10.2f  %+7.2f%%\n",
-            name, before, after, 100 * (after - before) / before)
+    @printf(
+        "  %-9s %10.2f -> %10.2f  %+7.2f%%\n",
+        name, before, after, 100 * (after - before) / before
+    )
 end
-@printf("  K+/pi+  %.4f -> %.4f     p/pi+  %.4f -> %.4f\n",
-        full.total[321] / full.total[211], sigma.total[321] / sigma.total[211],
-        full.total[2212] / full.total[211], sigma.total[2212] / sigma.total[211])
+@printf(
+    "  K+/pi+  %.4f -> %.4f     p/pi+  %.4f -> %.4f\n",
+    full.total[321] / full.total[211], sigma.total[321] / sigma.total[211],
+    full.total[2212] / full.total[211], sigma.total[2212] / sigma.total[211]
+)
 
 # ---------------------------------------------------------------------------
 # What the finite widths are worth. Unlike the three list changes above this
@@ -171,20 +156,28 @@ end
 # Delta(1232) and the N* tower, the Omega- by a handful of narrow states.
 # ---------------------------------------------------------------------------
 println("\npole mass vs mass average, and the two shapes, on the same list")
-@printf("  %-9s %10s %10s %10s %9s %9s\n",
-        "species", "pole", "constant", "massdep", "width[%]", "shape[%]")
+@printf(
+    "  %-9s %10s %10s %10s %9s %9s\n",
+    "species", "pole", "constant", "massdep", "width[%]", "shape[%]"
+)
 for (particle_id, name, _) in SPECIES
     p0 = pole.total[particle_id]
     pc = constant.total[particle_id]
     pm = sigma.total[particle_id]
-    @printf("  %-9s %10.2f %10.2f %10.2f %+8.2f%% %+8.2f%%\n",
-            name, p0, pc, pm, 100 * (pm - p0) / p0, 100 * (pm - pc) / pc)
+    @printf(
+        "  %-9s %10.2f %10.2f %10.2f %+8.2f%% %+8.2f%%\n",
+        name, p0, pc, pm, 100 * (pm - p0) / p0, 100 * (pm - pc) / pc
+    )
 end
 ratio(y, a, b) = y.total[a] / y.total[b]
-@printf("  K+/pi+  pole %.4f  constant %.4f  massdep %.4f\n",
-        ratio(pole, 321, 211), ratio(constant, 321, 211), ratio(sigma, 321, 211))
-@printf("  p/pi+   pole %.4f  constant %.4f  massdep %.4f\n",
-        ratio(pole, 2212, 211), ratio(constant, 2212, 211), ratio(sigma, 2212, 211))
+@printf(
+    "  K+/pi+  pole %.4f  constant %.4f  massdep %.4f\n",
+    ratio(pole, 321, 211), ratio(constant, 321, 211), ratio(sigma, 321, 211)
+)
+@printf(
+    "  p/pi+   pole %.4f  constant %.4f  massdep %.4f\n",
+    ratio(pole, 2212, 211), ratio(constant, 2212, 211), ratio(sigma, 2212, 211)
+)
 
 # ---------------------------------------------------------------------------
 # Left:   yields per species, primary against total, for the three lists.
@@ -203,78 +196,138 @@ ratio(y, a, b) = y.total[a] / y.total[b]
 # overlap.
 # ---------------------------------------------------------------------------
 labels = [label for (_, _, label) in SPECIES]
-positions = collect(0:length(SPECIES) - 1)
+positions = collect(0:(length(SPECIES) - 1))
 present(y) = [haskey(y.total, id) ? y.total[id] : NaN for (id, _, _) in SPECIES]
 primaries(y) = [haskey(y.primary, id) ? y.primary[id] : NaN for (id, _, _) in SPECIES]
-fractions(y) = [haskey(y.total, id) && y.total[id] > 0 ?
-                y.feeddown[id] / y.total[id] : NaN for (id, _, _) in SPECIES]
+fractions(y) = [
+    haskey(y.total, id) && y.total[id] > 0 ?
+        y.feeddown[id] / y.total[id] : NaN for (id, _, _) in SPECIES
+]
 
-figure_handle, axes = subplots(1, 3, figsize = (pWidth * 3.9, pHeight * 1.25))
-left, right, delta = axes[1], axes[2], axes[3]
+common = (
+    gridalpha = 0.25,
+    foreground_color_legend = nothing,
+    background_color = :white,
+    framestyle = :box,
+    tickfontsize = 10,
+    guidefontsize = 11,
+    legendfontsize = 8,
+    titlefontsize = 11,
+)
 
-left.plot(positions .- 0.18, primaries(full), "o", color = "0.55", ms = 6,
-          mfc = "none", mew = 1.2, label = "primary (thermal)")
-left.plot(positions .- 0.06, present(pdg_only), "^", color = "C1", ms = 6,
-          mfc = "none", mew = 1.2, label = raw"total, PDG-numbered only")
-left.plot(positions .+ 0.06, present(full), "s", color = "C0", ms = 6,
-          label = "total, QM2016Plus\\_isofix")
-left.plot(positions .+ 0.18, present(sigma), "D", color = "C2", ms = 5,
-          mfc = "none", mew = 1.2, label = raw"total, $+\,f_0(500)$")
-left.set_yscale("log")
-left.set_xticks(positions); left.set_xticklabels(labels)
-left.set_ylabel(raw"$\mathrm{d}N/\mathrm{d}y$")
-left.set_title("thermal yields with feed-down")
-left.legend(frameon = false, loc = "lower left")
-left.grid(alpha = 0.25, axis = "y")
+left = plot(;
+    xticks = (positions, labels),
+    ylabel = "dN/dy",
+    yscale = :log10,
+    title = "thermal yields with feed-down",
+    legend = :bottomleft,
+    common...,
+)
+scatter!(
+    left, positions .- 0.18, primaries(full);
+    color = "#8c8c8c", marker = :circle, markersize = 6,
+    markercolor = :white, markerstrokewidth = 1.2,
+    label = "primary (thermal)"
+)
+scatter!(
+    left, positions .- 0.06, present(pdg_only);
+    color = "#ff7f0e", marker = :utriangle, markersize = 6,
+    markercolor = :white, markerstrokewidth = 1.2,
+    label = "total, PDG-numbered only"
+)
+scatter!(
+    left, positions .+ 0.06, present(full);
+    color = "#1f77b4", marker = :square, markersize = 6,
+    label = "total, QM2016Plus_isofix"
+)
+scatter!(
+    left, positions .+ 0.18, present(sigma);
+    color = "#2ca02c", marker = :diamond, markersize = 5,
+    markercolor = :white, markerstrokewidth = 1.2,
+    label = "total, + f₀(500)"
+)
 
-right.plot(positions .- 0.12, fractions(pdg_only), "^", color = "C1", ms = 6,
-           mfc = "none", mew = 1.2, label = "PDG-numbered only")
-right.plot(positions, fractions(full), "s", color = "C0", ms = 6,
-           label = "QM2016Plus\\_isofix")
-right.plot(positions .+ 0.12, fractions(sigma), "D", color = "C2", ms = 5,
-           mfc = "none", mew = 1.2, label = raw"$+\,f_0(500)$")
-right.set_xticks(positions); right.set_xticklabels(labels)
-right.set_ylim(-0.04, 1.02)
-right.set_ylabel("feed-down fraction of total")
-right.set_title("how much arrives from decays")
-right.legend(frameon = false, loc = "lower left")
-right.grid(alpha = 0.25, axis = "y")
+right = plot(;
+    xticks = (positions, labels),
+    ylims = (-0.04, 1.02),
+    ylabel = "feed-down fraction of total",
+    title = "how much arrives from decays",
+    legend = :bottomleft,
+    common...,
+)
+scatter!(
+    right, positions .- 0.12, fractions(pdg_only);
+    color = "#ff7f0e", marker = :utriangle, markersize = 6,
+    markercolor = :white, markerstrokewidth = 1.2,
+    label = "PDG-numbered only"
+)
+scatter!(
+    right, positions, fractions(full);
+    color = "#1f77b4", marker = :square, markersize = 6,
+    label = "QM2016Plus_isofix"
+)
+scatter!(
+    right, positions .+ 0.12, fractions(sigma);
+    color = "#2ca02c", marker = :diamond, markersize = 5,
+    markercolor = :white, markerstrokewidth = 1.2,
+    label = "+ f₀(500)"
+)
 
-percent(after, before) = [100 * (after.total[id] - before.total[id]) / before.total[id]
-                          for (id, _, _) in SPECIES]
+percent(after, before) = [
+    100 * (after.total[id] - before.total[id]) / before.total[id]
+        for (id, _, _) in SPECIES
+]
 # Against `raw_qm`, not `full`: `full` already carries the isospin fix, which
 # is its own bar, so measuring the quark-model states against it would count
 # that step twice and contradict "each measured against the one before it".
-delta.bar(positions .- 0.32, percent(raw_qm, pdg_only), 0.15, color = "C0",
-          label = "quark-model states")
-delta.bar(positions .- 0.16, percent(sigma, pole), 0.15, color = "C4",
-          label = "finite widths")
-delta.bar(positions, percent(sigma, constant), 0.15, color = "C5",
-          label = raw"shape: $\Gamma(m)$ vs $\Gamma$")
-delta.bar(positions .+ 0.16, percent(sigma, full), 0.15, color = "C2",
-          label = raw"$f_0(500)$")
-delta.bar(positions .+ 0.32, percent(full, raw_qm), 0.15, color = "C3",
-          label = "isospin fix")
-delta.axhline(0, color = "0.3", lw = 0.8)
-delta.set_xticks(positions); delta.set_xticklabels(labels)
-delta.set_ylabel("change in total yield [\\%]")
-delta.set_title("what each choice is worth")
-delta.legend(frameon = false, loc = "upper left", ncol = 1, fontsize = 8)
-delta.grid(alpha = 0.25, axis = "y")
+delta = plot(;
+    xticks = (positions, labels),
+    ylabel = "change in total yield [%]",
+    title = "what each choice is worth",
+    legend = :topleft,
+    common...,
+)
+bar!(
+    delta, positions .- 0.32, percent(raw_qm, pdg_only);
+    bar_width = 0.15, color = "#1f77b4", label = "quark-model states"
+)
+bar!(
+    delta, positions .- 0.16, percent(sigma, pole);
+    bar_width = 0.15, color = "#9467bd", label = "finite widths"
+)
+bar!(
+    delta, positions, percent(sigma, constant);
+    bar_width = 0.15, color = "#8c564b", label = "shape: Γ(m) vs Γ"
+)
+bar!(
+    delta, positions .+ 0.16, percent(sigma, full);
+    bar_width = 0.15, color = "#2ca02c", label = "f₀(500)"
+)
+bar!(
+    delta, positions .+ 0.32, percent(full, raw_qm);
+    bar_width = 0.15, color = "#d62728", label = "isospin fix"
+)
+hline!(delta, [0.0]; color = "#4c4c4c", linewidth = 0.8, label = "")
 
-figure_handle.text(0.5, 0.955,
-    "\$T = $(T)\\,\\mathrm{GeV},\\quad \\mu_B = 0,\\quad V = $(Int(VOL))\\,\\mathrm{fm}^3\$",
-    ha = "center", fontsize = 11)
-figure_handle.subplots_adjust(left = 0.07, right = 0.985, top = 0.80, bottom = 0.11, wspace = 0.30)
+figure_handle = plot(
+    left, right, delta;
+    layout = (1, 3),
+    size = (2391, 575),
+    margin = 5Plots.mm,
+    plot_title = "T = $(T) GeV,  μB = 0,  V = $(Int(VOL)) fm³",
+    plot_titlefontsize = 11,
+)
 output = joinpath(@__DIR__, "thermal_yields.png")
-figure_handle.savefig(output, dpi = 200)
+savefig(figure_handle, output)
 @printf("\nwrote %s\n", output)
 
-println("""
+println(
+    """
 
-Measured, Pb-Pb 0-10% (ALICE): K+/pi+ ~ 0.15, p/pi+ ~ 0.05.
-The excess above those values is dominated by feed-down from the quark-model
-resonances, which is why every list is shown separately. Finite widths are the
-largest single correction and the least uniform across species: dropping them
-is not a small perturbation on the ratios. The spectral shape carrying that
-width is a separate choice, and the sigma is where the two shapes part.""")
+    Measured, Pb-Pb 0-10% (ALICE): K+/pi+ ~ 0.15, p/pi+ ~ 0.05.
+    The excess above those values is dominated by feed-down from the quark-model
+    resonances, which is why every list is shown separately. Finite widths are the
+    largest single correction and the least uniform across species: dropping them
+    is not a small perturbation on the ratios. The spectral shape carrying that
+    width is a separate choice, and the sigma is where the two shapes part."""
+)

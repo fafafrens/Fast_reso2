@@ -1,20 +1,15 @@
 #!/usr/bin/env julia
 
 """
-Convert supported external particle/decay formats to FastReso's canonical
-split files. This tool is deliberately separate from the runtime reader.
+Convert supported external particle/decay formats to this repository's
+canonical split files. This tool is deliberately separate from the runtime
+reader.
 """
 module DecayDataConverter
 
-if isdefined(Main, :CascadeTables) &&
-        isdefined(Main.CascadeTables, :ParticleList)
-    # Reuse the runtime model types when a test or notebook loaded the core
-    # first. Standalone CLI execution instead includes the lightweight model.
-    const PL = Main.CascadeTables.ParticleList
-else
-    include(joinpath(@__DIR__, "..", "ParticleList.jl"))
-    const PL = ParticleList
-end
+import FastReso2
+
+const PL = FastReso2.ParticleList
 
 include(joinpath(@__DIR__, "converters", "AZYHYDRO.jl"))
 include(joinpath(@__DIR__, "converters", "THERMINATOR.jl"))

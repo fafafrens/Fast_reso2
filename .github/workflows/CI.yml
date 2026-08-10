@@ -11,26 +11,29 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'      # minimum supported (OncePerTask in buildkeys!)
       - uses: julia-actions/cache@v2
-      # The suite needs only FastGaussQuadrature (core) + QuadGK (reference
-      # integrals) + the standard library — NOT Plots/GR, which the repo pulls in
-      # only for the figure scripts. Test against a lean named env so CI stays
-      # fast and carries no headless-graphics failure surface.
+      - name: Instantiate project
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
       - name: Run tests
-        run: |
-          julia --project=@fastreso-ci -e 'using Pkg; Pkg.add(["FastGaussQuadrature", "QuadGK"])'
-          julia --project=@fastreso-ci -t auto runtests.jl
+        env:
+          JULIA_NUM_THREADS: auto
+        run: julia --project=. -e 'using Pkg; Pkg.test()'
 
   heavy-flavour-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

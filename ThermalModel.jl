@@ -4,8 +4,9 @@
 Statistical hadronization: thermal number densities at chemical freeze-out and
 the yields that follow once resonances decay.
 
-    dl = DecayList(readparticles("data/particles_QM2016Plus.dat"),
-                   readdecays("data/decays_QM2016Plus.dat"))
+    using FastReso2
+    dl = DecayList(readparticles("data/particles_QM2016Plus_isofix.dat"),
+                   readdecays("data/decays_QM2016Plus_isofix.dat"))
     primary, total, feeddown = thermalyields(dl, 0.1565; muB = 0.0, V = 5300.0)
 
 For a fit, compile the list once and reuse it -- `ThermalPlan` hoists
@@ -24,27 +25,20 @@ constant-width `BreitWigner`. Both are `DecaySpectra`'s own types, so the
 cascade and the yields average over the same shape by construction -- what
 differs is only the quadrature each drives it through.
 
-Functions take any object exposing `.mass`, `.width`, `.degeneracy`, `.baryon`,
-`.charge`, `.strangeness`, `.charm` and `.bottomness`, rather than annotating
-`::ParticleInfo`. Annotating would force this module to include
-`ParticleList.jl` and so define a *second* `ParticleInfo` type, distinct from
-the one `CascadeTables` hands out — records from a live decay list would then
-fail to dispatch here.
+Particle records remain duck typed, while decay-list entry points consume the
+shared `DecayModel.DecayList` used by the cascade path.
 """
 module ThermalModel
 
 using QuadGK: quadgk
 using FastGaussQuadrature: gausslegendre
 
-# The spectral shapes are DecaySpectra's, not copies of them. Including it here
-# does create a second instance of that module -- but unlike `ParticleList`,
-# nothing of it crosses this boundary: shapes are built and consumed inside
-# this module, and the public API speaks in Symbols. What the shared source
-# buys is that "the cascade and the yields average over one shape" is true by
-# construction rather than by a test comparing two transcriptions.
-include(joinpath(@__DIR__, "DecaySpectra.jl"))
-using .DecaySpectra: SpectralShape, BreitWigner, MassDependentBW
-import .DecaySpectra: _lowerendpointvanishes
+const HBAR_C_GEV_FM = 0.1973269804
+
+import ..DecaySpectra
+using ..DecaySpectra: SpectralShape, BreitWigner, MassDependentBW
+import ..DecaySpectra: _lowerendpointvanishes
+using ..DecayModel: DecayList, feeddown_order
 
 export chemicalpotential, thermaldensity, primaryyields, thermalyields,
        ThermalPlan
@@ -219,48 +213,17 @@ function thermaldensity(
 end
 
 """
-    _thresholds(decay_list) -> Dict{Int,Float64}
-
-Lowest reachable mass per parent: the smallest summed daughter mass over its
-channels. Self-channels are skipped — they mark a terminal species, not a decay.
-"""
-function _thresholds(decay_list)
-    catalog = decay_list.catalog.byid
-    thresholds = Dict{Int, Float64}()
-    for (parent_id, channels) in decay_list.network.byparent
-        best = Inf
-        for channel in channels
-            # Zero-branching rows are skipped, matching
-            # CascadeTables.eachchannelkey -- the two modules must agree on
-            # every species' threshold or the shapes stop being one shape.
-            iszero(channel.br) && continue
-            daughters = channel.daughters
-            length(daughters) == 1 && only(daughters) == parent_id && continue
-            total = 0.0
-            for daughter_id in daughters
-                haskey(catalog, daughter_id) || (total = Inf; break)
-                total += catalog[daughter_id].mass
-            end
-            best = min(best, total)
-        end
-        isfinite(best) && (thresholds[parent_id] = best)
-    end
-    return thresholds
-end
-
-"""
     primaryyields(decay_list, temperature; muB = 0.0, V, kwargs...)
 
 Primary (directly produced) yields, `n_i * V`, keyed by particle ID. `V` is in
 fm^3 and converted with hbar*c = 0.1973269804 GeV fm.
 """
-function primaryyields(decay_list, temperature; V, kwargs...)
-    thresholds = _thresholds(decay_list)
-    volume = V / (0.1973269804)^3                       # fm^3 -> GeV^-3
+function primaryyields(decay_list::DecayList, temperature; V, kwargs...)
+    volume = V / HBAR_C_GEV_FM^3                       # fm^3 -> GeV^-3
     return Dict(
         particle_id => volume * thermaldensity(
             particle, temperature;
-            threshold = get(thresholds, particle_id, 0.0), kwargs...,
+            threshold = get(decay_list.thresholds, particle_id, 0.0), kwargs...,
         )
         for (particle_id, particle) in decay_list.catalog.byid
     )
@@ -272,23 +235,18 @@ end
 
 Yields before and after resonances decay, plus their difference.
 
-Parents are processed in descending mass, which is sufficient ordering because
-a parent always outweighs its daughters — `validate` enforces exactly that
-threshold condition — so a parent's total is final before it is distributed.
-This deliberately avoids `CascadeTables._cascadeorder`, which solves the harder
-problem of matrix application order among broad parents that reopen each other.
+Parents are processed in deterministic feeder-before-fed graph order. This is
+important for broad parents whose spectral support can reopen a channel to a
+daughter heavier than the parent's pole mass.
 
 Daughters are credited with multiplicity, so `eta -> 3 pi0` adds three pions.
 """
-function thermalyields(decay_list, temperature; V, kwargs...)
+function thermalyields(decay_list::DecayList, temperature; V, kwargs...)
     primary = primaryyields(decay_list, temperature; V, kwargs...)
     total = copy(primary)
     catalog = decay_list.catalog.byid
 
-    parents = sort!(
-        collect(keys(decay_list.network.byparent));
-        by = parent_id -> (-catalog[parent_id].mass, parent_id),
-    )
+    parents = feeddown_order(decay_list; cycles = :warn)
     for parent_id in parents
         available = get(total, parent_id, 0.0)
         available == 0 && continue
@@ -393,9 +351,8 @@ threshold per resonance, and the feed-down order with its channels flattened
 into offset arrays.
 
 Built for fitting, where `thermalyields` runs thousands of times over the same
-list. Roughly a fifth of an unplanned call is this setup — the mass-descending
-parent sort alone is 8.5 ms of 47 ms on the production list — and the density
-loop, which is the rest, parallelizes over species.
+list. The density loop parallelizes over species, while graph ordering and
+channel flattening happen only once.
 
     plan = ThermalPlan(decay_list)
     for (T, muB, V) in grid
@@ -405,14 +362,12 @@ loop, which is the rest, parallelizes over species.
 struct ThermalPlan
     ids::Vector{Int}
     mass::Vector{Float64}
-    width::Vector{Float64}
     degeneracy::Vector{Float64}
     isfermion::Vector{Bool}
     baryon::Vector{Float64}
     strangeness::Vector{Float64}
     charge::Vector{Float64}
     charm::Vector{Float64}
-    threshold::Vector{Float64}
     # Feed-down, in application order. `channels[parent]` spans
     # `channel_range[parent]`, and channel `c` sends `branching[c]` to the dense
     # daughter indices in `daughters[daughter_range[c]]`.
@@ -434,7 +389,12 @@ struct ThermalPlan
     shape::Symbol
 end
 
-function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
+function ThermalPlan(
+        decay_list::DecayList;
+        mass_order = 32,
+        k = 4.0,
+        shape = :massdep,
+    )
     shape === :massdep || shape === :constant || throw(ArgumentError(
         "shape must be :massdep or :constant, got $(repr(shape))",
     ))
@@ -442,14 +402,9 @@ function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
     ids = sort!(collect(keys(catalog)))
     index_of = Dict(particle_id => index for (index, particle_id) in pairs(ids))
     records = [catalog[particle_id] for particle_id in ids]
-    thresholds = _thresholds(decay_list)
+    thresholds = decay_list.thresholds
 
-    # Parents heaviest first: a parent always outweighs its daughters, so its
-    # total is final before it is distributed.
-    parents = sort!(
-        collect(keys(decay_list.network.byparent));
-        by = parent_id -> (-catalog[parent_id].mass, parent_id),
-    )
+    parents = feeddown_order(decay_list; cycles = :warn)
 
     order = Int[]
     channel_range = UnitRange{Int}[]
@@ -493,11 +448,10 @@ function ThermalPlan(decay_list; mass_order = 32, k = 4.0, shape = :massdep)
 
     return ThermalPlan(
         ids,
-        [r.mass for r in records], [r.width for r in records],
+        [r.mass for r in records],
         [Float64(r.degeneracy) for r in records], [r.baryon != 0 for r in records],
         [Float64(r.baryon) for r in records], [Float64(r.strangeness) for r in records],
         [Float64(r.charge) for r in records], [Float64(r.charm) for r in records],
-        [get(thresholds, particle_id, 0.0) for particle_id in ids],
         order, channel_range, branching, daughter_range, daughters,
         mass_range, mass_nodes, mass_weights,
         shape,
@@ -521,7 +475,7 @@ function thermalyields(
         V, quantum = true, width = true,
     )
     temperature > 0 || throw(ArgumentError("temperature must be positive"))
-    volume = V / (0.1973269804)^3
+    volume = V / HBAR_C_GEV_FM^3
     species_count = length(plan)
     primary = Vector{Float64}(undef, species_count)
 
@@ -570,10 +524,10 @@ end
 
 "Density for one plan entry, mirroring `thermaldensity` on a flattened record."
 function _density(plan::ThermalPlan, index, temperature, mu; quantum, width)
-    mass, resonance_width = plan.mass[index], plan.width[index]
+    mass = plan.mass[index]
     degeneracy, is_fermion = plan.degeneracy[index], plan.isfermion[index]
     pole() = _densityatmass(mass, degeneracy, is_fermion, temperature, mu; quantum)
-    (!width || resonance_width <= 0) && return pole()
+    !width && return pole()
 
     range = plan.mass_range[index]
     isempty(range) && return pole()

@@ -3,10 +3,8 @@
 # and one feeder-before-fed sweep. The first run builds and saves the packed
 # cache; later runs load it.
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-
 const ROOT = dirname(@__DIR__)      # repo root: data lives there, figures here
-using .CascadeTables
+using FastReso2
 using Printf
 
 const T   = 0.145        # GeV

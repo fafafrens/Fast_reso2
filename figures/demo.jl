@@ -2,8 +2,7 @@
 # (two-body, Eq. 32) and ω → π⁺π⁻π⁰ (three-body, Eq. 59) for a static
 # thermal source with elliptic-flow modulation.
 
-include("../DecaySpectra.jl")
-using .DecaySpectra
+using FastReso2
 using Printf
 
 # `const` matters: non-const globals captured in the spectra closures make the
@@ -110,4 +109,3 @@ fb0_mat, fb2_mat, fω0_mat = applymat()
         length(pTs), 1e6 * tmat, 1e3 * tfun, tfun / tmat)
 
 M0.W
-

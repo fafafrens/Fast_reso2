@@ -14,7 +14,7 @@ export ParticleInfo, DecayChannel,
        readparticles, readdecays,
        particle, particleids,
        isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, ischarm,
-       isbottom, quarkdigits, hasflavour
+       isbottom
 
 struct ParticleInfo
     id::Int
@@ -61,47 +61,6 @@ isstrange(particle::ParticleInfo) = particle.strangeness != 0
 ischarm(particle::ParticleInfo) = particle.charm != 0
 "True for a bottom hadron (nonzero bottomness)."
 isbottom(particle::ParticleInfo) = particle.bottomness != 0
-
-"""
-    quarkdigits(id) -> (q1, q2, q3)
-
-Quark-content digits of a Monte-Carlo ID, most significant first, using the
-standard `n_q1 n_q2 n_q3 n_J` layout: `q1` is zero for a meson and names the
-third quark of a baryon. Flavours are `1 = d, 2 = u, 3 = s, 4 = c, 5 = b`.
-
-Returns zeros for anything below 100 — leptons and gauge bosons have no quark
-content, and reading their digits would report the photon (22) as carrying an
-up quark.
-"""
-function quarkdigits(id::Integer)
-    magnitude = abs(id)
-    magnitude < 100 && return (0, 0, 0)
-    # The three digits left of n_J. Division and modulo read them directly;
-    # going through a padded string would allocate one per call.
-    return (
-        (magnitude ÷ 1000) % 10,
-        (magnitude ÷ 100) % 10,
-        (magnitude ÷ 10) % 10,
-    )
-end
-quarkdigits(particle::ParticleInfo) = quarkdigits(particle.id)
-
-"""
-    hasflavour(particle, flavour) -> Bool
-
-True when the species contains a quark of this flavour, as quark *or*
-antiquark.
-
-This is a different question from `ischarm`/`isbottom`, which test the net
-flavour quantum number. Quarkonia carry zero net flavour because quark and
-antiquark cancel, so `ischarm(J/psi)` is false while `hasflavour(J/psi, 4)` is
-true. Use the net-number predicates for open flavour and this one to select a
-sector: partitioning a charm+bottom list by net flavour files every J/psi,
-Upsilon, chi_c and chi_b under neither heading.
-"""
-hasflavour(particle::ParticleInfo, flavour::Integer) =
-    flavour in quarkdigits(particle)
-hasflavour(id::Integer, flavour::Integer) = flavour in quarkdigits(id)
 
 struct DecayChannel
     parent::Int
@@ -290,9 +249,11 @@ end
 _isselfchannel(channel::DecayChannel, parent_id::Integer) =
     length(channel.daughters) == 1 && only(channel.daughters) == parent_id
 
-_isterminalblock(channels, parent_id) =
-    !isempty(channels) &&
-    all(channel -> _isselfchannel(channel, parent_id), channels)
+function _isterminalblock(channels, parent_id)
+    length(channels) == 1 || return false
+    channel = only(channels)
+    return _isselfchannel(channel, parent_id) && channel.br == 1.0
+end
 
 function _channelsignature(channel::DecayChannel)
     return (channel.parent, channel.br, Tuple(sort(channel.daughters)))

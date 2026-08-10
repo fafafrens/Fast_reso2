@@ -39,9 +39,7 @@ own antiparticle. The catalogs are read but never modified -- the output pairs
 with the same particle files as its input.
 """
 
-isdefined(Main, :CascadeTables) ||
-    include(joinpath(dirname(@__DIR__), "CascadeTables.jl"))
-using .CascadeTables
+using FastReso2
 using Printf
 
 "Antiparticle ID, or the particle itself when it is its own antiparticle."

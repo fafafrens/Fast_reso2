@@ -31,38 +31,12 @@
 # Run: julia --project -t auto figures/spectral_shape.jl
 # ============================================================================
 
-isdefined(Main, :CascadeTables) || include("../CascadeTables.jl")
-
 const ROOT = dirname(@__DIR__)
-using .CascadeTables
+using FastReso2
 using Printf
 
-using Pkg
-let project = Base.active_project()
-    if Base.find_package("PyPlot") === nothing
-        @info "installing PyPlot into the default environment (not Project.toml)"
-        Pkg.activate(); Pkg.add("PyPlot"); Pkg.activate(project)
-    end
-end
-using PyPlot
-
-function plot_params(; gui = false, pHeight = 2.3)
-    close("all")
-    pygui(gui)
-    rc("text", usetex = "true")
-    rc("font", family = "serif")
-    rc("font", size = 12)
-    rc("xtick", labelsize = 12)
-    rc("ytick", labelsize = 12)
-    rc("lines", markersize = 1)
-    rc("legend", fontsize = 10)
-    rc("axes", titlesize = 12)
-    rc("axes", titlepad = 10)
-    return nothing
-end
-pHeight = 2.3
-pWidth = 1.3333333 * pHeight
-plot_params()
+ENV["GKSwstype"] = "100" # headless GR
+using Plots
 
 const T = 0.1565                       # GeV, chemical freeze-out
 const GRID = range(0.0, 4.0, length = 134)
@@ -77,10 +51,18 @@ primary(particle, mode, momenta) =
     zeros(length(momenta))
 
 decay_list = DecayList(
-    reduce(merge, [readparticles(joinpath(DATA, "particles_$n.dat"))
-                   for n in ("QM2016Plus_isofix", "sigma")]),
-    reduce(merge, [readdecays(joinpath(DATA, "decays_$n.dat"))
-                   for n in ("QM2016Plus_isofix", "sigma")]),
+    reduce(
+        merge, [
+            readparticles(joinpath(DATA, "particles_$n.dat"))
+                for n in ("QM2016Plus_isofix", "sigma")
+        ]
+    ),
+    reduce(
+        merge, [
+            readdecays(joinpath(DATA, "decays_$n.dat"))
+                for n in ("QM2016Plus_isofix", "sigma")
+        ]
+    ),
 )
 
 results = Dict{Symbol, Any}()
@@ -93,15 +75,17 @@ for shape in (:massdep, :constant)
         plan = CascadePlan(table, decay_list)
         results[shape] = runcascade(plan; primary)
     end
-    @printf("%-9s  %d keys, %d broad  built and run in %.1f s\n",
-            shape, length(table.W), count(key -> key.Γ > 0, keys(table.W)), elapsed)
+    @printf(
+        "%-9s  %d keys, %d broad  built and run in %.1f s\n",
+        shape, length(table.W), count(key -> key.Γ > 0, keys(table.W)), elapsed
+    )
 end
 
 const SPECIES = [
-    (211,  raw"$\pi^+$", "C0"),
-    (321,  raw"$K^+$",   "C2"),
-    (2212, raw"$p$",     "C3"),
-    (3122, raw"$\Lambda$", "C1"),
+    (211, "π⁺", "#1f77b4"),
+    (321, "K⁺", "#2ca02c"),
+    (2212, "p", "#d62728"),
+    (3122, "Λ", "#ff7f0e"),
 ]
 
 spectrum(shape, id) = results[shape].F[id][1]
@@ -109,41 +93,63 @@ grid = collect(GRID)
 window = findall(q -> 0.15 ≤ q ≤ 3.0, grid)
 pTs = grid[window]
 
-figure_handle, axes = subplots(1, 2, figsize = (pWidth * 2.6, pHeight * 1.25))
-left, right = axes[1], axes[2]
+common = (
+    gridalpha = 0.25,
+    foreground_color_legend = nothing,
+    background_color = :white,
+    framestyle = :box,
+    tickfontsize = 10,
+    guidefontsize = 11,
+    legendfontsize = 9,
+    titlefontsize = 11,
+)
+
+left = plot(;
+    xlabel = "pT [GeV]",
+    ylabel = "E dN/d³p [arb.]",
+    yscale = :log10,
+    title = "spectra: Γ(m) solid, constant Γ dashed",
+    legend = :topright,
+    common...,
+)
 
 for (id, label, color) in SPECIES
-    left.plot(pTs, spectrum(:constant, id)[window], "--", color = color, lw = 1.4)
-    left.plot(pTs, spectrum(:massdep, id)[window], "-", color = color, lw = 1.8,
-              label = label)
+    plot!(
+        left, pTs, spectrum(:constant, id)[window];
+        color, linestyle = :dash, linewidth = 1.4, label = ""
+    )
+    plot!(
+        left, pTs, spectrum(:massdep, id)[window];
+        color, linewidth = 1.8, label
+    )
 end
-left.set_yscale("log")
-left.set_xlabel(raw"$p_T$ [GeV]")
-left.set_ylabel(raw"$E\,\mathrm{d}N/\mathrm{d}^3p$  [arb.]")
-left.set_title(raw"spectra: $\Gamma(m)$ solid, constant $\Gamma$ dashed")
-left.legend(frameon = false, loc = "upper right")
-left.grid(alpha = 0.25)
 
 # The ratio is the point: flat means the shape only renormalizes, sloped means
 # it redistributes momentum.
+right = plot(;
+    xlabel = "pT [GeV]",
+    ylabel = "Γ(m) / constant Γ",
+    title = "ratio: flat = normalization, sloped = harder",
+    legend = :topleft,
+    legend_columns = 2,
+    common...,
+)
 for (id, label, color) in SPECIES
     ratio = spectrum(:massdep, id)[window] ./ spectrum(:constant, id)[window]
-    right.plot(pTs, ratio, "-", color = color, lw = 1.8, label = label)
+    plot!(right, pTs, ratio; color, linewidth = 1.8, label)
 end
-right.axhline(1, color = "0.3", lw = 0.8)
-right.set_xlabel(raw"$p_T$ [GeV]")
-right.set_ylabel(raw"$\Gamma(m)\ /\ $constant $\Gamma$")
-right.set_title("ratio: flat = normalization, sloped = harder")
-right.legend(frameon = false, loc = "upper left", ncol = 2)
-right.grid(alpha = 0.25)
+hline!(right, [1.0]; color = "#4c4c4c", linewidth = 0.8, label = "")
 
-figure_handle.text(0.5, 0.955,
-    "\$T = $(T)\\,\\mathrm{GeV}\$, static thermal source, QM2016Plus\\_isofix + \$f_0(500)\$",
-    ha = "center", fontsize = 11)
-figure_handle.subplots_adjust(left = 0.09, right = 0.98, top = 0.80,
-                              bottom = 0.20, wspace = 0.28)
+figure_handle = plot(
+    left, right;
+    layout = (1, 2),
+    size = (1594, 575),
+    margin = 5Plots.mm,
+    plot_title = "T = $(T) GeV, static thermal source, QM2016Plus_isofix + f₀(500)",
+    plot_titlefontsize = 11,
+)
 output = joinpath(@__DIR__, "spectral_shape.png")
-figure_handle.savefig(output, dpi = 200)
+savefig(figure_handle, output)
 @printf("\nwrote %s\n", output)
 
 println("\nratio  Gamma(m) / constant, by pT")
@@ -152,6 +158,8 @@ for (id, _, _) in SPECIES
     ratio = spectrum(:massdep, id) ./ spectrum(:constant, id)
     at(pT) = ratio[argmin(abs.(grid .- pT))]
     name = decay_list.catalog.byid[id].name
-    @printf("  %-10s %8.4f %8.4f %8.4f %8.4f %8.4f\n",
-            name, at(0.2), at(0.5), at(1.0), at(2.0), at(3.0))
+    @printf(
+        "  %-10s %8.4f %8.4f %8.4f %8.4f %8.4f\n",
+        name, at(0.2), at(0.5), at(1.0), at(2.0), at(3.0)
+    )
 end

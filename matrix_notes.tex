@@ -1293,6 +1293,7 @@ For a two-, three-, or four-body channel the key is
 \kappa(c,s)=
 \left(
 N_d,\;m_a,\;m_{d_s},\;\Gamma_{\rm key},\;
+ m_{\rm th,key},\;
 \operatorname{sort}\{m_{d_t}:t\ne s\}
 \right),
 \qquad
@@ -1303,6 +1304,10 @@ N_d,\;m_a,\;m_{d_s},\;\Gamma_{\rm key},\;
 \end{cases}
 \label{eq:channel-key}
 \end{equation}
+Here $m_{\rm th,key}$ is zero for a sharp parent and otherwise the resolved
+species threshold, the lightest nonzero decay threshold in the unfiltered
+model.  Resolving it before channel filtering keeps spectral shapes invariant
+and makes every filtered plan a key subset of the corresponding full table.
 The partner block is zero-padded to three masses in the concrete
 \texttt{ChannelKey}.  The observed mass $m_{d_s}$ is \emph{not} sorted with
 the partners: it controls $E_b$, $p_b$, the $q_T$ band, and the Jacobian.
@@ -1325,17 +1330,18 @@ massive daughter;
 \item skips a slot whose daughter identifier equals the parent identifier,
 which prevents input/output aliasing in the in-place update.
 \end{itemize}
-One-body records are currently treated as stable self entries and skipped;
-their identifier and unit branching ratio are an input convention rather
-than something enrollment verifies.  Channels with five or more daughters
-are unsupported and skipped.
+One-body records are strict terminal self entries and are skipped by
+enrollment.  Model resolution verifies their identifier, unit branching
+ratio, and exclusivity within the parent block.  Channels with five or more
+daughters are rejected when constructing the runnable decay list.
 
 \subsection{Table construction and cache identity}
 
 A \texttt{CascadeTable} contains
 \begin{equation}
 \mathcal T=(g,\ {\rm orders},\ {\rm modes},\
-{\rm width\_cut},\ {\rm width\_window},\ {\rm metadata},\ \mathcal W),
+{\rm width\_cut},\ {\rm width\_window},\ {\rm spectral},\
+{\rm metadata},\ \mathcal W),
 \qquad
 \mathcal W:\kappa\longmapsto
 \{W_{\kappa,n}\}_{n\in{\rm modes}} .
@@ -1361,8 +1367,8 @@ the dictionary is filled serially afterward, so the build needs no dictionary
 lock and never retains a second dense copy of the complete table.
 
 Cache compatibility requires exact agreement of the format version, grid,
-orders, modes, width cut, and width window.  The two width settings are
-concrete table fields because they determine enrollment and matrix values;
+orders, modes, width cut, width window, and spectral-shape selection.  These
+settings are concrete table fields because they determine keys or matrix values;
 metadata contains provenance only.  The decay-list SHA is provenance rather
 than a hard invalidation boundary.  On a hash mismatch, matrices whose
 mass/width keys still match are retained, missing keys are built, and
@@ -1390,8 +1396,10 @@ usual order on a pole-downhill graph and handles a heavier reopened daughter
 correctly.
 
 An acyclic feed graph is therefore a mathematical precondition for an exact
-single sweep.  If a cycle is detected, the current fallback warns and appends
-the cyclic remainder in mass order, making cross-cycle feed-down approximate.
+single sweep.  The implementation first collapses strongly connected
+components, topologically sorts the resulting acyclic component graph, and
+orders members of each cyclic component by mass.  It warns when such a
+component exists; only feed-down within that component is approximate.
 An exact treatment would identify the strongly connected component and solve
 a coupled linear system of the form
 \begin{equation}
@@ -1402,21 +1410,21 @@ which is not implemented.
 
 \subsection{The hot apply path and the role of dictionaries}
 
-The current representation keeps matrices in a dictionary from
-\texttt{ChannelKey} to one vector of concrete
-\texttt{RowBandMatrix\{Float32\}} objects, and spectra in dictionaries from
-particle identifier to one \texttt{Float64} vector per mode.  These
-dictionaries organize the graph;
-they are not consulted inside the $p_T$ element loop.  Each enrolled slot
-performs a few dictionary lookups and then, for every mode, the five-argument
+The persistent table keeps matrices in a dictionary from \texttt{ChannelKey}
+to a fixed tuple of concrete \texttt{RowBandMatrix\{Float32\}} objects.
+\texttt{CascadePlan} resolves that dictionary, particle identifiers, graph
+order, and repeated transfers once.  Execution then uses dense spectrum
+indices plus flat step/group/target arrays; dictionaries remain only at the
+public input and output boundary.  A singleton target uses the five-argument
 operation
 \begin{equation}
 \texttt{mul!(Fd, W, Fp, Bc, 1.0)}
 \quad\Longleftrightarrow\quad
 F_d\leftarrow B_cWF_p+F_d .
 \end{equation}
-This avoids allocating a temporary $WF_p$ for every channel.  The code also
-excludes $d=a$, so output never aliases the parent input.
+This avoids allocating a temporary $WF_p$.  A group with several targets
+computes $WF_p$ once into scratch and scatters the weighted result.  The code
+also excludes $d=a$, so output never aliases the parent input.
 
 The multiply is deliberately mixed precision: packed \texttt{Float32} values
 times a \texttt{Float64} vector accumulate into a \texttt{Float64} vector.
@@ -1559,8 +1567,10 @@ at $G=134$ they are \texttt{UInt8} and \texttt{UInt16}.  Packed storage still
 has a quadratic worst case, but its actual size follows the support spans
 rather than the dictionary count alone.
 
-For the current bundled \texttt{decays\_QM2016Plus\_massorder.dat}, a
-read-only enumeration gives:
+The following census was recorded for the legacy combined
+\texttt{decays\_QM2016Plus\_massorder.dat} before the canonical split format
+and spectral-threshold key were introduced.  It is retained as a historical
+storage baseline, not as the current table count:
 \begin{center}
 \begin{tabular}{lr}
 \hline
@@ -1700,19 +1710,19 @@ Likewise, the \texttt{primary} callback must return one grid-length vector per
 species and mode; excluding a primary requires \texttt{zeros(length(grid))},
 not a scalar zero.
 
-The particle-list parser distinguishes 12-field particle headers from
-8-field channel rows, accepts declared multiplicities from one through five,
-and rejects a nonzero daughter identifier in padding beyond the declared
-multiplicity.  It does not currently verify the header's stated channel count,
-duplicate particle identifiers, or finiteness and positivity of every parsed
-numeric field.  Those remain input-data responsibilities.
+The runtime reader accepts the repository's canonical split format: particle
+metadata and integer-ID decay topology are parsed independently, then resolved
+into a strict \texttt{DecayList}.  Legacy AZYHYDRO and THERMINATOR formats are
+offline converter inputs under \texttt{tools/}.  Resolution rejects unresolved
+IDs, nonfinite branching fractions, invalid terminal rows, and unsupported
+multiplicities before table construction.
 
-\texttt{validate(dl)} is a separate, explicit input check; table construction
-does not call it automatically.  It checks daughter resolution, charge and
-baryon conservation, individual and summed branching ratios, and reports
-strangeness/charm changes and subthreshold rows.  It does not establish
-acyclicity, table coverage, or the one-body self-row convention, and it does
-not validate mass/width finiteness, grid monotonicity, or quadrature orders.
+\texttt{validate(dl)} is a separate, explicit physics audit; structural model
+resolution has already run.  It checks charge and baryon conservation,
+individual and summed branching ratios, duplicates, and reports
+strangeness/charm/bottomness changes and subthreshold rows.  It does not make
+branching normalization a construction requirement, establish table coverage,
+or validate grid and quadrature choices.
 
 The cascade regression tests currently verify:
 \begin{itemize}
@@ -1723,6 +1733,8 @@ agree with the table sweep to better than $10^{-5}$;
 \texttt{prune!} removes those two orphans;
 \item an all-pass filter is bitwise identical to the unfiltered apply, while a
 two-body filter reuses the full table and removes only the excluded feed-down;
+\item species thresholds survive topology filtering, including a broad
+multi-threshold parent whose two-body-only plan reuses a full table;
 \item a broad parent changes the daughter feed-down relative to its sharp
 counterpart, and a synthetic tail-reopened parent is ordered before its
 heavier daughter so downstream feed-down remains nonzero.

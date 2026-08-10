@@ -1,7 +1,7 @@
 # Canonical particle and decay tables
 
 Two files per table: a catalog (`particles_*.dat`) and a network
-(`decays_*.dat`), both in FastReso's canonical format.
+(`decays_*.dat`), both in this repository's canonical split format.
 
 ```text
 particles: id name mass width degeneracy B S C Bot I Q [aliases...]
@@ -115,9 +115,9 @@ error.
 julia --project=. tools/convert_decay_data.jl azyhydro SOURCE.dat \
     --particles-out data/particles_X.dat --decays-out data/decays_X.dat
 
-python tools/split_by_provenance.py \
+python3 tools/split_by_provenance.py \
     data/particles_QM2016Plus_isofix.dat data/decays_QM2016Plus_isofix.dat --stem light
-python tools/split_by_provenance.py \
+python3 tools/split_by_provenance.py \
     data/particles_charm_bottom.dat data/decays_charm_bottom.dat --stem heavy --split flavour
 ```
 

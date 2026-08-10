@@ -28,7 +28,7 @@ range is PDG's own for exotic and unconfirmed states -- 9000221 is f0(500) --
 so an ID-magnitude test wrongly calls those invented, while short ad-hoc IDs
 like 910 (Delta(2420)-) slip past it the other way.
 
-    python tools/split_by_provenance.py \\
+    python3 tools/split_by_provenance.py \\
         data/particles_QM2016Plus_isofix.dat data/decays_QM2016Plus_isofix.dat \\
         --stem light
 

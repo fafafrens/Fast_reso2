@@ -8,13 +8,16 @@
 # 3b. Four-body number conservation + cluster-mass permutation symmetry (§3.1).
 # 4. Quadrature convergence: default Gauss–Legendre orders vs doubled.
 
-include("DecaySpectra.jl")
-using .DecaySpectra
+using FastReso2
+const DecaySpectra = FastReso2.DecaySpectra
+const CascadeTables = FastReso2.CascadeTables
+const ThermalModel = FastReso2.ThermalModel
 using Logging
 using LinearAlgebra
 using Serialization
 using QuadGK   # test harness only: outer adaptive integrals
 using Printf
+using Test: @inferred
 
 const T = 0.15   # temperature (GeV) of the static thermal test source
 
@@ -60,6 +63,15 @@ for (pT, ηp) in ((0.3, 0.0), (0.8, 0.5), (1.5, -1.0))
     end
     @printf("   pT=%.2f ηp=%+.1f:  F_b0=%.4e  v2_b=F_b2/F_b0=%.4f\n", pT, ηp, b0, b2 / b0)
 end
+
+# Callable evaluation is serial unless explicitly requested, and opting into
+# threads must not change the callback's accepted numeric result type.
+complex_parent(qT, η, ϕ) = complex(Fa(qT, η, ϕ), 0.25 * Fa(qT, η, ϕ))
+complex_serial = ρ(complex_parent, 0.8, 0.2, 0.1)
+complex_threaded = ρ(complex_parent, 0.8, 0.2, 0.1; threaded = true)
+@assert complex_serial isa ComplexF64
+@assert complex_threaded isa ComplexF64
+@assert isapprox(complex_threaded, complex_serial; rtol = 1.0e-13)
 println("   PASS")
 
 # ---------------------------------------------------------------- test 3
@@ -294,7 +306,7 @@ println("   PASS")
 
 # ---------------------------------------------------------------- test 5
 println("== 5. LagrangeWeights: exactness, explicit vs generic, O(h^P) order ==")
-using .DecaySpectra.LagrangeWeights   # the copy embedded in DecaySpectra
+using FastReso2.DecaySpectra.LagrangeWeights
 linterp(x, F, x1, h, P) = begin
     j0, w = lagrangeweights(x, x1, h, length(F), P)
     sum(w[m] * F[j0 + m - 1] for m in eachindex(w))
@@ -419,8 +431,6 @@ println("   PASS")
 
 # ---------------------------------------------------------------- test 7
 println("== 7. CascadeTables: keys, cascade vs direct, round trip, updates ==")
-isdefined(Main, :CascadeTables) || include("CascadeTables.jl")
-using .CascadeTables
 include(joinpath(@__DIR__, "tools", "convert_decay_data.jl"))
 using .DecayDataConverter
 
@@ -428,6 +438,22 @@ using .DecayDataConverter
 @assert ChannelKey(1.0, 0.2, [0.5, 0.3]) == ChannelKey(1.0, 0.2, [0.3, 0.5])
 @assert ChannelKey(1.0, 0.2, [0.5]).md == 0.0
 @assert ChannelKey(1.0, 0.2, [0.5]) != ChannelKey(1.0, 0.5, [0.2])
+@assert (@inferred ChannelKey(2, 1.0f0, 0.2, 0, 0, 0.3f0, 0, 0)) isa ChannelKey
+@assert (@inferred ChannelKey(1.0f0, 0.2, Float32[0.5, 0.3])) isa ChannelKey
+for invalid_key in (
+        () -> ChannelKey(9, 1.0, 0.2, 0.0, 0.0, 0.3, 0.0, 0.0),
+        () -> ChannelKey(2, 1.0, 0.2, -0.1, 0.0, 0.3, 0.0, 0.0),
+        () -> ChannelKey(2, 1.0, 0.2, 0.0, 0.3, 0.3, 0.0, 0.0),
+        () -> ChannelKey(3, 1.0, 0.2, 0.1, 0.3, 0.5, 0.4, 0.0),
+    )
+    threw = false
+    try
+        invalid_key()
+    catch error
+        threw = error isa ArgumentError
+    end
+    @assert threw
+end
 
 # RowBandMatrix keeps one contiguous source-column range per output row.
 # Offsets delimit each row in the flat payload and make scalar access O(1).
@@ -939,6 +965,23 @@ let
         @assert threw
     end
 
+    # Network composition must not erase a malformed self row merely because
+    # another layer supplies a physical decaying block for the same parent.
+    malformed_terminal = DecayNetwork(Dict(
+        2 => [DecayChannel(2, 0.9, [2])],
+    ))
+    physical_decay = DecayNetwork(Dict(
+        2 => [DecayChannel(2, 1.0, [3, 3])],
+    ))
+    threw = false
+    try
+        merge(malformed_terminal, physical_decay)
+    catch error
+        threw = error isa ArgumentError &&
+            occursin("conflicting channel definitions", sprint(showerror, error))
+    end
+    @assert threw
+
     for unsupported_daughters in (
             Int[],
             [2, 3, 2, 3, 2],
@@ -1314,7 +1357,7 @@ for particle_id in dl7.stable_ids
         res7allparticles.Fprim[particle_id]
 end
 
-# direct reference with Main.DecaySpectra (independent module instance)
+# Direct reference through the same package-owned DecaySpectra module.
 gv = collect(g7)
 Fρ = prim7(parts7[1], 0, gv); Fω = prim7(parts7[3], 0, gv)
 for (m, n) in ((1, 0), (2, 2))
@@ -1496,6 +1539,36 @@ resall = runcascade(tab7, allpass; primary = prim7)
 # ≥ primary (feed-down is non-negative at mode 0, and 2-body ⊆ full)
 res2 = runcascade(tab7, filter(nbody(2), dl7); primary = prim7)
 @assert all(res2.F[2][1] .≤ res7.F[2][1]) && all(res2.F[2][1] .≥ prim7(parts7[2], 0, gv))
+
+# A species' spectral threshold belongs to the resolved model, not to the
+# selected topology. Otherwise filtering a broad parent can change ChannelKey
+# and make a filtered plan fail to reuse a full table.
+let
+    parts = Dict(
+        10 => ParticleInfo(10, "X", 1.842, 0.083, 1.0, 0, 0),
+        11 => ParticleInfo(11, "heavy", 1.680, 0.0, 1.0, 0, 0),
+        12 => ParticleInfo(12, "gamma", 0.0, 0.0, 2.0, 0, 0),
+        13 => ParticleInfo(13, "pi", 0.140, 0.0, 1.0, 0, 0),
+    )
+    channels = Dict(10 => [
+        DecayChannel(10, 0.2, [11, 12]),
+        DecayChannel(10, 0.8, [13, 13, 13, 13]),
+    ])
+    complete = DecayList(parts, channels, "threshold", "threshold")
+    two_body = filter(nbody(2), complete)
+    @assert complete.thresholds[10] == 4 * parts[13].mass
+    @assert two_body.thresholds == complete.thresholds
+    @assert merge(two_body).thresholds == complete.thresholds
+
+    small_orders = (nq = 8, nθ = 4, nµ = 4, nσ = 4, nma = 4)
+    full_table = CascadeTable(
+        complete;
+        grid = range(0.0, 2.0, length = 17),
+        orders = small_orders,
+        modes = [0],
+    )
+    @assert CascadePlan(full_table, two_body) isa CascadePlan
+end
 println("   PASS")
 
 # ---------------------------------------------------------------- test 7c
@@ -2448,6 +2521,14 @@ let
         102 => [DecayChannel(102, 0.3, [101, 103])],
     )
     decay_list = DecayList(parts, byparent, "cycle", "cycle")
+    rejected = false
+    try
+        feeddown_order(decay_list)
+    catch error
+        rejected = error isa ArgumentError &&
+            occursin("cyclic topology", sprint(showerror, error))
+    end
+    @assert rejected
     matrix_type = CascadeTables._tablematrixtype(length(grid))
     matrix_entry = 0.002f0
     matrices = Dict{ChannelKey, NTuple{1, matrix_type}}()
@@ -2535,6 +2616,12 @@ println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
     name -> name in names(CascadeTables),
     (:readparticles, :readdecays),
 )
+@assert FastReso2.ParticleInfo === CascadeTables.ParticleInfo
+@assert FastReso2.ParticleInfo === FastReso2.ParticleList.ParticleInfo
+@assert FastReso2.DecayList === CascadeTables.DecayList
+@assert FastReso2.DecayList === FastReso2.DecayModel.DecayList
+@assert FastReso2.MassDependentBW === CascadeTables.MassDependentBW
+@assert FastReso2.MassDependentBW === ThermalModel.MassDependentBW
 @assert all(
     name -> name ∉ names(CascadeTables),
     (
@@ -2545,7 +2632,7 @@ println("== 8. Public API contract: shapes, types, dispatch, invariants ==")
         :readtherminator,
     ),
 )
-@assert !isdefined(CascadeTables.ParticleList, :read_decaylist)
+@assert !isdefined(FastReso2.ParticleList, :read_decaylist)
 @assert !hasmethod(DecayList, Tuple{String})
 @assert !isdefined(CascadeTables, :ParticleSchema)
 @assert !isdefined(CascadeTables, :DecaySchema)
@@ -3057,10 +3144,7 @@ println("   PASS")
 
 # ---------------------------------------------------------------- test 10
 println("== 10. Thermal model: densities, statistics, widths, feed-down ==")
-isdefined(Main, :ThermalModel) || include(joinpath(@__DIR__, "ThermalModel.jl"))
 let
-    using .ThermalModel
-
     data_directory = joinpath(@__DIR__, "data")
     catalog = readparticles(joinpath(data_directory, "particles_light_pdg.dat"))
     pion = catalog.byid[211]
@@ -3130,14 +3214,14 @@ let
     # true by construction. What still needs checking is that the arguments are
     # wired into the right slots -- a swapped mass/threshold would construct a
     # perfectly valid, wrong shape. Compared against the independently loaded
-    # Main.DecaySpectra instance, pointwise and exact.
+    # package-owned DecaySpectra instance, pointwise and exact.
     for (mR, G, mth) in ((0.7752, 0.1491, two_pion), (0.475, 0.55, two_pion),
                          (1.232, 0.117, 1.0777))
         lower, upper = max(mR - 4G, mth), mR + 4G
         for (choice, reference) in (
-                (:massdep, Main.DecaySpectra.MassDependentBW(
+                (:massdep, DecaySpectra.MassDependentBW(
                     mR, G, mth; mmin = lower, mmax = upper)),
-                (:constant, Main.DecaySpectra.BreitWigner(
+                (:constant, DecaySpectra.BreitWigner(
                     mR, G; mmin = lower, mmax = upper)),
             )
             built = ThermalModel._spectralshape(choice, mR, G, mth, lower, upper)
@@ -3148,24 +3232,22 @@ let
     end
     # A pole at or below its own threshold has no q(mR): that species falls back
     # to the constant shape instead of throwing, matching decayfor. Checked by
-    # type *name* -- ThermalModel loads its own DecaySpectra instance, so its
-    # BreitWigner is nominally a different type from Main's even though the two
-    # agree value for value above.
-    @assert nameof(typeof(
-        ThermalModel._spectralshape(:massdep, 1.0, 0.2, 1.25, 1.25, 1.8),
-    )) === :BreitWigner
-    @assert nameof(typeof(
-        ThermalModel._spectralshape(:massdep, 1.0, 0.2, 0.5, 0.5, 1.8),
-    )) === :MassDependentBW
+    # exact shared type -- the package includes DecaySpectra only once.
+    @assert typeof(ThermalModel._spectralshape(
+        :massdep, 1.0, 0.2, 1.25, 1.25, 1.8,
+    )) === BreitWigner
+    @assert typeof(ThermalModel._spectralshape(
+        :massdep, 1.0, 0.2, 0.5, 0.5, 1.8,
+    )) === MassDependentBW
 
     # And the two quadratures built on that one shape must integrate it the
     # same way: DecaySpectra's psi-mapped parentmassnodes average of a smooth f
     # against ThermalPlan's Chebyshev rule.
     let mR = 0.475, G = 0.55, mth = two_pion, upper = mR + 4G
-        ds_shape = Main.DecaySpectra.MassDependentBW(
+        ds_shape = DecaySpectra.MassDependentBW(
             mR, G, mth; mmin = mth, mmax = upper)
-        masses, weights, normalization = Main.DecaySpectra.parentmassnodes(
-            ds_shape, Main.DecaySpectra.Rules(nma = 48).ma, mth)
+        masses, weights, normalization = DecaySpectra.parentmassnodes(
+            ds_shape, DecaySpectra.Rules(nma = 48).ma, mth)
         smooth(m) = m^2 * exp(-m / temperature)
         ds_average = sum(weights .* smooth.(masses)) / normalization
         spectral = ThermalModel._spectralshape(:massdep, mR, G, mth, mth, upper)
@@ -3174,6 +3256,38 @@ let
         @assert abs(tm_average - ds_average) / ds_average < 1.0e-5
         @printf("   one shape, two quadratures: averages agree to %.1e\n",
                 abs(tm_average - ds_average) / ds_average)
+    end
+
+    # A broad parent may reopen a channel to a daughter heavier than its pole.
+    # Feed-down order therefore follows graph dependencies, not pole mass.
+    let
+        uphill_particles = Dict(
+            1 => ParticleInfo(1, "A", 1.0, 0.5, 1.0, 0, 0),
+            2 => ParticleInfo(2, "B", 2.0, 0.0, 1.0, 0, 0),
+            3 => ParticleInfo(3, "C", 0.2, 0.0, 1.0, 0, 0),
+            4 => ParticleInfo(4, "D", 0.1, 0.0, 1.0, 0, 0),
+        )
+        uphill_channels = Dict(
+            1 => [DecayChannel(1, 1.0, [2, 4])],
+            2 => [DecayChannel(2, 1.0, [3, 3])],
+        )
+        uphill = DecayList(
+            uphill_particles, uphill_channels, "uphill", "uphill",
+        )
+        direct = thermalyields(
+            uphill, 0.155; V = 1.0, quantum = false,
+        )
+        compiled = thermalyields(
+            ThermalPlan(uphill), 0.155; V = 1.0, quantum = false,
+        )
+        expected_b = direct.primary[2] + direct.primary[1]
+        expected_c = direct.primary[3] + 2 * expected_b
+        compiled_expected_b = compiled.primary[2] + compiled.primary[1]
+        compiled_expected_c = compiled.primary[3] + 2 * compiled_expected_b
+        @assert isapprox(direct.total[2], expected_b; rtol = 1.0e-13)
+        @assert isapprox(direct.total[3], expected_c; rtol = 1.0e-13)
+        @assert isapprox(compiled.total[2], compiled_expected_b; rtol = 1.0e-13)
+        @assert isapprox(compiled.total[3], compiled_expected_c; rtol = 1.0e-13)
     end
 
     # (c) Conservation under feed-down. Strong and electromagnetic decays
@@ -3189,6 +3303,11 @@ let
         readdecays(joinpath(data_directory, "decays_light_pdg.dat")),
     )
     yields = thermalyields(decay_list, temperature; muB = 0.0, V = 5300.0)
+    two_body_decay_list = filter(nbody(2), decay_list)
+    two_body_yields = thermalyields(
+        two_body_decay_list, temperature; muB = 0.0, V = 5300.0,
+    )
+    @assert two_body_yields.primary == yields.primary
     records = decay_list.catalog.byid
     conserved(quantity, book) =
         sum(quantity(records[id]) * book[id] for id in keys(book))
@@ -3229,12 +3348,16 @@ let
     @printf("   charge drift removed by symmetrize_conjugation\n")
 
     # (e) A compiled plan reproduces the decay-list path, but not bit-for-bit.
-    # The plan averages each resonance on a fixed 24-node rule that carries its
+    # The plan averages each resonance on a fixed 32-node rule that carries its
     # spectral shape as the weight function; the direct path drives an adaptive
     # integral through the peak at the caller's 1e-6. The bound below is the
     # model's tolerance, not the quadrature's -- both shapes measure ~1e-7.
     plan = ThermalPlan(decay_list)
+    two_body_plan = ThermalPlan(two_body_decay_list)
     @assert plan.shape === :massdep
+    @assert two_body_plan.mass_range == plan.mass_range
+    @assert two_body_plan.mass_nodes == plan.mass_nodes
+    @assert two_body_plan.mass_weights == plan.mass_weights
     planned = thermalyields(plan, temperature; muB = 0.0, V = 5300.0)
     @assert Set(keys(planned.total)) == Set(keys(yields.total))
     for plan_shape in (:massdep, :constant)

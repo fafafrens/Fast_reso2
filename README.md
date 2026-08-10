@@ -1,4 +1,4 @@
-# Fast_reso2
+# FastReso2
 
 Resonance **feed-down** for particle spectra in heavy-ion collisions: given a
 thermal source of primary resonances, propagate every decay (2-, 3-, and
@@ -14,14 +14,40 @@ derived in [`matrix_notes.tex`](matrix_notes.tex).
 
 **Implemented:** 2-/3-/4-body decays, boost-invariant (η-independent) sources,
 Fourier modes `n = 0, 2`, the full feeder-before-fed cascade, channel
-filtering, and **finite parent widths** (broad resonances averaged over a
-Breit–Wigner spectral function, with channel reopening — applied automatically
-from each species' width in the decay list), plus a compiled, grouped
-`CascadePlan` used by every cascade entry point, with optional mode-level
-threading. Construct the plan explicitly when the same table and topology will
-be run more than once.
-**Documented but not yet coded:** rapidity-dependent (η-resolved) sources, and
-the cluster / observed-daughter width cases — see the note.
+filtering, finite parent widths with channel reopening, and reusable compiled
+`CascadePlan` and `ThermalPlan` execution. Broad parents use the
+threshold-vanishing `MassDependentBW` by default; the constant-width
+`BreitWigner` remains available for controlled comparisons. Canonical runtime
+inputs separate particle metadata from decay topology and retain source
+provenance.
+
+**Still open:** rapidity-dependent (η-resolved) sources, cluster or observed-
+daughter widths, broad-state tail control beyond `width_window`, and
+state-dependent angular-momentum barrier factors.
+
+## Status and next improvements
+
+**Phase 1 — complete.** The numerical core, canonical data conversion,
+thermal-yield path, spectral-shape interface, and FastReso cross-checks are
+implemented and covered by the Julia/Python suites. The former particle-
+catalog, isospin-fix, and spectral-function branches have been consolidated
+into `main`; the quickstart and thermal examples use `data/*_isofix.dat` as the
+corrected default. The unmodified AZYHYDRO conversion is retained for
+provenance, historical figures, benchmarks, and upstream comparisons, with
+each such script naming its input.
+
+**Phase 2 — foundation complete.** `src/FastReso2.jl` is the package entry
+point and loads each component once. `DecayModel.jl` owns the resolved model,
+filtering, validation, and graph-derived feeder-before-fed order; cascade and
+thermal execution now share one `ParticleInfo`, `DecayList`, and spectral-shape
+type world. Cycles are detected explicitly, and direct callable decay kernels
+are serial by default with `threaded = true` as an explicit opt-in.
+
+**Next:** split the legacy assertion suite into component `Test.@testset`s and
+fast/numerical/external tiers, then separate core, figure, and benchmark
+dependency environments. The remaining type candidates are recorded in
+[`type_simplification_plan.md`](type_simplification_plan.md); physics work then
+returns to spectral tails, angular-momentum data, and the rapidity extension.
 
 ## Requirements
 
@@ -32,7 +58,7 @@ Dependencies are declared in `Project.toml`; instantiate once, then run
 everything with `--project`:
 
 ```bash
-julia --project -e 'using Pkg; Pkg.instantiate()'
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
 The core needs `FastGaussQuadrature` and `QuadGK` plus the standard libraries
@@ -42,12 +68,14 @@ scripts add `Plots`.
 ## Quick start
 
 Checked in as `quickstart.jl` at the repository root; run it with
-`julia --project -t auto quickstart.jl`. It goes from a single decay to the
-full 18,746-key matrix cascade and takes about 25 s from a cold start.
+`julia --project=. -t auto quickstart.jl`. The checked-in script mirrors the
+artifact-free walkthrough shown below: one decay, one matrix build, and one
+full cascade using the corrected isospin table and the default `:massdep`
+shape. It prints diagnostics but does not write files.
 
 ```julia
 ## 1. One decay, on its own
-include("DecaySpectra.jl"); using .DecaySpectra
+using FastReso2
 using Printf
 
 ρ = TwoBodyDecay(0.7752, 0.1396, 0.1396)          # ρ → π + π  (parent, observed, partner)
@@ -59,11 +87,9 @@ W = decaymatrices(ρ, [0, 2], grid, grid)          # one matrix per Fourier mode
 @printf("W[n=0] is %s — daughter = W * parent\n", size(W[1]))
 
 ## 2. The whole cascade
-include("CascadeTables.jl"); using .CascadeTables
-
 dl = DecayList(
-    readparticles("data/particles_QM2016Plus.dat"),
-    readdecays("data/decays_QM2016Plus.dat"),
+    readparticles("data/particles_QM2016Plus_isofix.dat"),
+    readdecays("data/decays_QM2016Plus_isofix.dat"),
 )
 T  = 0.155
 primary(p, n, qs) =                               # thermal source, 4% v₂ on mode 2
@@ -71,7 +97,9 @@ primary(p, n, qs) =                               # thermal source, 4% v₂ on m
 
 qs    = range(0.0, 4.0, length = 61)
 # One shot: build/load a table, compile a plan, then execute that plan.
-res   = runcascade(dl; primary, grid = qs, parallel = :modes)
+res   = runcascade(
+    dl; primary, grid = qs, spectral = :massdep, parallel = :modes,
+)
 
 ## 3. Read it out
 π⁺ = 211
@@ -83,19 +111,9 @@ for i in (1, 16, 31)
 end
 ```
 
-```
-pion from ρ at pT = 0.5: 1.7614e-03
-W[n=0] is (134, 134) — daughter = W * parent
-
-  pT    primary       +feed-down   ratio     v₂
- 0.00  4.0526e-01   9.4037e-01    2.32   +0.017
- 1.00  1.4817e-03   3.0861e-03    2.08   +0.035
- 2.00  2.4126e-06   4.7619e-06    1.97   +0.038
-```
-
-Roughly two of every three final pions come from a decay, and the 4% v₂ put
-into the source is diluted to 1.7% at pT = 0 — soft feed-down pions are
-emitted off-axis — recovering to 3.8% by 2 GeV.
+The printed values are deliberately not duplicated here: they depend on the
+selected table and spectral-shape policy, and the script is the executable
+reference.
 
 `res.F[id]` is the spectrum per Fourier mode after feed-down and `res.Fprim[id]`
 the primary part alone, both on `qs`, keyed by PDG id. Results contain only
@@ -104,24 +122,26 @@ stable particles by default; `stableparticles(dl)` lists their
 defined species. Both accessors also accept a `CascadePlan`. Pass
 `output = :all` to `runcascade` only when intermediate-resonance spectra are
 needed for diagnostics. The `primary` callback is where the physics goes:
-return `zero(qs)` for a species to exclude it.
+return `zeros(length(qs))` for a species to exclude it.
 
 For production, pass `cache = "Wtables.jls"` so the packed matrices are built
-once and reloaded. At the default 134-point grid, dense `Float32` storage would
-occupy 2.4481 GiB; the production row-band census estimates 1.1012 GiB of
-packed matrix payload (44.98% of dense). The serialized file size and packed
-cache build/load timings depend on the system and should be measured there.
+once and reloaded. Serialized size and packed cache timings depend on the
+selected topology, spectral policy, grid, and machine; use
+`benchmarks/cascade_plan.jl` to measure the production configuration.
 
 ## Files
 
-Core modules and the test suite live at the root, canonical runtime data lives
-in `data/`, and everything that produces a figure (script **and** its output)
-lives in `figures/`.
+The package entry point lives in `src/`; implementation modules and the current
+numerical suite remain at the root. Canonical runtime data lives in `data/`,
+while figure scripts plus curated PNG outputs live in `figures/`. Benchmark
+notebooks keep transient outputs in ignored benchmark-local paths.
 
 | File | Role |
 |------|------|
+| `src/FastReso2.jl` | Package entry point; loads the component modules once and reexports the public API |
+| `DecayModel.jl` | Shared resolved `DecayList`, filtering, validation, thresholds, and graph feed-down order |
 | `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
-| `CascadeTables.jl`  | Persistent per-channel packed matrices, filtering, feeder-first cascade, compiled flat plans |
+| `CascadeTables.jl`  | Persistent per-channel packed matrices, feeder-first cascade, and compiled flat plans |
 | `RowBandMatrix.jl`  | Read-only, offset-backed row-band `AbstractMatrix` storage |
 | `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
@@ -131,14 +151,15 @@ lives in `figures/`.
 | `readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
 | `ThermalModel.jl`   | Statistical hadronization: freeze-out number densities, feed-down yields, and `ThermalPlan` for repeated evaluation |
 | `quickstart.jl`     | The Quick start walkthrough above, as a runnable script |
-| `runtests.jl`       | Test suite (see below) |
+| `test/runtests.jl`  | Standard `Pkg.test()` entry point; currently delegates to the root numerical suite |
+| `runtests.jl`       | Legacy assertion-based numerical suite pending component `Test.@testset` migration |
 | `cascade_plan.md`   | Design, implementation, and validation of compiled flat cascade execution |
 | `spectral_function_plan.md` | The `SpectralShape` interface and mass-dependent widths — steps 2–3 implemented |
 | `angular_momentum_plan.md` | Barrier factors and per-state ℓ: measurements, the parity data gap, and one open decision |
 | `type_simplification_plan.md` | Where introducing a type would remove work, and where it would only move it |
 | `model_labels_plan.md` | The common cause behind the parity, ℓ and quark-content gaps: labels the source model had and the schema dropped |
 | `matrix_notes.tex`  | Method notes (compiled: `matrix_notes.pdf`) |
-| `data/particles_QM2016Plus.dat` / `data/decays_QM2016Plus.dat` | Canonical mass-ordered particle catalog and decay network |
+| `data/particles_QM2016Plus_isofix.dat` / `data/decays_QM2016Plus_isofix.dat` | Corrected canonical particle catalog and decay network used by the quickstart |
 | `data/particles_charm_bottom.dat` / `data/decays_charm_bottom.dat` | Canonical charm+bottom supplement (150 states) |
 | `tools/convert_decay_data.jl` | Converts AZYHYDRO or THERMINATOR input into the canonical split format |
 | `tools/gen_heavy_flavour.py` | Regenerates and validates the charm+bottom list from the pinned PDG database |
@@ -149,25 +170,27 @@ lives in `figures/`.
 | `figures/demo.jl`   | Worked example: pion feed-down from ρ→ππ and ω→πππ → `demo_feeddown.png` |
 | `figures/demo_filter.jl` | Feed-down by decay topology (2 / 2+3 / 2+3+4-body) via filtering → `feeddown_topology.png`, `feeddown_spectra.png` |
 
-The figure scripts resolve paths from their own location (`@__DIR__`), so they
-run from anywhere; data is read from `data/` and figures are written next to
-the script that makes them.
+With the project active, figure scripts resolve paths from their own location
+(`@__DIR__`), so their data and output paths do not depend on the working
+directory. Figures are written next to the script that makes them. Authored
+derivation PDFs remain tracked at the root; disposable notebook plots, caches,
+and historical quick-start artifacts are ignored.
 
 ## Usage
 
 ```bash
-julia --project -t auto runtests.jl                  # validate everything
-julia --project -t auto figures/demo.jl              # minimal ρ→ππ / ω→πππ example + figure
-julia --project -t auto figures/demo_filter.jl       # feed-down by decay topology + figures
-julia --project -t auto figures/cascade.jl           # full cascade + figure
-julia --project -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
-julia --project -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
-julia --project -t auto figures/thermal_yields.jl    # thermal yields + feed-down, SHM style → thermal_yields.png
-julia --project -t auto figures/spectral_shape.jl    # Γ(m) vs constant Γ in pT spectra → spectral_shape.png
+julia --project=. -e 'using Pkg; Pkg.test()'         # validate everything
+julia --project=. -t auto figures/demo.jl              # minimal ρ→ππ / ω→πππ example + figure
+julia --project=. -t auto figures/demo_filter.jl       # feed-down by decay topology + figures
+julia --project=. -t auto figures/cascade.jl           # full cascade + figure
+julia --project=. -t auto figures/physics_feeddown.jl  # spectra + v₂(pT) feed-down, π/K/p/Λ
+julia --project=. -t auto figures/physics_charm.jl     # charm feed-down (needs the charm supplement)
+julia --project=. -t auto figures/thermal_yields.jl    # thermal yields + feed-down, SHM style → thermal_yields.png
+julia --project=. -t auto figures/spectral_shape.jl    # Γ(m) vs constant Γ in pT spectra → spectral_shape.png
 CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
-  julia --project -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
+  julia --project=. -t 2 benchmarks/cascade_plan.jl   # reproduce the published plan benchmark
 benchmarks/fastreso_crosscheck/run_small.sh        # cross-check against upstream FastReso
-python -m unittest discover -s tests -p 'test_*.py' # offline generator/data invariants
+python3 -m unittest discover -s tests -p 'test_*.py' # offline generator/data invariants
 ```
 
 The FastReso cross-check needs upstream built first, and adds two Julia
@@ -179,14 +202,15 @@ C++ in the path — one on the small fixtures, one on a trimmed
 `-t auto` (threads) matters for the table build, which parallelizes over
 channels and fuses all Fourier modes into a single quadrature sweep. It is
 also required for `runcascade(plan; parallel = :modes)` to execute modes
-concurrently.
+concurrently. Direct calls to a decay kernel are serial by default; pass
+`threaded = true` only when qT-node parallelism is worthwhile.
 
 The `Wtables.jls` cache is regenerable and git-ignored. It serializes packed
-`Float32` row bands in fixed tuples aligned with `table.modes`; at the default
-grid their estimated matrix payload is 1.1012 GiB, versus 2.4481 GiB for dense
-storage. The previous ~7 s load and ~2 s sweep measurements describe the
-superseded dense cache. Fixed mode tuples and concrete width-setting fields use
-cache format 10; older caches are ignored and rebuilt automatically.
+`Float32` row bands in fixed tuples aligned with `table.modes`. Fixed mode
+tuples, concrete width settings, and the spectral-shape setting use cache
+format 12. The package-wide shared type identity and validated `ChannelKey`
+layout make older serialized caches incompatible, so they are ignored and
+rebuilt automatically.
 
 Particle metadata and decay topology are independent input layers:
 
@@ -196,6 +220,11 @@ Particle metadata and decay topology are independent input layers:
   a catalog loaded later.
 - `DecayList` resolves the two. It is the strict, runnable model accepted by
   filtering, tables, plans, validation, and cascade execution.
+- `DecayModel` owns that resolution plus topology filtering and deterministic
+  graph ordering, shared by both cascade and thermal consumers.
+
+See [`data/README.md`](data/README.md) for layer composition, provenance,
+legacy formats, charge-conjugation repair, and regeneration commands.
 
 The runtime accepts one canonical split format and does not guess the source
 convention:
@@ -218,16 +247,21 @@ network = readdecays("decays.dat")
 dl = DecayList(catalog, network)
 ```
 
+The former `DecayList(path)` / `read_decaylist(path)` combined-file API has
+been removed. Convert legacy inputs once, then use the explicit split readers
+above; this keeps format guessing and source-specific rules out of runtime
+code.
+
 Supplements remain independent until resolution. This lets a decay network
 refer to daughters supplied by another catalog:
 
 ```julia
 catalog = merge(
-    readparticles("data/particles_QM2016Plus.dat"),
+    readparticles("data/particles_QM2016Plus_isofix.dat"),
     readparticles("data/particles_charm_bottom.dat"),
 )
 network = merge(
-    readdecays("data/decays_QM2016Plus.dat"),
+    readdecays("data/decays_QM2016Plus_isofix.dat"),
     readdecays("data/decays_charm_bottom.dat"),
 )
 dl = DecayList(catalog, network)
@@ -282,10 +316,12 @@ that input. This keeps the grid compact and selects the uniform interpolation
 kernel without validation scans. Standalone `DecayMatrix` objects still accept
 non-uniform vectors.
 
-The test suite covers number conservation (2-/3-/4-body), Fourier-mode
+`Pkg.test()` enters through `test/runtests.jl`. The current suite covers number
+conservation (2-/3-/4-body), Fourier-mode
 reconstruction, quadrature and Lagrange-weight convergence (incl. 1st/2nd
 derivatives), matrix-vs-functor agreement, the cascade round-trip, and channel
-filtering.
+filtering. Splitting it into structured `Test.@testset`s and execution tiers is
+the next test-hygiene step.
 
 ## Channel filtering
 
@@ -308,7 +344,7 @@ t = CascadeTable(dl; cache = "Wtables.jls")              # full table, built onc
 
 two_body = filter(nbody(2), dl)
 hadronic = filter(nbody(2, 3) & !todaughter("Gamma"), dl)
-selected = filter(parentmass(0, 1) | fromparent("omega"), dl)
+selected = filter(parentmass(0, 0.7) | fromparent("omega(782)"), dl)
 
 two_body_plan = CascadePlan(t, two_body)                  # all plans reuse t
 hadronic_plan = CascadePlan(t, hadronic)
@@ -350,7 +386,7 @@ Two properties this design buys:
   you will use (give lean tables their own cache path, since a filtered list
   keeps the parent list's hash).
 
-Parents wider than `width_cut` (GeV) use Breit–Wigner averaging. Its default is
+Parents wider than `width_cut` (GeV) use spectral averaging. Its default is
 `1.0e-3`, `Inf` disables width averaging, and `0.0` uses every positive width.
 `width_window = 4.0` sets the finite integration range to at most
 `mass ± width_window * width` (the lower mass is floored at `0.05 GeV`).
@@ -358,6 +394,11 @@ Both are `Float64` table keywords, concrete fields available as
 `table.width_cut` and `table.width_window`, and cache settings. Their physical
 ranges are caller responsibility, and there are no module-level width
 constants.
+`spectral = :massdep` is the default and vanishes at the resolved species
+threshold; `spectral = :constant` selects the constant-width Breit–Wigner.
+Species thresholds are resolved before channel filtering, so changing topology
+does not change a primary thermal density or prevent a filtered plan from
+reusing a full table.
 Disabling four-body channels or widths does not renormalize the retained
 branching fractions.
 
@@ -366,11 +407,11 @@ branching fractions.
 Statistical hadronization in the Andronic–Stachel sense: number densities at
 chemical freeze-out, multiplied by a volume and fed down through the decay
 network. This path does not touch `CascadeTable` — no grid and no matrices,
-just one density integral per species and one mass-ordered pass over the
+just one density integral per species and one graph-ordered pass over the
 parents.
 
 ```julia
-using .ThermalModel
+using FastReso2
 
 dl = DecayList(readparticles("data/particles_QM2016Plus_isofix.dat"),
                readdecays("data/decays_QM2016Plus_isofix.dat"))
@@ -434,8 +475,8 @@ threshold sits inside the window. Density relative to the pole mass:
 The σ is where they part, and it is the state the threshold treatment exists
 for: a constant-width shape puts 2.56% of its weight below `2m_π`, which is
 mass the state cannot have. Both shapes are available in the cascade too, as
-the `spectral` table option — the two modules deliberately use the same
-formulas, and the suite asserts them equal pointwise.
+the `spectral` table option — both paths consume the same package-level
+spectral-shape types, and the suite asserts their behavior pointwise.
 
 `isofix` and the σ are the same kind of change from opposite directions. The
 three entries `isofix` patches (η, a₁(1260), K(1630)) feed pions and nothing
@@ -474,9 +515,9 @@ carry the same data provenance and licensing.
 The generator is pinned to the PDG edition used by the checked-in artifact:
 
 ```bash
-python -m pip install -r tools/requirements-heavy-flavour.txt
-python tools/gen_heavy_flavour.py --check
-python tools/gen_heavy_flavour.py --force  # regenerate after reviewing drift
+python3 -m pip install -r tools/requirements-heavy-flavour.txt
+python3 tools/gen_heavy_flavour.py --check
+python3 tools/gen_heavy_flavour.py --force  # regenerate after reviewing drift
 julia --project=. tools/convert_decay_data.jl azyhydro \
   data/azyhydro/decays_charm_bottom.dat \
   --particles-out data/particles_charm_bottom.dat \

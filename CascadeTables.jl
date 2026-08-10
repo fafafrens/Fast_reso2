@@ -24,13 +24,12 @@ Design (see matrix_notes.pdf for details):
 """
 module CascadeTables
 
-include("DecaySpectra.jl")
-include("ParticleList.jl")
 include("RowBandMatrix.jl")
-using .DecaySpectra
-using .ParticleList
-import .ParticleList: particle, particleids
-using Serialization, Dates, Printf
+using ..DecaySpectra
+using ..ParticleList
+using ..DecayModel
+import ..DecayModel: allparticles, stableparticles
+using Serialization, Dates
 using LinearAlgebra: axpy!
 import LinearAlgebra: mul!
 include("CascadeLinearAlgebra.jl")
@@ -43,449 +42,29 @@ export ParticleCatalog, DecayNetwork, DecayList,
     savetables, loadtables, ParticleInfo, DecayChannel,
     allparticles, stableparticles,
     isospin, spin, isbaryon, ismeson, isantiparticle, isstrange, ischarm,
-    isbottom, quarkdigits, hasflavour,
+    isbottom,
     ChannelFilter, channelfilter, nbody, parentmass, daughtermass, brabove,
     fromparent, todaughter, fromid, toid, baryonicparent, mesonicparent,
-    parentstrangeness, strangeparent, charmparent, parentisospin
+    parentstrangeness, strangeparent, charmparent, parentisospin,
+    feeddown_order
 
 # Increment when the serialized layout or generated matrix values change.
-const FORMAT = 11
+const FORMAT = 12
 const CACHE_MAGIC = "FastReso.CascadeTables\n"
-
-# ---------------------------------------------------------------------------
-# Resolved model: a particle catalog plus an independently parsed decay network
-# ---------------------------------------------------------------------------
-
-struct _ResolvedModelToken end
-const _RESOLVED_MODEL = _ResolvedModelToken()
-
-struct DecayList
-    catalog::ParticleCatalog
-    network::DecayNetwork
-    stable_ids::Vector{Int}
-    path::String
-    sha::String
-
-    function DecayList(
-            catalog::ParticleCatalog,
-            network::DecayNetwork,
-            stable_ids::Vector{Int},
-            path::String,
-            sha::String,
-            ::_ResolvedModelToken,
-        )
-        return new(catalog, network, stable_ids, path, sha)
-    end
-end
-
-_resolvedmodel(catalog, network, stable_ids, path, sha) = DecayList(
-    catalog,
-    network,
-    stable_ids,
-    String(path),
-    String(sha),
-    _RESOLVED_MODEL,
-)
-
-# Compatibility projections for the original public fields. Literal
-# `decay_list.parts` and `.byparent` remain inferred and allocation-free.
-function Base.getproperty(decay_list::DecayList, name::Symbol)
-    name === :parts && return getfield(getfield(decay_list, :catalog), :byid)
-    name === :byparent &&
-        return getfield(getfield(decay_list, :network), :byparent)
-    return getfield(decay_list, name)
-end
-
-Base.propertynames(::DecayList, ::Bool = false) =
-    (:catalog, :network, :stable_ids, :path, :sha, :parts, :byparent)
-
-particle(decay_list::DecayList, id_or_name) =
-    particle(decay_list.catalog, id_or_name)
-particleids(decay_list::DecayList, label::AbstractString) =
-    particleids(decay_list.catalog, label)
-
-function _resolvedstableids(
-        catalog::ParticleCatalog,
-        network::DecayNetwork,
-    )
-    particles = catalog.byid
-    unresolved = Tuple{Int, Int}[]
-
-    for parent_id in network.decaying_ids
-        haskey(particles, parent_id) || push!(unresolved, (parent_id, parent_id))
-    end
-    for parent_id in network.terminal_ids
-        haskey(particles, parent_id) || push!(unresolved, (parent_id, parent_id))
-    end
-
-    for (parent_id, channels) in network.byparent
-        haskey(particles, parent_id) || begin
-            push!(unresolved, (parent_id, parent_id))
-            continue
-        end
-
-        for channel in channels
-            channel.parent == parent_id || throw(ArgumentError(
-                "channel parent $(channel.parent) disagrees with network " *
-                    "parent $parent_id",
-            ))
-            isfinite(channel.br) || throw(ArgumentError(
-                "channel for parent $parent_id has nonfinite branching ratio " *
-                    "$(channel.br)",
-            ))
-            multiplicity = length(channel.daughters)
-            if multiplicity == 1
-                only(channel.daughters) == parent_id || throw(ArgumentError(
-                    "one-body channel $parent_id -> " *
-                        "$(only(channel.daughters)) is not a terminal self-channel",
-                ))
-                length(channels) == 1 || throw(ArgumentError(
-                    "terminal self-channel for particle $parent_id must be " *
-                        "the only row in its parent block",
-                ))
-                channel.br == 1.0 || throw(ArgumentError(
-                    "terminal self-channel for particle $parent_id must have BR 1",
-                ))
-            elseif !(2 ≤ multiplicity ≤ 4)
-                throw(ArgumentError(
-                    "channel for parent $parent_id has unsupported " *
-                        "multiplicity $multiplicity; runnable decay lists " *
-                        "support 2-, 3-, and 4-body channels",
-                ))
-            end
-            for daughter_id in channel.daughters
-                haskey(particles, daughter_id) ||
-                    push!(unresolved, (parent_id, daughter_id))
-            end
-        end
-    end
-
-    if !isempty(unresolved)
-        sort!(unique!(unresolved))
-        preview = join(
-            ("$parent_id -> $daughter_id" for
-                (parent_id, daughter_id) in first(unresolved, 8)),
-            ", ",
-        )
-        suffix = length(unresolved) > 8 ?
-            " (and $(length(unresolved) - 8) more)" : ""
-        throw(ArgumentError(
-            "decay network has unresolved particle references: " * preview * suffix,
-        ))
-    end
-
-    decaying = Set(network.decaying_ids)
-    return sort!([
-        particle_id for particle_id in keys(particles)
-            if particle_id ∉ decaying
-    ])
-end
-
-function _modelprovenance(catalog::ParticleCatalog, network::DecayNetwork)
-    same_source =
-        catalog.path == network.path && catalog.sha == network.sha
-    path = same_source ? catalog.path : join(
-        filter(value -> !isempty(value), (catalog.path, network.path)),
-        " + ",
-    )
-    sha = same_source ? catalog.sha : join(
-        filter(value -> !isempty(value), (catalog.sha, network.sha)),
-        "+",
-    )
-    return path, sha
-end
-
-"""
-    DecayList(catalog::ParticleCatalog, network::DecayNetwork)
-
-Resolve a catalog and network into the strict model accepted by table, plan,
-filtering, validation, and cascade APIs. Every parent and daughter ID must be
-present in `catalog`. Merge all cross-referencing catalogs and networks before
-calling this constructor.
-"""
-function DecayList(catalog::ParticleCatalog, network::DecayNetwork)
-    stable_ids = _resolvedstableids(catalog, network)
-    path, sha = _modelprovenance(catalog, network)
-    return _resolvedmodel(catalog, network, stable_ids, path, sha)
-end
-
-function DecayList(
-        particles::Dict{Int, ParticleInfo},
-        channels_by_parent::Dict{Int, Vector{DecayChannel}},
-        path::AbstractString,
-        sha::AbstractString,
-    )
-    catalog = ParticleCatalog(
-        particles;
-        path = String(path),
-        sha = String(sha),
-    )
-    network = DecayNetwork(
-        channels_by_parent;
-        path = String(path),
-        sha = String(sha),
-    )
-    return DecayList(catalog, network)
-end
-
-function DecayList(
-        particles::Dict{Int, ParticleInfo},
-        channels_by_parent::Dict{Int, Vector{DecayChannel}},
-        stable_ids,
-        path::AbstractString,
-        sha::AbstractString,
-    )
-    catalog = ParticleCatalog(
-        particles;
-        path = String(path),
-        sha = String(sha),
-    )
-    network = DecayNetwork(
-        channels_by_parent;
-        decaying_ids = setdiff(keys(particles), stable_ids),
-        terminal_ids = stable_ids,
-        path = String(path),
-        sha = String(sha),
-    )
-    return DecayList(catalog, network)
-end
-
-"""
-    merge(first::DecayList, remaining::DecayList...) -> DecayList
-
-Copy or combine resolved decay lists. A particle may occur in several inputs
-when its physical fields agree; alternate names become catalog aliases. A
-parent channel block may also repeat when
-it contains the same multiset of channels; channel-row and daughter ordering
-do not matter, but branching ratios must agree exactly. Conflicting particle
-or channel definitions are rejected instead of overwritten or concatenated.
-For cross-list daughters, merge all catalogs and networks before constructing
-the resolved `DecayList` so every source is present at the resolution boundary.
-
-The result owns new outer dictionaries and a new terminal-ID vector, preserves
-the terminal-particle classification of every input, and records source paths
-and hashes in input order. A repeated particle is terminal only when every
-input containing it marks it terminal. Particle records and channel vectors
-are shared with the first defining input and treated as read-only.
-"""
-function Base.merge(
-        first::DecayList,
-        remaining::DecayList...,
-    )
-    decay_lists = (first, remaining...)
-    catalog = merge((decay_list.catalog for decay_list in decay_lists)...)
-    network = merge((decay_list.network for decay_list in decay_lists)...)
-    resolved = DecayList(catalog, network)
-    source_paths = [
-        decay_list.path for decay_list in decay_lists
-            if !isempty(decay_list.path)
-    ]
-    source_hashes = [
-        decay_list.sha for decay_list in decay_lists
-            if !isempty(decay_list.sha)
-    ]
-    return _resolvedmodel(
-        catalog,
-        network,
-        resolved.stable_ids,
-        join(source_paths, " + "),
-        join(source_hashes, "+"),
-    )
-end
-
-"""
-    allparticles(decay_list::DecayList) -> Vector{ParticleInfo}
-
-Return every particle defined by the decay list in ascending particle-ID order.
-"""
-allparticles(catalog::ParticleCatalog) = [
-    catalog.byid[particle_id]
-        for particle_id in sort!(collect(keys(catalog.byid)))
-]
-allparticles(decay_list::DecayList) = allparticles(decay_list.catalog)
-
-"""
-    stableparticles(decay_list::DecayList) -> Vector{ParticleInfo}
-
-Return particles marked terminal by the decay list in ascending particle-ID
-order. A sole one-body self-channel marks an explicit terminal; particles not
-marked decaying are also terminal, including particles without a channel block.
-"""
-stableparticles(decay_list::DecayList) =
-    [decay_list.catalog.byid[particle_id] for particle_id in decay_list.stable_ids]
-
-# ---------------------------------------------------------------------------
-# Channel filtering
-# ---------------------------------------------------------------------------
-# Filters operate on `(parent, channel, daughters)` and combine with `&`, `|`, `!`.
-
-struct ChannelFilter{Fun}
-    keep::Fun
-end
-
-(selection::ChannelFilter)(parent, channel, daughters) =
-    selection.keep(parent, channel, daughters)::Bool
-
-function Base.:&(left::ChannelFilter, right::ChannelFilter)
-    keep(parent, channel, daughters) =
-        left(parent, channel, daughters) &&
-        right(parent, channel, daughters)
-    return ChannelFilter(keep)
-end
-
-function Base.:|(left::ChannelFilter, right::ChannelFilter)
-    keep(parent, channel, daughters) =
-        left(parent, channel, daughters) ||
-        right(parent, channel, daughters)
-    return ChannelFilter(keep)
-end
-
-function Base.:!(selection::ChannelFilter)
-    keep(parent, channel, daughters) =
-        !selection(parent, channel, daughters)
-    return ChannelFilter(keep)
-end
-
-"""
-    filter(f::ChannelFilter, dl::DecayList) -> DecayList
-
-Restrict `dl` to the channels satisfying `f`, keeping every species so all
-daughters still resolve but pruning `byparent`. The original terminal-particle
-set is preserved. The result flows unchanged through `CascadeTable` and
-`runcascade`; since the masses are unchanged, its decay-matrix keys are a
-subset of the full list's, so filtering an *apply* reuses a full cached table
-with no rebuild.
-"""
-function Base.filter(selection::ChannelFilter, dl::DecayList)
-    channels_by_parent = Dict{Int, Vector{DecayChannel}}()
-
-    for (parent_id, channels) in dl.network.byparent
-        parent = dl.catalog.byid[parent_id]
-        selected = DecayChannel[]
-
-        for channel in channels
-            daughter_ids = channel.daughters
-            daughters = ParticleInfo[
-                dl.catalog.byid[daughter_id] for daughter_id in daughter_ids
-            ]
-            if selection(parent, channel, daughters)
-                push!(selected, channel)
-            end
-        end
-
-        if !isempty(selected)
-            channels_by_parent[parent_id] = selected
-        end
-    end
-
-    network = DecayNetwork(
-        channels_by_parent;
-        decaying_ids = dl.network.decaying_ids,
-        terminal_ids = dl.network.terminal_ids,
-        path = dl.network.path,
-        sha = dl.network.sha,
-    )
-    resolved = DecayList(dl.catalog, network)
-    return _resolvedmodel(
-        dl.catalog,
-        network,
-        resolved.stable_ids,
-        dl.path,
-        dl.sha,
-    )
-end
-
-function Base.filter(::ChannelFilter, ::DecayNetwork)
-    throw(ArgumentError(
-        "a DecayNetwork has unresolved particle IDs; construct a DecayList " *
-            "with its ParticleCatalog before filtering",
-    ))
-end
-
-# --- channel properties ----------------------------------------------------
-"Keep channels whose daughter count is one of `multiplicities`."
-nbody(multiplicities::Integer...) =
-    ChannelFilter(
-    (_parent, channel, _daughters) ->
-    length(channel.daughters) in multiplicities
-)
-"Keep channels with branching ratio ≥ `minimum_branching_ratio`."
-brabove(minimum_branching_ratio) =
-    ChannelFilter(
-    (_parent, channel, _daughters) ->
-    channel.br ≥ minimum_branching_ratio
-)
-
-# --- parent properties -----------------------------------------------------
-"Keep channels whose parent mass lies in `[minimum_mass, maximum_mass]`."
-parentmass(minimum_mass, maximum_mass) =
-    ChannelFilter(
-    (parent, _channel, _daughters) ->
-    minimum_mass ≤ parent.mass ≤ maximum_mass
-)
-"Keep channels whose parent name is one of `names`."
-fromparent(names::AbstractString...) =
-    ChannelFilter((parent, _channel, _daughters) -> parent.name in names)
-"Keep channels whose parent id is one of `ids`."
-fromid(ids::Integer...) =
-    ChannelFilter((parent, _channel, _daughters) -> parent.id in ids)
-"Keep channels whose parent is a baryon (nonzero baryon number)."
-baryonicparent() =
-    ChannelFilter((parent, _channel, _daughters) -> isbaryon(parent))
-"Keep channels whose parent is a meson (zero baryon number)."
-mesonicparent() =
-    ChannelFilter((parent, _channel, _daughters) -> ismeson(parent))
-"Keep channels whose parent strangeness is one of `strangenesses`."
-parentstrangeness(strangenesses::Integer...) =
-    ChannelFilter(
-    (parent, _channel, _daughters) ->
-    parent.strangeness in strangenesses
-)
-"Keep channels whose parent carries nonzero strangeness."
-strangeparent() =
-    ChannelFilter((parent, _channel, _daughters) -> isstrange(parent))
-"Keep channels whose parent carries nonzero charm."
-charmparent() =
-    ChannelFilter((parent, _channel, _daughters) -> parent.charm != 0)
-"Keep channels whose parent isospin is one of `isospins` (physical values)."
-function parentisospin(isospins::Real...)
-    twice_isospins = map(isospin -> round(Int, 2 * isospin), isospins)
-    return ChannelFilter(
-        (parent, _channel, _daughters) ->
-        parent.twiceisospin in twice_isospins
-    )
-end
-
-# --- daughter properties ---------------------------------------------------
-"Keep channels whose daughter masses all lie in `[minimum_mass, maximum_mass]`."
-daughtermass(minimum_mass, maximum_mass) =
-    ChannelFilter(
-    (_parent, _channel, daughters) ->
-    all(daughter -> minimum_mass ≤ daughter.mass ≤ maximum_mass, daughters)
-)
-"Keep channels with at least one daughter named in `names`."
-todaughter(names::AbstractString...) =
-    ChannelFilter(
-    (_parent, _channel, daughters) ->
-    any(daughter -> daughter.name in names, daughters)
-)
-"Keep channels with at least one daughter id in `ids`."
-toid(ids::Integer...) =
-    ChannelFilter(
-    (_parent, _channel, daughters) ->
-    any(daughter -> daughter.id in ids, daughters)
-)
-
-"Wrap a raw predicate `(parent, channel, daughters) -> Bool` as a `ChannelFilter`."
-channelfilter(predicate) = ChannelFilter(predicate)
 
 # ---------------------------------------------------------------------------
 # Channel key: the masses and parent width that determine a decay matrix,
 # with the canonicalizing invariants enforced by the constructor
 # ---------------------------------------------------------------------------
 
+struct _ValidatedChannelKeyToken end
+const _VALIDATED_CHANNEL_KEY = _ValidatedChannelKeyToken()
+
 struct ChannelKey
     # Field order is serialized; changing it requires a FORMAT bump.
+    # Scalars are deliberately canonical Float64 cache metadata. A generic
+    # precision policy would need to parameterize the full particle/table
+    # pipeline, not only its dictionary key.
     nbody::Int8
     ma::Float64          # parent mass
     mb::Float64          # observed daughter; never sorted with partners
@@ -495,6 +74,84 @@ struct ChannelKey
     mc::Float64          # partner masses, sorted and zero-padded
     md::Float64
     me::Float64
+
+    function ChannelKey(
+            nbody::Int8,
+            ma::Float64,
+            mb::Float64,
+            Γ::Float64,
+            mth::Float64,
+            mc::Float64,
+            md::Float64,
+            me::Float64,
+            ::_ValidatedChannelKeyToken,
+        )
+        return new(nbody, ma, mb, Γ, mth, mc, md, me)
+    end
+end
+
+function ChannelKey(
+        nbody::Integer,
+        parent_mass::Real,
+        observed_mass::Real,
+        parent_width::Real,
+        species_threshold::Real,
+        mc::Real,
+        md::Real,
+        me::Real,
+    )
+    nbody in 2:4 || throw(ArgumentError(
+        "ChannelKey supports 2-, 3-, and 4-body only",
+    ))
+    values = map(
+        Float64,
+        (
+            parent_mass,
+            observed_mass,
+            parent_width,
+            species_threshold,
+            mc,
+            md,
+            me,
+        ),
+    )
+    all(isfinite, values) || throw(ArgumentError(
+        "ChannelKey masses, width, and threshold must be finite",
+    ))
+    all(>=(0.0), values) || throw(ArgumentError(
+        "ChannelKey masses, width, and threshold must be nonnegative",
+    ))
+
+    ma, mb, Γ, mth, canonical_mc, canonical_md, canonical_me = values
+    Γ == 0.0 && mth != 0.0 && throw(ArgumentError(
+        "a zero-width ChannelKey must have a zero threshold",
+    ))
+    # Keep validation on the fixed fields. Slicing the tuple with the runtime
+    # `nbody` produces `Tuple{Vararg{Float64}}` in typed IR, even though this
+    # constructor's final return type remains `ChannelKey`.
+    if nbody == 2
+        iszero(canonical_md) && iszero(canonical_me) || throw(ArgumentError(
+            "ChannelKey unused partner slots must be zero-padded",
+        ))
+    elseif nbody == 3
+        !isless(canonical_md, canonical_mc) || throw(ArgumentError(
+            "ChannelKey partner masses must be sorted",
+        ))
+        iszero(canonical_me) || throw(ArgumentError(
+            "ChannelKey unused partner slots must be zero-padded",
+        ))
+    else
+        !isless(canonical_md, canonical_mc) &&
+            !isless(canonical_me, canonical_md) || throw(ArgumentError(
+            "ChannelKey partner masses must be sorted",
+        ))
+    end
+
+    return ChannelKey(
+        Int8(nbody), ma, mb, Γ, mth,
+        canonical_mc, canonical_md, canonical_me,
+        _VALIDATED_CHANNEL_KEY,
+    )
 end
 
 function ChannelKey(
@@ -507,12 +164,34 @@ function ChannelKey(
     1 ≤ partner_count ≤ 3 ||
         throw(ArgumentError("ChannelKey supports 2-, 3-, and 4-body only"))
 
-    sorted_partners = sort!(collect(Float64, partner_masses))
-    padded_partners =
-        ntuple(index -> index ≤ partner_count ? sorted_partners[index] : 0.0, 3)
+    first_index = firstindex(partner_masses)
+    first_mass = Float64(partner_masses[first_index])
+    if partner_count == 1
+        return ChannelKey(
+            2, parent_mass, observed_mass, parent_width, species_threshold,
+            first_mass, 0.0, 0.0,
+        )
+    end
+
+    second_index = nextind(partner_masses, first_index)
+    second_mass = Float64(partner_masses[second_index])
+    if partner_count == 2
+        mc, md = sort((
+            first_mass,
+            second_mass,
+        ))
+        return ChannelKey(
+            3, parent_mass, observed_mass, parent_width, species_threshold,
+            mc, md, 0.0,
+        )
+    end
+
+    third_index = nextind(partner_masses, second_index)
+    third_mass = Float64(partner_masses[third_index])
+    mc, md, me = sort((first_mass, second_mass, third_mass))
     return ChannelKey(
-        Int8(partner_count + 1), parent_mass, observed_mass,
-        parent_width, species_threshold, padded_partners...
+        4, parent_mass, observed_mass, parent_width, species_threshold,
+        mc, md, me,
     )
 end
 
@@ -639,26 +318,10 @@ function eachchannelkey(
         parent_width = parent.width
         broad_parent = parent_width > width_cut
 
-        # The species decay threshold: the lightest channel's summed daughter
-        # masses (zero-branching rows are ignored here exactly as below). It
-        # rides in broad keys so `decayfor` can build a threshold-vanishing
-        # shape -- the shape belongs to the species, while each channel's own
-        # closure keeps being handled by node dropping. Sharp keys carry 0.
-        species_threshold = 0.0
-        if broad_parent
-            species_threshold = Inf
-            for channel in dl.network.byparent[parent_id]
-                iszero(channel.br) && continue
-                channel_daughters = channel.daughters
-                length(channel_daughters) == 1 &&
-                    only(channel_daughters) == parent_id && continue
-                species_threshold = min(species_threshold, sum(
-                    dl.catalog.byid[daughter_id].mass
-                        for daughter_id in channel_daughters
-                ))
-            end
-            isfinite(species_threshold) || (species_threshold = 0.0)
-        end
+        # The species threshold is resolved before topology filtering, so a
+        # filtered plan remains a key-subset of a table built from the full
+        # model. Each channel's own closure is still handled below.
+        species_threshold = broad_parent ? get(dl.thresholds, parent_id, 0.0) : 0.0
 
         for channel in dl.network.byparent[parent_id]
             iszero(channel.br) && continue
@@ -733,132 +396,8 @@ function neededkeys(
     return required_keys, enrollment_stats
 end
 
-function _cascadeorder(dl::DecayList, dependencies)
-    decaying_parents = sort!(collect(keys(dl.network.byparent)))
-    downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
-
-    for (parent_id, daughter_id) in dependencies
-        push!(downstream[parent_id], daughter_id)
-    end
-    foreach(daughters -> sort!(unique!(daughters)), values(downstream))
-
-    # Collapse every mutually dependent set before sorting. The resulting
-    # component graph is acyclic, so only edges inside a component need an
-    # approximate order.
-    next_index = 0
-    indices = Dict{Int, Int}()
-    lowlinks = Dict{Int, Int}()
-    stack = Int[]
-    on_stack = Set{Int}()
-    components = Vector{Vector{Int}}()
-
-    function visit!(parent_id)
-        next_index += 1
-        indices[parent_id] = next_index
-        lowlinks[parent_id] = next_index
-        push!(stack, parent_id)
-        push!(on_stack, parent_id)
-
-        for daughter_id in downstream[parent_id]
-            if !haskey(indices, daughter_id)
-                visit!(daughter_id)
-                lowlinks[parent_id] = min(
-                    lowlinks[parent_id], lowlinks[daughter_id],
-                )
-            elseif daughter_id in on_stack
-                lowlinks[parent_id] = min(
-                    lowlinks[parent_id], indices[daughter_id],
-                )
-            end
-        end
-
-        if lowlinks[parent_id] == indices[parent_id]
-            component = Int[]
-            while true
-                member = pop!(stack)
-                delete!(on_stack, member)
-                push!(component, member)
-                member == parent_id && break
-            end
-            sort!(
-                component;
-                by = member -> (-dl.catalog.byid[member].mass, member),
-            )
-            push!(components, component)
-        end
-        return nothing
-    end
-
-    for parent_id in decaying_parents
-        haskey(indices, parent_id) || visit!(parent_id)
-    end
-
-    component_of = Dict{Int, Int}()
-    for (component_id, component) in pairs(components)
-        for parent_id in component
-            component_of[parent_id] = component_id
-        end
-    end
-
-    component_downstream = [Int[] for _ in components]
-    for (parent_id, daughter_ids) in downstream
-        parent_component = component_of[parent_id]
-        for daughter_id in daughter_ids
-            daughter_component = component_of[daughter_id]
-            parent_component == daughter_component ||
-                push!(component_downstream[parent_component], daughter_component)
-        end
-    end
-
-    incoming_count = zeros(Int, length(components))
-    for daughter_components in component_downstream
-        sort!(unique!(daughter_components))
-        for daughter_component in daughter_components
-            incoming_count[daughter_component] += 1
-        end
-    end
-
-    cycle_count = 0
-    cycle_species = 0
-    for component in components
-        cyclic = length(component) > 1 ||
-            first(component) in downstream[first(component)]
-        if cyclic
-            cycle_count += 1
-            cycle_species += length(component)
-        end
-    end
-    if cycle_count > 0
-        @warn "cascade feed-down graph has $cycle_count cycle components " *
-              "involving $cycle_species species; members ordered by mass " *
-              "within each component, cyclic feed-down approximate"
-    end
-
-    order = Int[]
-    ready_components = findall(iszero, incoming_count)
-    while !isempty(ready_components)
-        component_id = argmax(
-            candidate -> begin
-                parent_id = first(components[candidate])
-                (dl.catalog.byid[parent_id].mass, -parent_id)
-            end,
-            ready_components,
-        )
-        deleteat!(
-            ready_components,
-            findfirst(==(component_id), ready_components),
-        )
-        append!(order, components[component_id])
-
-        for daughter_component in component_downstream[component_id]
-            incoming_count[daughter_component] -= 1
-            incoming_count[daughter_component] == 0 &&
-                push!(ready_components, daughter_component)
-        end
-    end
-
-    return order
-end
+_cascadeorder(decay_list::DecayList, dependencies) =
+    feeddown_order(decay_list; dependencies = dependencies, cycles = :warn)
 
 function CascadePlan(
         table::CascadeTable{G, N, M},
@@ -1558,228 +1097,6 @@ function runcascade(
     _check_run_options(parallel, output)
     plan = CascadePlan(decay_list; table_options...)
     return runcascade(plan; primary, parallel, output)
-end
-
-# ---------------------------------------------------------------------------
-# Decay-list validation: conservation laws + branching-ratio sanity
-# ---------------------------------------------------------------------------
-
-"""
-    validate(dl::DecayList; brtol = 0.02, verbose = true) -> NamedTuple
-
-Check every decay channel of `dl` against the physics it must obey and return
-the statistics (printing a report when `verbose`). Self-contained — no PDG
-needed. The checks, and how to read them:
-
-  * **charge** and **baryon number** — conserved by *every* channel (strong, EM,
-    weak alike); any nonzero count is a data error.
-  * **branching ratios** — `ΣBR ≈ 1` per decaying parent (`brtol`), and each
-    `BR` lies in `[0, 1]` up to a numerical tolerance.
-  * **exact duplicate channels** — repeated `(BR, daughter multiset)` rows are
-    counted so accidental double weighting is visible without rejecting raw
-    legacy data.
-  * **daughter resolution** — every daughter id must be a known species.
-  * **terminal particles** — `selfstable` reports the resolved terminal set;
-    `selfchannels` separately counts explicit one-body self rows because split
-    particle files may omit those rows.
-  * **strangeness / charm / bottomness change** — *informational*: zero means a
-    strong/EM-only list; nonzero counts the weak flavour-changing decays.
-  * **threshold** — channels kinematically closed at the parent pole mass.
-"""
-function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
-    channel_count = 0
-    one_body_count = 0
-    unresolved_count = 0
-    invalid_branching_ratio_count = 0
-    strangeness_change_count = 0
-    charm_change_count = 0
-    bottomness_change_count = 0
-    subthreshold_count = 0
-    duplicate_channel_count = 0
-
-    charge_violations = Tuple{Int, Vector{Int}}[]
-    baryon_violations = Tuple{Int, Vector{Int}}[]
-    multiplicity_counts = Dict{Int, Int}()
-    branching_ratio_sums = Dict(
-        parent_id => 0.0 for parent_id in decay_list.network.decaying_ids
-    )
-
-    for (parent_id, channels) in decay_list.network.byparent
-        parent = decay_list.catalog.byid[parent_id]
-        seen_channels = Set{Tuple{Float64, Tuple}}()
-
-        for channel in channels
-            daughter_ids = channel.daughters
-            channel_signature = (channel.br, Tuple(sort(daughter_ids)))
-            if channel_signature in seen_channels
-                duplicate_channel_count += 1
-            else
-                push!(seen_channels, channel_signature)
-            end
-            multiplicity = length(daughter_ids)
-            multiplicity_counts[multiplicity] =
-                get(multiplicity_counts, multiplicity, 0) + 1
-
-            if multiplicity == 1
-                one_body_count += 1
-                continue
-            end
-
-            channel_count += 1
-            branching_ratio_sums[parent_id] += channel.br
-
-            if !(0.0 ≤ channel.br ≤ 1 + 1.0e-6)
-                invalid_branching_ratio_count += 1
-            end
-            if !all(
-                    daughter_id -> haskey(decay_list.catalog.byid, daughter_id),
-                    daughter_ids
-                )
-                unresolved_count += 1
-                continue
-            end
-
-            daughters = (
-                decay_list.catalog.byid[daughter_id] for daughter_id in daughter_ids
-            )
-            if sum(daughter -> daughter.charge, daughters) != parent.charge
-                push!(charge_violations, (parent_id, daughter_ids))
-            end
-            if sum(daughter -> daughter.baryon, daughters) != parent.baryon
-                push!(baryon_violations, (parent_id, daughter_ids))
-            end
-            if sum(daughter -> daughter.strangeness, daughters) != parent.strangeness
-                strangeness_change_count += 1
-            end
-            if sum(daughter -> daughter.charm, daughters) != parent.charm
-                charm_change_count += 1
-            end
-            if sum(daughter -> daughter.bottomness, daughters) != parent.bottomness
-                bottomness_change_count += 1
-            end
-            if parent.mass + 1.0e-6 < sum(daughter -> daughter.mass, daughters)
-                subthreshold_count += 1
-            end
-        end
-    end
-
-    branching_ratio_deviations = [
-        abs(branching_ratio_sum - 1)
-            for branching_ratio_sum in values(branching_ratio_sums)
-    ]
-    maximum_branching_deviation = isempty(branching_ratio_deviations) ?
-        0.0 : maximum(branching_ratio_deviations)
-    stats = (
-        particles = length(decay_list.catalog.byid),
-        channels = channel_count,
-        selfstable = length(decay_list.stable_ids),
-        selfchannels = one_body_count,
-        multiplicity = sort(collect(multiplicity_counts)),
-        unresolved = unresolved_count,
-        br_out_of_range = invalid_branching_ratio_count,
-        charge_violations = length(charge_violations),
-        baryon_violations = length(baryon_violations),
-        strangeness_changing = strangeness_change_count,
-        charm_changing = charm_change_count,
-        bottomness_changing = bottomness_change_count,
-        duplicate_channels = duplicate_channel_count,
-        subthreshold = subthreshold_count,
-        br_norm_outliers = count(>(brtol), branching_ratio_deviations),
-        br_maxdev = maximum_branching_deviation,
-    )
-
-    if verbose
-        _print_validation_report(
-            decay_list, stats, charge_violations,
-            baryon_violations, branching_ratio_sums, brtol
-        )
-    end
-    return stats
-end
-
-function _print_validation_report(
-        decay_list, stats, charge_violations,
-        baryon_violations, branching_ratio_sums,
-        branching_ratio_tolerance
-    )
-    particle_name(particle_id) = haskey(decay_list.catalog.byid, particle_id) ?
-        decay_list.catalog.byid[particle_id].name :
-        "?$particle_id"
-    count_status(count) = count == 0 ? "OK" : "*** $count ***"
-
-    println("── decay-list validation ", repeat("─", 44))
-    @printf(
-        "  %d particles, %d decay channels (%d stable), multiplicities %s\n",
-        stats.particles, stats.channels, stats.selfstable, string(stats.multiplicity)
-    )
-    println("  conservation (must be zero):")
-    @printf(
-        "    charge violations ........ %s\n",
-        count_status(stats.charge_violations)
-    )
-    @printf(
-        "    baryon-number violations . %s\n",
-        count_status(stats.baryon_violations)
-    )
-    @printf(
-        "    unresolved daughters ..... %s\n",
-        count_status(stats.unresolved)
-    )
-    @printf(
-        "    BR out of [0,1] .......... %s\n",
-        count_status(stats.br_out_of_range)
-    )
-    @printf(
-        "    exact duplicate channels . %s\n",
-        count_status(stats.duplicate_channels)
-    )
-    @printf(
-        "  branching ratios: max |ΣBR-1| = %.2e,  %s parents beyond %.0f%%\n",
-        stats.br_maxdev, count_status(stats.br_norm_outliers),
-        100 * branching_ratio_tolerance
-    )
-    @printf(
-        "  informational: %d strangeness-, %d charm-, %d bottomness-changing (weak),  %d closed-at-pole\n",
-        stats.strangeness_changing, stats.charm_changing,
-        stats.bottomness_changing, stats.subthreshold
-    )
-
-    for (label, violations) in (
-            ("charge", charge_violations),
-            ("baryon", baryon_violations),
-        )
-        if isempty(violations)
-            continue
-        end
-        println("  first $label violations:")
-        for (parent_id, daughter_ids) in first(violations, 3)
-            daughter_names =
-                (particle_name(daughter_id) for daughter_id in daughter_ids)
-            @printf(
-                "    %s -> %s\n",
-                particle_name(parent_id), join(daughter_names, " ")
-            )
-        end
-    end
-
-    worst_branching_sums = sort(
-        collect(branching_ratio_sums);
-        by = branching_entry -> abs(last(branching_entry) - 1),
-        rev = true,
-    )
-    has_outlier =
-        !isempty(worst_branching_sums) &&
-        abs(worst_branching_sums[1][2] - 1) > branching_ratio_tolerance
-    if has_outlier
-        println("  parents with worst ΣBR:")
-        for (parent_id, branching_ratio_sum) in first(worst_branching_sums, 3)
-            @printf(
-                "    %-12s ΣBR = %.3f\n",
-                particle_name(parent_id), branching_ratio_sum
-            )
-        end
-    end
-    return println(repeat("─", 70))
 end
 
 end # module

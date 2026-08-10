@@ -2,11 +2,10 @@ const BENCHMARK_DIR = @__DIR__
 const REPOSITORY_ROOT = normpath(joinpath(BENCHMARK_DIR, "..", ".."))
 
 include(joinpath(BENCHMARK_DIR, "CrosscheckTools.jl"))
-include(joinpath(REPOSITORY_ROOT, "CascadeTables.jl"))
 include(joinpath(REPOSITORY_ROOT, "tools", "convert_decay_data.jl"))
 
+using FastReso2
 using .CrosscheckTools
-using .CascadeTables
 using .DecayDataConverter
 using FastGaussQuadrature: gausslegendre
 using Printf

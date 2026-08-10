@@ -1056,7 +1056,7 @@ def _connect_pinned_pdg() -> tuple[object, PdgProvenance]:
     except PackageNotFoundError as error:
         raise GenerationError(
             "missing PDG dependency; run "
-            "`python -m pip install -r tools/requirements-heavy-flavour.txt`"
+            "`python3 -m pip install -r tools/requirements-heavy-flavour.txt`"
         ) from error
     if installed_version != PINNED_PDG_VERSION:
         raise GenerationError(
