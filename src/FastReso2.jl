@@ -7,11 +7,11 @@ APIs share the same Julia types.
 """
 module FastReso2
 
-include(joinpath(@__DIR__, "..", "ParticleList.jl"))
-include(joinpath(@__DIR__, "..", "DecaySpectra.jl"))
-include(joinpath(@__DIR__, "..", "DecayModel.jl"))
-include(joinpath(@__DIR__, "..", "CascadeTables.jl"))
-include(joinpath(@__DIR__, "..", "ThermalModel.jl"))
+include("ParticleList.jl")
+include("DecaySpectra.jl")
+include("DecayModel.jl")
+include("CascadeTables.jl")
+include("ThermalModel.jl")
 
 using .ParticleList
 using .DecaySpectra

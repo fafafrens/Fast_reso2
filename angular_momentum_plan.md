@@ -94,7 +94,7 @@ the status quo rather than to something wrong.
 
 **Recommendation: a separate table, not a new column.** Column 12+ of the
 canonical particle format is already claimed by aliases
-(`readers/Canonical.jl:26`), so inserting parity there is a latent format
+(`src/readers/Canonical.jl:26`), so inserting parity there is a latent format
 collision — no file uses aliases today, so nothing would break immediately,
 which is what makes it dangerous. A separate `data/parities.dat` mapping
 `id → P`:

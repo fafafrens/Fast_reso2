@@ -70,7 +70,7 @@ data/species_model.dat
 Design constraints, all inherited from decisions already taken:
 
 - **Supplementary, not a column.** Column 12+ of the canonical particle format
-  is aliases (`readers/Canonical.jl:26`), and no file uses them today — which
+  is aliases (`src/readers/Canonical.jl:26`), and no file uses them today — which
   is what makes that collision dangerous rather than safe. A separate file also
   leaves all 6,374 particle rows untouched.
 - **Partial by construction.** Absence *is* the unknown sentinel; no `0`

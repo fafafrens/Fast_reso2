@@ -57,9 +57,6 @@ const CACHE_MAGIC = "FastReso.CascadeTables\n"
 # with the canonicalizing invariants enforced by the constructor
 # ---------------------------------------------------------------------------
 
-struct _ValidatedChannelKeyToken end
-const _VALIDATED_CHANNEL_KEY = _ValidatedChannelKeyToken()
-
 struct ChannelKey
     # Field order is serialized; changing it requires a FORMAT bump.
     # Scalars are deliberately canonical Float64 cache metadata. A generic
@@ -76,82 +73,67 @@ struct ChannelKey
     me::Float64
 
     function ChannelKey(
-            nbody::Int8,
-            ma::Float64,
-            mb::Float64,
-            Γ::Float64,
-            mth::Float64,
-            mc::Float64,
-            md::Float64,
-            me::Float64,
-            ::_ValidatedChannelKeyToken,
+            nbody::Integer,
+            parent_mass::Real,
+            observed_mass::Real,
+            parent_width::Real,
+            species_threshold::Real,
+            mc::Real,
+            md::Real,
+            me::Real,
         )
-        return new(nbody, ma, mb, Γ, mth, mc, md, me)
+        nbody in 2:4 || throw(ArgumentError(
+            "ChannelKey supports 2-, 3-, and 4-body only",
+        ))
+        values = map(
+            Float64,
+            (
+                parent_mass,
+                observed_mass,
+                parent_width,
+                species_threshold,
+                mc,
+                md,
+                me,
+            ),
+        )
+        all(isfinite, values) || throw(ArgumentError(
+            "ChannelKey masses, width, and threshold must be finite",
+        ))
+        all(>=(0.0), values) || throw(ArgumentError(
+            "ChannelKey masses, width, and threshold must be nonnegative",
+        ))
+
+        ma, mb, Γ, mth, canonical_mc, canonical_md, canonical_me = values
+        Γ == 0.0 && mth != 0.0 && throw(ArgumentError(
+            "a zero-width ChannelKey must have a zero threshold",
+        ))
+
+        # Keep validation on the fixed fields. Slicing the tuple with runtime
+        # `nbody` would widen it to `Tuple{Vararg{Float64}}` in typed IR.
+        if nbody == 2
+            iszero(canonical_md) && iszero(canonical_me) || throw(ArgumentError(
+                "ChannelKey unused partner slots must be zero-padded",
+            ))
+        elseif nbody == 3
+            !isless(canonical_md, canonical_mc) || throw(ArgumentError(
+                "ChannelKey partner masses must be sorted",
+            ))
+            iszero(canonical_me) || throw(ArgumentError(
+                "ChannelKey unused partner slots must be zero-padded",
+            ))
+        else
+            !isless(canonical_md, canonical_mc) &&
+                !isless(canonical_me, canonical_md) || throw(ArgumentError(
+                    "ChannelKey partner masses must be sorted",
+                ))
+        end
+
+        return new(
+            Int8(nbody), ma, mb, Γ, mth,
+            canonical_mc, canonical_md, canonical_me,
+        )
     end
-end
-
-function ChannelKey(
-        nbody::Integer,
-        parent_mass::Real,
-        observed_mass::Real,
-        parent_width::Real,
-        species_threshold::Real,
-        mc::Real,
-        md::Real,
-        me::Real,
-    )
-    nbody in 2:4 || throw(ArgumentError(
-        "ChannelKey supports 2-, 3-, and 4-body only",
-    ))
-    values = map(
-        Float64,
-        (
-            parent_mass,
-            observed_mass,
-            parent_width,
-            species_threshold,
-            mc,
-            md,
-            me,
-        ),
-    )
-    all(isfinite, values) || throw(ArgumentError(
-        "ChannelKey masses, width, and threshold must be finite",
-    ))
-    all(>=(0.0), values) || throw(ArgumentError(
-        "ChannelKey masses, width, and threshold must be nonnegative",
-    ))
-
-    ma, mb, Γ, mth, canonical_mc, canonical_md, canonical_me = values
-    Γ == 0.0 && mth != 0.0 && throw(ArgumentError(
-        "a zero-width ChannelKey must have a zero threshold",
-    ))
-    # Keep validation on the fixed fields. Slicing the tuple with the runtime
-    # `nbody` produces `Tuple{Vararg{Float64}}` in typed IR, even though this
-    # constructor's final return type remains `ChannelKey`.
-    if nbody == 2
-        iszero(canonical_md) && iszero(canonical_me) || throw(ArgumentError(
-            "ChannelKey unused partner slots must be zero-padded",
-        ))
-    elseif nbody == 3
-        !isless(canonical_md, canonical_mc) || throw(ArgumentError(
-            "ChannelKey partner masses must be sorted",
-        ))
-        iszero(canonical_me) || throw(ArgumentError(
-            "ChannelKey unused partner slots must be zero-padded",
-        ))
-    else
-        !isless(canonical_md, canonical_mc) &&
-            !isless(canonical_me, canonical_md) || throw(ArgumentError(
-            "ChannelKey partner masses must be sorted",
-        ))
-    end
-
-    return ChannelKey(
-        Int8(nbody), ma, mb, Γ, mth,
-        canonical_mc, canonical_md, canonical_me,
-        _VALIDATED_CHANNEL_KEY,
-    )
 end
 
 function ChannelKey(

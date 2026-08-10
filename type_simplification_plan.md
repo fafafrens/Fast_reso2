@@ -121,7 +121,7 @@ bump.
 
 `0.1973269804` appeared as a bare literal in two functions plus a docstring,
 converting fm³ to GeV⁻³. It is now the shared `HBAR_C_GEV_FM` constant in
-`ThermalModel.jl`; a units package would add more machinery than this single
+`src/ThermalModel.jl`; a units package would add more machinery than this single
 conversion needs.
 
 ```julia
@@ -136,7 +136,7 @@ units error could hide is this single constant.
 
 `Project.toml` now names the `FastReso2` package, and `src/FastReso2.jl` loads
 `ParticleList`, `DecaySpectra`, `DecayModel`, `CascadeTables`, and
-`ThermalModel` exactly once. `DecayModel.jl` owns `DecayList`, filters,
+`ThermalModel` exactly once. `src/DecayModel.jl` owns `DecayList`, filters,
 validation, thresholds, and `feeddown_order`, so cascade and thermal code share
 one model and spectral-shape type world.
 
@@ -160,8 +160,8 @@ core, figure, and benchmark dependency environments.
    it wants its own commit and a careful pass, not a drive-by.
 3. **C** only when `angular_momentum_plan.md`'s fork is decided.
 
-The higher-payoff structural simplification is complete: `DecayList` has moved
-out of `CascadeTables.jl`, every component is loaded once from the package root,
+The higher-payoff structural simplification is complete: `DecayList` now lives
+in `src/DecayModel.jl`, every component is loaded once from the package root,
 and both cascade and thermal code consume the shared model. Species thresholds
 remain invariant under topology filtering.
 

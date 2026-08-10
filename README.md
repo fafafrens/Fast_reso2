@@ -37,11 +37,12 @@ provenance, historical figures, benchmarks, and upstream comparisons, with
 each such script naming its input.
 
 **Phase 2 — foundation complete.** `src/FastReso2.jl` is the package entry
-point and loads each component once. `DecayModel.jl` owns the resolved model,
-filtering, validation, and graph-derived feeder-before-fed order; cascade and
-thermal execution now share one `ParticleInfo`, `DecayList`, and spectral-shape
-type world. Cycles are detected explicitly, and direct callable decay kernels
-are serial by default with `threaded = true` as an explicit opt-in.
+point and loads each component once. `src/DecayModel.jl` owns the resolved
+model, filtering, validation, and graph-derived feeder-before-fed order;
+cascade and thermal execution now share one `ParticleInfo`, `DecayList`, and
+spectral-shape type world. Cycles are detected explicitly, and direct callable
+decay kernels are serial by default with `threaded = true` as an explicit
+opt-in.
 
 **Next:** split the legacy assertion suite into component `Test.@testset`s and
 fast/numerical/external tiers, then separate core, figure, and benchmark
@@ -131,25 +132,26 @@ selected topology, spectral policy, grid, and machine; use
 
 ## Files
 
-The package entry point lives in `src/`; implementation modules and the current
-numerical suite remain at the root. Canonical runtime data lives in `data/`,
-while figure scripts plus curated PNG outputs live in `figures/`. Benchmark
-notebooks keep transient outputs in ignored benchmark-local paths.
+All package runtime sources live in `src/`. The current numerical suite remains
+at the root behind the standard `test/runtests.jl` entry point. Canonical
+runtime data lives in `data/`, while figure scripts plus curated PNG outputs
+live in `figures/`. Benchmark notebooks keep transient outputs in ignored
+benchmark-local paths.
 
 | File | Role |
 |------|------|
 | `src/FastReso2.jl` | Package entry point; loads the component modules once and reexports the public API |
-| `DecayModel.jl` | Shared resolved `DecayList`, filtering, validation, thresholds, and graph feed-down order |
-| `DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
-| `CascadeTables.jl`  | Persistent per-channel packed matrices, feeder-first cascade, and compiled flat plans |
-| `RowBandMatrix.jl`  | Read-only, offset-backed row-band `AbstractMatrix` storage |
-| `CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
+| `src/DecayModel.jl` | Shared resolved `DecayList`, filtering, validation, thresholds, and graph feed-down order |
+| `src/DecaySpectra.jl`   | Core decay map: 2-/3-/4-body kernels; single- and fused multi-mode matrix assembly |
+| `src/CascadeTables.jl`  | Persistent per-channel packed matrices, feeder-first cascade, and compiled flat plans |
+| `src/RowBandMatrix.jl`  | Read-only, offset-backed row-band `AbstractMatrix` storage |
+| `src/CascadeLinearAlgebra.jl` | Generic row-band `mul!` (including the mixed `Float32`/`Float64` cascade path) and short scatter kernels |
 | `benchmarks/cascade_plan.jl` | Reproducible plan-compilation, reuse, and mode-threading benchmark |
 | `benchmarks/fastreso_crosscheck/` | Cross-check against upstream [FastReso](https://github.com/amazeliauskas/FastReso) — see its own README |
-| `LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
-| `ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and canonical reader mechanics |
-| `readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
-| `ThermalModel.jl`   | Statistical hadronization: freeze-out number densities, feed-down yields, and `ThermalPlan` for repeated evaluation |
+| `src/LagrangeWeights.jl`| Lagrange weights — value, 1st/2nd derivative, combined (uniform + non-uniform grids) |
+| `src/ParticleList.jl`   | `ParticleCatalog` metadata, unresolved `DecayNetwork` topology, and canonical reader mechanics |
+| `src/readers/Canonical.jl` | The single split-file runtime reader used by `readparticles` and `readdecays` |
+| `src/ThermalModel.jl`   | Statistical hadronization: freeze-out number densities, feed-down yields, and `ThermalPlan` for repeated evaluation |
 | `quickstart.jl`     | The Quick start walkthrough above, as a runnable script |
 | `test/runtests.jl`  | Standard `Pkg.test()` entry point; currently delegates to the root numerical suite |
 | `runtests.jl`       | Legacy assertion-based numerical suite pending component `Test.@testset` migration |
