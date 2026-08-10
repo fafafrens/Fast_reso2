@@ -81,13 +81,10 @@ function _resolvedstableids(
     # references at once. A missing declared parent is represented as `(id, id)`.
     unresolved = Tuple{Int, Int}[]
 
-    # These declarations survive topology filtering even when a parent's
+    # Decaying declarations survive topology filtering even when a parent's
     # visible channel block becomes empty, so validate them independently of
     # `network.byparent`.
     for parent_id in network.decaying_ids
-        haskey(particles, parent_id) || push!(unresolved, (parent_id, parent_id))
-    end
-    for parent_id in network.terminal_ids
         haskey(particles, parent_id) || push!(unresolved, (parent_id, parent_id))
     end
 
@@ -269,14 +266,19 @@ function DecayList(
         path = String(path),
         sha = String(sha),
     )
+    requested_stable_ids = sort!(unique!(collect(Int, stable_ids)))
     network = DecayNetwork(
         channels_by_parent;
-        decaying_ids = setdiff(keys(particles), stable_ids),
-        terminal_ids = stable_ids,
+        decaying_ids = setdiff(keys(particles), requested_stable_ids),
         path = String(path),
         sha = String(sha),
     )
-    return DecayList(catalog, network)
+    decay_list = DecayList(catalog, network)
+    decay_list.stable_ids == requested_stable_ids || throw(ArgumentError(
+        "declared stable particle IDs disagree with resolved topology: " *
+            "requested $(requested_stable_ids), resolved $(decay_list.stable_ids)",
+    ))
+    return decay_list
 end
 
 """
@@ -390,7 +392,6 @@ function Base.filter(selection::ChannelFilter, decay_list::DecayList)
     network = DecayNetwork(
         channels_by_parent;
         decaying_ids = decay_list.network.decaying_ids,
-        terminal_ids = decay_list.network.terminal_ids,
         path = decay_list.network.path,
         sha = decay_list.network.sha,
     )

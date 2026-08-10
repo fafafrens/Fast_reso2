@@ -731,7 +731,7 @@ let
     @assert network.path == decay_path
     @assert !isempty(catalog.sha)
     @assert !isempty(network.sha)
-    @assert isempty(network.terminal_ids)
+    @assert network.decaying_ids == [1]
     unresolved_network = readdecays(unresolved_decay_path)
     @assert haskey(unresolved_network.byparent, 1)
     threw = false
@@ -767,17 +767,22 @@ let
     merged_unprovenanced = merge(unprovenanced, unprovenanced)
     @assert isempty(merged_unprovenanced.path)
     @assert isempty(merged_unprovenanced.sha)
-    terminal_network = DecayNetwork(
-        Dict{Int, Vector{DecayChannel}}();
-        terminal_ids = [1],
-    )
-    merged_network = merge(terminal_network, network)
-    @assert 1 in merged_network.decaying_ids
-    @assert 1 ∉ merged_network.terminal_ids
 
     self_terminal_network = DecayNetwork(Dict(
         1 => [DecayChannel(1, 1.0, [1])],
     ))
+    threw = false
+    try
+        DecayNetwork(
+            self_terminal_network.byparent;
+            decaying_ids = [1],
+        )
+    catch error
+        threw = error isa ArgumentError &&
+            occursin("both decaying and terminal", sprint(showerror, error))
+    end
+    @assert threw
+
     filtered_network = DecayNetwork(
         Dict{Int, Vector{DecayChannel}}();
         decaying_ids = [1],
@@ -787,7 +792,6 @@ let
             merge(self_terminal_network, filtered_network),
         )
         @assert 1 in merged.decaying_ids
-        @assert 1 ∉ merged.terminal_ids
         @assert !haskey(merged.byparent, 1)
     end
     for merged in (
@@ -796,7 +800,6 @@ let
         )
         @assert merged.byparent[1] == network.byparent[1]
         @assert 1 in merged.decaying_ids
-        @assert 1 ∉ merged.terminal_ids
     end
     @assert split.stable_ids == converted.stable_ids == [2, 3]
 
@@ -905,7 +908,7 @@ let
     @assert !bypassed
     for invalid_constructor in (
             () -> ParticleCatalog(catalog.byid, Dict{String, Vector{Int}}(), "", ""),
-            () -> DecayNetwork(network.byparent, Int[], Int[], "", ""),
+            () -> DecayNetwork(network.byparent, Int[], "", ""),
         )
         bypassed = false
         try
@@ -936,6 +939,44 @@ let
         )),
     )
     @assert 2 in valid_self.stable_ids
+    @assert 2 in filter(nbody(2), valid_self).stable_ids
+
+    unresolved_self = DecayNetwork(Dict(
+        99 => [DecayChannel(99, 1.0, [99])],
+    ))
+    threw = false
+    try
+        DecayList(catalog, unresolved_self)
+    catch error
+        threw = error isa ArgumentError &&
+            occursin("99 -> 99", sprint(showerror, error))
+    end
+    @assert threw
+
+    compatibility_model = DecayList(
+        catalog.byid,
+        network.byparent,
+        [3, 2, 2],
+        "compatibility",
+        "compatibility",
+    )
+    @assert compatibility_model.stable_ids == [2, 3]
+
+    for requested_stable_ids in ([99], [1, 2, 3])
+        threw = false
+        try
+            DecayList(
+                catalog.byid,
+                network.byparent,
+                requested_stable_ids,
+                "compatibility",
+                "compatibility",
+            )
+        catch error
+            threw = error isa ArgumentError
+        end
+        @assert threw
+    end
 
     invalid_self_networks = (
         DecayNetwork(Dict(
@@ -973,14 +1014,22 @@ let
     physical_decay = DecayNetwork(Dict(
         2 => [DecayChannel(2, 1.0, [3, 3])],
     ))
-    threw = false
-    try
-        merge(malformed_terminal, physical_decay)
-    catch error
-        threw = error isa ArgumentError &&
-            occursin("conflicting channel definitions", sprint(showerror, error))
+    for (left, right) in (
+            (malformed_terminal, physical_decay),
+            (physical_decay, malformed_terminal),
+        )
+        threw = false
+        try
+            merge(left, right)
+        catch error
+            threw = error isa ArgumentError &&
+                occursin(
+                    "conflicting channel definitions",
+                    sprint(showerror, error),
+                )
+        end
+        @assert threw
     end
-    @assert threw
 
     for unsupported_daughters in (
             Int[],

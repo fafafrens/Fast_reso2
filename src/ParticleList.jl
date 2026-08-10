@@ -266,14 +266,12 @@ unsupported multiplicities.
 struct DecayNetwork
     byparent::Dict{Int, Vector{DecayChannel}}
     decaying_ids::Vector{Int}
-    terminal_ids::Vector{Int}
     path::String
     sha::String
 
     function DecayNetwork(
             channels_by_parent::Dict{Int, Vector{DecayChannel}};
             decaying_ids = nothing,
-            terminal_ids = nothing,
             path::AbstractString = "",
             sha::AbstractString = "",
         )
@@ -295,11 +293,7 @@ struct DecayNetwork
         append!(selected_decaying, inferred_decaying)
         sort!(unique!(selected_decaying))
 
-        selected_terminal = collect(Int, something(terminal_ids, ()))
-        append!(selected_terminal, inferred_terminal)
-        sort!(unique!(selected_terminal))
-
-        conflicting_ids = intersect(selected_decaying, selected_terminal)
+        conflicting_ids = intersect(selected_decaying, inferred_terminal)
         isempty(conflicting_ids) || throw(ArgumentError(
             "particle IDs cannot be both decaying and terminal: " *
                 join(conflicting_ids, ", "),
@@ -308,7 +302,6 @@ struct DecayNetwork
         return new(
             channels_by_parent,
             selected_decaying,
-            selected_terminal,
             String(path),
             String(sha),
         )
@@ -323,11 +316,9 @@ function Base.merge(
     networks = (first, remaining...)
     channels_by_parent = Dict{Int, Vector{DecayChannel}}()
     decaying_ids = Int[]
-    terminal_ids = Int[]
 
     for network in networks
         append!(decaying_ids, network.decaying_ids)
-        append!(terminal_ids, network.terminal_ids)
     end
 
     decaying_set = Set(decaying_ids)
@@ -348,12 +339,9 @@ function Base.merge(
         end
     end
 
-    filter!(particle_id -> particle_id ∉ decaying_set, terminal_ids)
-
     return DecayNetwork(
         channels_by_parent;
         decaying_ids,
-        terminal_ids,
         path = _joinprovenance(network.path for network in networks),
         sha = _joinhashes(network.sha for network in networks),
     )

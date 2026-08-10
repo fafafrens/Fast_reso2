@@ -219,7 +219,9 @@ Particle metadata and decay topology are independent input layers:
 - `ParticleCatalog` owns `ParticleInfo` records, canonical names, aliases, and
   ID/name lookup.
 - `DecayNetwork` owns parent-to-channel rows and may refer to particle IDs from
-  a catalog loaded later.
+  a catalog loaded later. Its `decaying_ids` preserve parents whose active rows
+  were filtered away; terminal IDs are derived from the catalog and need no
+  separate network declaration.
 - `DecayList` resolves the two. It is the strict, runnable model accepted by
   filtering, tables, plans, validation, and cascade execution.
 - `DecayModel` owns that resolution plus topology filtering and deterministic
