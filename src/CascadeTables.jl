@@ -381,28 +381,14 @@ end
 _cascadeorder(decay_list::DecayList, dependencies) =
     feeddown_order(decay_list; dependencies = dependencies, cycles = :warn)
 
-function CascadePlan(
+function _collect_plan_groups!(
+        group_builders::Dict{Int, Vector{_CascadeGroupBuilder{N, M}}},
+        dependencies::Set{Tuple{Int, Int}},
         table::CascadeTable{G, N, M},
         decay_list::DecayList,
+        dense_index::Dict{Int, Int},
     ) where {G, N, M}
-    # Particle IDs remain the public API, while the numerical loop uses these
-    # stable dense indices for direct vector access.
-    ids = sort!(collect(keys(decay_list.catalog.byid)))
-    particles = [decay_list.catalog.byid[particle_id] for particle_id in ids]
-    dense_index = Dict(
-        particle_id => index for (index, particle_id) in pairs(ids)
-    )
-    stable_indices = [
-        dense_index[particle_id] for particle_id in decay_list.stable_ids
-    ]
-
-    # These dictionaries exist only while compiling the topology. Builders
-    # preserve first-seen group/target order; the finalized plan below contains
-    # only flat vectors, ranges, and dense indices.
-    group_builders =
-        Dict{Int, Vector{_CascadeGroupBuilder{N, M}}}()
     group_positions = Dict{Int, Dict{ChannelKey, Int}}()
-    dependencies = Set{Tuple{Int, Int}}()
 
     # A deterministic traversal makes group order and construction failures
     # independent of Dict insertion order.
@@ -451,15 +437,19 @@ function CascadePlan(
             push!(dependencies, (parent_id, daughter_id))
         end
     end
+    return nothing
+end
 
-    parent_order = _cascadeorder(decay_list, dependencies)
-
-    # Flatten the temporary parent/group/target hierarchy in cascade order.
-    # UnitRanges retain the hierarchy without allocating nested vectors.
-    steps = CascadeStep[]
-    groups = CascadeGroup{N, M}[]
-    targets = CascadeTarget[]
-
+function _flatten_plan_groups!(
+        steps::Vector{CascadeStep},
+        groups::Vector{CascadeGroup{N, M}},
+        targets::Vector{CascadeTarget},
+        group_builders::Dict{Int, Vector{_CascadeGroupBuilder{N, M}}},
+        parent_order::Vector{Int},
+        dense_index::Dict{Int, Int},
+    ) where {N, M}
+    # UnitRanges retain the temporary parent/group/target hierarchy without
+    # allocating nested vectors in the finalized plan.
     for parent_id in parent_order
         builders = get(group_builders, parent_id, nothing)
         builders === nothing && continue
@@ -489,6 +479,53 @@ function CascadePlan(
             ),
         )
     end
+    return nothing
+end
+
+function CascadePlan(
+        table::CascadeTable{G, N, M},
+        decay_list::DecayList,
+    ) where {G, N, M}
+    # Particle IDs remain the public API, while the numerical loop uses these
+    # stable dense indices for direct vector access.
+    ids = sort!(collect(keys(decay_list.catalog.byid)))
+    particles = [decay_list.catalog.byid[particle_id] for particle_id in ids]
+    dense_index = Dict(
+        particle_id => index for (index, particle_id) in pairs(ids)
+    )
+    stable_indices = [
+        dense_index[particle_id] for particle_id in decay_list.stable_ids
+    ]
+
+    # These dictionaries exist only while compiling the topology. Builders
+    # preserve first-seen group/target order; the finalized plan below contains
+    # only flat vectors, ranges, and dense indices.
+    group_builders =
+        Dict{Int, Vector{_CascadeGroupBuilder{N, M}}}()
+    dependencies = Set{Tuple{Int, Int}}()
+    _collect_plan_groups!(
+        group_builders,
+        dependencies,
+        table,
+        decay_list,
+        dense_index,
+    )
+
+    parent_order = _cascadeorder(decay_list, dependencies)
+
+    # Flatten the temporary parent/group/target hierarchy in cascade order.
+    # UnitRanges retain the hierarchy without allocating nested vectors.
+    steps = CascadeStep[]
+    groups = CascadeGroup{N, M}[]
+    targets = CascadeTarget[]
+    _flatten_plan_groups!(
+        steps,
+        groups,
+        targets,
+        group_builders,
+        parent_order,
+        dense_index,
+    )
 
     return CascadePlan(
         table,

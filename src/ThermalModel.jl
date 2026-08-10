@@ -39,6 +39,7 @@ import ..DecaySpectra
 using ..DecaySpectra: SpectralShape, BreitWigner, MassDependentBW
 import ..DecaySpectra: _lowerendpointvanishes
 using ..DecayModel: DecayList, feeddown_order
+using ..ParticleList: ParticleInfo
 
 export chemicalpotential, thermaldensity, primaryyields, thermalyields,
        ThermalPlan
@@ -60,12 +61,18 @@ export chemicalpotential, thermaldensity, primaryyields, thermalyields,
 # further six orders inside the uncertainty on the branching ratios these
 # yields are built from. The higher orders buy precision nothing downstream
 # can use, at 1.6x the cost of the innermost loop in the model.
-const _MOMENTUM_NODES, _MOMENTUM_WEIGHTS = gausslegendre(32)
+struct _DensityQuadrature
+    nodes::Vector{Float64}
+    weights::Vector{Float64}
+    cutoff::Float64
+end
 
-# How far past the pole the momentum integral runs, in units of temperature.
-# The occupancy is below exp(-60) ~ 1e-26 there, far under Float64 resolution
-# relative to the peak.
-const _MOMENTUM_CUTOFF = 60.0
+const _DENSITY_QUADRATURE = let
+    nodes, weights = gausslegendre(32)
+    # The occupancy is below exp(-60) ~ 1e-26 at the cutoff, far under
+    # Float64 resolution relative to the peak.
+    _DensityQuadrature(nodes, weights, 60.0)
+end
 
 "Hadrons with half-integer spin are fermions; baryon number identifies them."
 _isfermion(particle) = particle.baryon != 0
@@ -116,26 +123,29 @@ function _densityatmass(
     )
     mass <= 0 && return 0.0
     eta = quantum ? (is_fermion ? 1.0 : -1.0) : 0.0
+    quadrature = _DENSITY_QUADRATURE
 
     # Truncate where the occupancy has died rather than mapping [0, Inf): the
     # cutoff is set by energy, so it adapts to both the mass and the chemical
     # potential instead of assuming a momentum scale.
-    energy_cutoff = max(mass, mu) + _MOMENTUM_CUTOFF * temperature
-    momentum_maximum = sqrt(max(
-        energy_cutoff^2 - mass^2, (_MOMENTUM_CUTOFF * temperature)^2,
-    ))
+    energy_cutoff = max(mass, mu) + quadrature.cutoff * temperature
+    momentum_maximum = sqrt(
+        max(
+            energy_cutoff^2 - mass^2, (quadrature.cutoff * temperature)^2,
+        )
+    )
     half_width = momentum_maximum / 2
 
     integral = 0.0
-    @inbounds for index in eachindex(_MOMENTUM_NODES)
-        momentum = half_width * (_MOMENTUM_NODES[index] + 1)
+    @inbounds for index in eachindex(quadrature.nodes)
+        momentum = half_width * (quadrature.nodes[index] + 1)
         exponent = (hypot(mass, momentum) - mu) / temperature
         # exp overflows around 709; the occupancy is zero long before that, and
         # for bosons the exp(x) - 1 form loses the cancellation that expm1 keeps.
         exponent > 700 && continue
         occupancy = eta == 0 ? exp(-exponent) :
-                    eta > 0 ? inv(exp(exponent) + 1) : inv(expm1(exponent))
-        integral += _MOMENTUM_WEIGHTS[index] * half_width * momentum^2 * occupancy
+            eta > 0 ? inv(exp(exponent) + 1) : inv(expm1(exponent))
+        integral += quadrature.weights[index] * half_width * momentum^2 * occupancy
     end
     return degeneracy * integral / (2π^2)
 end
@@ -244,18 +254,16 @@ Daughters are credited with multiplicity, so `eta -> 3 pi0` adds three pions.
 function thermalyields(decay_list::DecayList, temperature; V, kwargs...)
     primary = primaryyields(decay_list, temperature; V, kwargs...)
     total = copy(primary)
-    catalog = decay_list.catalog.byid
 
     parents = feeddown_order(decay_list; cycles = :warn)
     for parent_id in parents
-        available = get(total, parent_id, 0.0)
+        available = total[parent_id]
         available == 0 && continue
         for channel in decay_list.network.byparent[parent_id]
             daughters = channel.daughters
             length(daughters) == 1 && only(daughters) == parent_id && continue
             contribution = channel.br * available
             for daughter_id in daughters
-                haskey(total, daughter_id) || continue
                 total[daughter_id] += contribution
             end
         end
@@ -274,10 +282,22 @@ end
 # evaluation. The cosine-mapped variant serves shapes that vanish like a
 # square root at the lower endpoint (:massdep at its threshold): the sin
 # Jacobian absorbs the vanishing that plain Gauss-Legendre resolves slowly.
-const _BUILD_NODES, _BUILD_WEIGHTS = gausslegendre(256)
-const _BUILD_COS_NODES, _BUILD_COS_WEIGHTS = let
-    angles = π .* (_BUILD_NODES .+ 1) ./ 2
-    (-cos.(angles), π / 2 .* _BUILD_WEIGHTS .* sin.(angles))
+struct _SpectralBuildQuadrature
+    regular_nodes::Vector{Float64}
+    regular_weights::Vector{Float64}
+    vanishing_nodes::Vector{Float64}
+    vanishing_weights::Vector{Float64}
+end
+
+const _SPECTRAL_BUILD_QUADRATURE = let
+    nodes, weights = gausslegendre(256)
+    angles = π .* (nodes .+ 1) ./ 2
+    _SpectralBuildQuadrature(
+        nodes,
+        weights,
+        -cos.(angles),
+        π / 2 .* weights .* sin.(angles),
+    )
 end
 
 """
@@ -312,8 +332,10 @@ function _spectralrule(spectral::SpectralShape, order)
     # Barycentric weights for Chebyshev points of the first kind.
     barycentric = [(-1)^j * sin((2j - 1) * π / (2order)) for j in 1:order]
 
-    build_nodes = vanishing ? _BUILD_COS_NODES : _BUILD_NODES
-    build_weights = vanishing ? _BUILD_COS_WEIGHTS : _BUILD_WEIGHTS
+    quadrature = _SPECTRAL_BUILD_QUADRATURE
+    build_nodes = vanishing ? quadrature.vanishing_nodes : quadrature.regular_nodes
+    build_weights =
+        vanishing ? quadrature.vanishing_weights : quadrature.regular_weights
 
     weights = zeros(order)
     basis = zeros(order)
@@ -394,6 +416,62 @@ struct ThermalPlan
     shape::Symbol
 end
 
+function _compiletopology!(
+        order::Vector{Int},
+        channel_range::Vector{UnitRange{Int}},
+        branching::Vector{Float64},
+        daughter_range::Vector{UnitRange{Int}},
+        daughters::Vector{Int},
+        decay_list::DecayList,
+        index_of::Dict{Int, Int},
+    )
+    parents = feeddown_order(decay_list; cycles = :warn)
+    for parent_id in parents
+        first_channel = length(branching) + 1
+        for channel in decay_list.network.byparent[parent_id]
+            list = channel.daughters
+            length(list) == 1 && only(list) == parent_id && continue
+            first_daughter = length(daughters) + 1
+            append!(daughters, (index_of[d] for d in list))
+            push!(daughter_range, first_daughter:length(daughters))
+            push!(branching, channel.br)
+        end
+        length(branching) >= first_channel || continue
+        push!(order, index_of[parent_id])
+        push!(channel_range, first_channel:length(branching))
+    end
+    return nothing
+end
+
+function _compilemassrules!(
+        mass_range::Vector{UnitRange{Int}},
+        mass_nodes::Vector{Float64},
+        mass_weights::Vector{Float64},
+        records::Vector{ParticleInfo},
+        thresholds::Dict{Int, Float64},
+        mass_order,
+        k,
+        shape::Symbol,
+    )
+    for record in records
+        threshold = get(thresholds, record.id, 0.0)
+        lower, upper = _masswindow(record, threshold, k)
+        if lower >= upper
+            push!(mass_range, 1:0)
+            continue
+        end
+        spectral = _spectralshape(
+            shape, record.mass, record.width, threshold, lower, upper,
+        )
+        nodes, weights = _spectralrule(spectral, mass_order)
+        first_node = length(mass_nodes) + 1
+        append!(mass_nodes, nodes)
+        append!(mass_weights, weights)
+        push!(mass_range, first_node:length(mass_nodes))
+    end
+    return nothing
+end
+
 function ThermalPlan(
         decay_list::DecayList;
         mass_order = 32,
@@ -409,47 +487,23 @@ function ThermalPlan(
     records = [catalog[particle_id] for particle_id in ids]
     thresholds = decay_list.thresholds
 
-    parents = feeddown_order(decay_list; cycles = :warn)
-
     order = Int[]
     channel_range = UnitRange{Int}[]
     branching = Float64[]
     daughter_range = UnitRange{Int}[]
     daughters = Int[]
-    for parent_id in parents
-        first_channel = length(branching) + 1
-        for channel in decay_list.network.byparent[parent_id]
-            list = channel.daughters
-            length(list) == 1 && only(list) == parent_id && continue
-            all(d -> haskey(index_of, d), list) || continue
-            first_daughter = length(daughters) + 1
-            append!(daughters, (index_of[d] for d in list))
-            push!(daughter_range, first_daughter:length(daughters))
-            push!(branching, channel.br)
-        end
-        length(branching) >= first_channel || continue
-        push!(order, index_of[parent_id])
-        push!(channel_range, first_channel:length(branching))
-    end
+    _compiletopology!(
+        order, channel_range, branching, daughter_range, daughters,
+        decay_list, index_of,
+    )
 
     mass_range = UnitRange{Int}[]
     mass_nodes = Float64[]
     mass_weights = Float64[]
-    for record in records
-        threshold = get(thresholds, record.id, 0.0)
-        lower, upper = _masswindow(record, threshold, k)
-        if lower >= upper
-            push!(mass_range, 1:0)
-            continue
-        end
-        spectral = _spectralshape(
-            shape, record.mass, record.width, threshold, lower, upper)
-        nodes, weights = _spectralrule(spectral, mass_order)
-        first_node = length(mass_nodes) + 1
-        append!(mass_nodes, nodes)
-        append!(mass_weights, weights)
-        push!(mass_range, first_node:length(mass_nodes))
-    end
+    _compilemassrules!(
+        mass_range, mass_nodes, mass_weights, records, thresholds,
+        mass_order, k, shape,
+    )
 
     return ThermalPlan(
         ids,

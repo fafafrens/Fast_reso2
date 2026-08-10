@@ -24,6 +24,11 @@ module LagrangeWeights
 
 export lagrangeweights, lagrangederiv, lagrangederiv2, lagrangeboth, lagrangeall
 
+@inline function _checkstencilorder(P, N)
+    2 ≤ P ≤ N && return nothing
+    throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+end
+
 # ---------------------------------------------------------------------------
 # weights on the local coordinate ξ (stencil nodes sit at ξ = 0, 1, …, P−1)
 # ---------------------------------------------------------------------------
@@ -72,7 +77,7 @@ loops to keep the tuple length inferable.
 lagrangeweights(x, x1, h, N, P::Integer = 4) = lagrangeweights(x, x1, h, N, Val(P))
 
 function lagrangeweights(x, x1, h, N, ::Val{P}) where {P}
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = floor(Int, (x - x1) / h) + 1               # cell: x ∈ [x_j, x_{j+1})
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)      # centered stencil, clamped
     ξ = (x - (x1 + (j0 - 1) * h)) / h              # local coordinate in [0, P−1]
@@ -91,7 +96,7 @@ Exact for polynomials of degree < P on any node spacing.
 """
 function lagrangeweights(x, xs::AbstractVector, ::Val{P}) where {P}
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)   # cell: x ∈ [xs[j], xs[j+1])
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)      # centered stencil, clamped
     w = ntuple(Val(P)) do m
@@ -108,7 +113,7 @@ end
 
 function lagrangeweights(x, xs::AbstractVector, P::Integer= 4)
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)   # cell: x ∈ [xs[j], xs[j+1])
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)      # centered stencil, clamped
     w = ntuple(P) do m
@@ -170,7 +175,7 @@ for polynomials of degree < P. Same stencil placement as `lagrangeweights`.
 lagrangederiv(x, x1, h, N, P::Integer = 4) = lagrangederiv(x, x1, h, N, Val(P))
 
 function lagrangederiv(x, x1, h, N, ::Val{P}) where {P}
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = floor(Int, (x - x1) / h) + 1
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     ξ = (x - (x1 + (j0 - 1) * h)) / h
@@ -188,7 +193,7 @@ lagrangederiv(x, xs::AbstractVector, P::Integer = 4) = lagrangederiv(x, xs, Val(
 
 function lagrangederiv(x, xs::AbstractVector, ::Val{P}) where {P}
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     w = ntuple(Val(P)) do m
@@ -255,7 +260,7 @@ P ≥ 3 for a nonzero result). Same stencil placement as `lagrangeweights`.
 lagrangederiv2(x, x1, h, N, P::Integer = 4) = lagrangederiv2(x, x1, h, N, Val(P))
 
 function lagrangederiv2(x, x1, h, N, ::Val{P}) where {P}
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = floor(Int, (x - x1) / h) + 1
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     ξ = (x - (x1 + (j0 - 1) * h)) / h
@@ -290,7 +295,7 @@ lagrangederiv2(x, xs::AbstractVector, P::Integer = 4) = lagrangederiv2(x, xs, Va
 
 function lagrangederiv2(x, xs::AbstractVector, ::Val{P}) where {P}
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     return j0, _nud2(x, xs, j0, Val(P))
@@ -310,7 +315,7 @@ separate `lagrangeweights` + `lagrangederiv` (one floor/clamp/ξ, not two).
 lagrangeboth(x, x1, h, N, P::Integer = 4) = lagrangeboth(x, x1, h, N, Val(P))
 
 function lagrangeboth(x, x1, h, N, ::Val{P}) where {P}
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = floor(Int, (x - x1) / h) + 1
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     ξ = (x - (x1 + (j0 - 1) * h)) / h
@@ -326,7 +331,7 @@ lagrangeboth(x, xs::AbstractVector, P::Integer = 4) = lagrangeboth(x, xs, Val(P)
 
 function lagrangeboth(x, xs::AbstractVector, ::Val{P}) where {P}
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     w = ntuple(Val(P)) do m
@@ -368,7 +373,7 @@ grid, sharing the stencil placement: F, F′, F″ ≈ Σₘ (w|dw|d2w)[m] F[j0+
 lagrangeall(x, x1, h, N, P::Integer = 4) = lagrangeall(x, x1, h, N, Val(P))
 
 function lagrangeall(x, x1, h, N, ::Val{P}) where {P}
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = floor(Int, (x - x1) / h) + 1
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     ξ = (x - (x1 + (j0 - 1) * h)) / h
@@ -385,7 +390,7 @@ lagrangeall(x, xs::AbstractVector, P::Integer = 4) = lagrangeall(x, xs, Val(P))
 
 function lagrangeall(x, xs::AbstractVector, ::Val{P}) where {P}
     N = length(xs)
-    2 ≤ P ≤ N || throw(ArgumentError("need 2 ≤ P ≤ N, got P = $P, N = $N"))
+    _checkstencilorder(P, N)
     j = clamp(searchsortedlast(xs, x), 1, N - 1)
     j0 = clamp(j - (P - 2) ÷ 2, 1, N - P + 1)
     w = ntuple(Val(P)) do m

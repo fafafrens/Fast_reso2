@@ -71,6 +71,76 @@ particle(decay_list::DecayList, id_or_name) =
 particleids(decay_list::DecayList, label::AbstractString) =
     particleids(decay_list.catalog, label)
 
+function _validate_decay_block!(
+        unresolved::Vector{Tuple{Int, Int}},
+        particles::Dict{Int, ParticleInfo},
+        parent_id::Int,
+        channels::Vector{DecayChannel},
+    )
+    if !haskey(particles, parent_id)
+        push!(unresolved, (parent_id, parent_id))
+        return nothing
+    end
+
+    for channel in channels
+        # The dictionary key is the authoritative block owner. Keeping it
+        # consistent with every row avoids ambiguous merge/filter results.
+        channel.parent == parent_id || throw(ArgumentError(
+            "channel parent $(channel.parent) disagrees with network " *
+                "parent $parent_id",
+        ))
+        isfinite(channel.br) || throw(ArgumentError(
+            "channel for parent $parent_id has nonfinite branching ratio " *
+                "$(channel.br)",
+        ))
+        multiplicity = length(channel.daughters)
+        if multiplicity == 1
+            # Canonical and legacy inputs use exactly `parent -> parent`
+            # with BR 1 as a terminal marker; it is not a physical decay.
+            only(channel.daughters) == parent_id || throw(ArgumentError(
+                "one-body channel $parent_id -> " *
+                    "$(only(channel.daughters)) is not a terminal self-channel",
+            ))
+            length(channels) == 1 || throw(ArgumentError(
+                "terminal self-channel for particle $parent_id must be " *
+                    "the only row in its parent block",
+            ))
+            channel.br == 1.0 || throw(ArgumentError(
+                "terminal self-channel for particle $parent_id must have BR 1",
+            ))
+        elseif !(2 <= multiplicity <= 4)
+            throw(ArgumentError(
+                "channel for parent $parent_id has unsupported " *
+                    "multiplicity $multiplicity; runnable decay lists " *
+                    "support 2-, 3-, and 4-body channels",
+            ))
+        end
+        for daughter_id in channel.daughters
+            haskey(particles, daughter_id) ||
+                push!(unresolved, (parent_id, daughter_id))
+        end
+    end
+    return nothing
+end
+
+function _throw_unresolved!(unresolved::Vector{Tuple{Int, Int}})
+    isempty(unresolved) && return nothing
+
+    # Deduplicate and sort for a deterministic, bounded diagnostic instead
+    # of failing on whichever missing reference dictionary order finds first.
+    sort!(unique!(unresolved))
+    preview = join(
+        ("$parent_id -> $daughter_id" for
+            (parent_id, daughter_id) in first(unresolved, 8)),
+        ", ",
+    )
+    suffix = length(unresolved) > 8 ?
+        " (and $(length(unresolved) - 8) more)" : ""
+    throw(ArgumentError(
+        "decay network has unresolved particle references: " * preview * suffix,
+    ))
+end
+
 function _resolvedstableids(
         catalog::ParticleCatalog,
         network::DecayNetwork,
@@ -89,66 +159,9 @@ function _resolvedstableids(
     end
 
     for (parent_id, channels) in network.byparent
-        haskey(particles, parent_id) || begin
-            push!(unresolved, (parent_id, parent_id))
-            continue
-        end
-
-        for channel in channels
-            # The dictionary key is the authoritative block owner. Keeping it
-            # consistent with every row avoids ambiguous merge/filter results.
-            channel.parent == parent_id || throw(ArgumentError(
-                "channel parent $(channel.parent) disagrees with network " *
-                    "parent $parent_id",
-            ))
-            isfinite(channel.br) || throw(ArgumentError(
-                "channel for parent $parent_id has nonfinite branching ratio " *
-                    "$(channel.br)",
-            ))
-            multiplicity = length(channel.daughters)
-            if multiplicity == 1
-                # Canonical and legacy inputs use exactly `parent -> parent`
-                # with BR 1 as a terminal marker; it is not a physical decay.
-                only(channel.daughters) == parent_id || throw(ArgumentError(
-                    "one-body channel $parent_id -> " *
-                        "$(only(channel.daughters)) is not a terminal self-channel",
-                ))
-                length(channels) == 1 || throw(ArgumentError(
-                    "terminal self-channel for particle $parent_id must be " *
-                        "the only row in its parent block",
-                ))
-                channel.br == 1.0 || throw(ArgumentError(
-                    "terminal self-channel for particle $parent_id must have BR 1",
-                ))
-            elseif !(2 <= multiplicity <= 4)
-                throw(ArgumentError(
-                    "channel for parent $parent_id has unsupported " *
-                        "multiplicity $multiplicity; runnable decay lists " *
-                        "support 2-, 3-, and 4-body channels",
-                ))
-            end
-            for daughter_id in channel.daughters
-                haskey(particles, daughter_id) ||
-                    push!(unresolved, (parent_id, daughter_id))
-            end
-        end
+        _validate_decay_block!(unresolved, particles, parent_id, channels)
     end
-
-    if !isempty(unresolved)
-        # Deduplicate and sort for a deterministic, bounded diagnostic instead
-        # of failing on whichever missing reference dictionary order finds first.
-        sort!(unique!(unresolved))
-        preview = join(
-            ("$parent_id -> $daughter_id" for
-                (parent_id, daughter_id) in first(unresolved, 8)),
-            ", ",
-        )
-        suffix = length(unresolved) > 8 ?
-            " (and $(length(unresolved) - 8) more)" : ""
-        throw(ArgumentError(
-            "decay network has unresolved particle references: " * preview * suffix,
-        ))
-    end
+    _throw_unresolved!(unresolved)
 
     # Stability is catalog membership minus the declared decaying set, not
     # `keys(byparent)`: filtering may remove every active channel for a parent,
@@ -495,31 +508,12 @@ function _feeddown_dependencies(decay_list::DecayList)
     return dependencies
 end
 
-"""
-    feeddown_order(decay_list; dependencies = nothing, cycles = :error)
-
-Return a deterministic feeder-before-fed parent order. By default dependencies
-are all nonzero decay edges whose daughter also decays. Callers with a narrower
-active topology may supply `(parent_id, daughter_id)` pairs explicitly.
-
-Strongly connected components are detected before ordering. `cycles = :error`
-rejects them because one sweep cannot be exact; `cycles = :warn` preserves the
-cascade's historical mass-ordered approximation within each component.
-"""
-function feeddown_order(
-        decay_list::DecayList;
-        dependencies = nothing,
-        cycles::Symbol = :error,
-    )
-    cycles === :error || cycles === :warn || throw(ArgumentError(
-        "cycles must be :error or :warn, got $(repr(cycles))",
-    ))
-
+function _feeddown_adjacency(decay_list::DecayList, dependencies)
     # Normalize the selected edges into a deterministic adjacency list over
     # active decaying parents. Including parents with no outgoing dependency
     # keeps disconnected and terminal-in-the-subgraph species in the result.
-    selected_dependencies =
-        dependencies === nothing ? _feeddown_dependencies(decay_list) : dependencies
+    selected_dependencies = dependencies === nothing ?
+        _feeddown_dependencies(decay_list) : dependencies
     decaying_parents = sort!(collect(keys(decay_list.network.byparent)))
     downstream = Dict(parent_id => Int[] for parent_id in decaying_parents)
 
@@ -539,7 +533,14 @@ function feeddown_order(
     # Repeated edges do not change ordering. Sorting also makes the depth-first
     # traversal and resulting component numbering reproducible.
     foreach(daughters -> sort!(unique!(daughters)), values(downstream))
+    return decaying_parents, downstream
+end
 
+function _feeddown_components(
+        particles::Dict{Int, ParticleInfo},
+        decaying_parents::Vector{Int},
+        downstream::Dict{Int, Vector{Int}},
+    )
     # Tarjan strongly connected component state. `indices` is discovery order;
     # `lowlinks` records the earliest active vertex reachable from each parent.
     # Ref provides a mutable counter to the nested visitor without a boxed local.
@@ -592,7 +593,7 @@ function feeddown_order(
             # deterministic one-pass approximation; particle ID breaks ties.
             sort!(
                 component;
-                by = member -> (-decay_list.catalog.byid[member].mass, member),
+                by = member -> (-particles[member].mass, member),
             )
             push!(components, component)
         end
@@ -604,7 +605,13 @@ function feeddown_order(
     for parent_id in decaying_parents
         haskey(indices, parent_id) || visit!(parent_id)
     end
+    return components
+end
 
+function _feeddown_condensation(
+        components::Vector{Vector{Int}},
+        downstream::Dict{Int, Vector{Int}},
+    )
     # Collapse every SCC to one vertex. `component_of` provides the species-to-
     # component lookup needed to translate the original edges.
     component_of = Dict{Int, Int}()
@@ -635,6 +642,79 @@ function feeddown_order(
             incoming_count[daughter_component] += 1
         end
     end
+    return component_downstream, incoming_count
+end
+
+function _append_feeddown_order!(
+        order::Vector{Int},
+        particles::Dict{Int, ParticleInfo},
+        components::Vector{Vector{Int}},
+        component_downstream::Vector{Vector{Int}},
+        incoming_count::Vector{Int},
+    )
+    # Topologically sort the acyclic component graph. Zero-incoming components
+    # are complete feeders and therefore safe to process next.
+    ready_components = findall(iszero, incoming_count)
+    while !isempty(ready_components)
+        # Several components can be ready simultaneously. Select the one with
+        # the heaviest leading member, then the lowest particle ID, to keep the
+        # historical mass preference without overriding graph dependencies.
+        # `argmax(f, itr)` returns the winning component ID, not its list index.
+        component_id = argmax(
+            candidate -> begin
+                parent_id = first(components[candidate])
+                (particles[parent_id].mass, -parent_id)
+            end,
+            ready_components,
+        )
+        deleteat!(
+            ready_components,
+            findfirst(==(component_id), ready_components),
+        )
+
+        # In `cycles = :warn` mode, members of a cyclic SCC are appended in the
+        # deterministic mass order established when the component was formed.
+        append!(order, components[component_id])
+
+        # Removing this feeder edge may make downstream components ready.
+        for daughter_component in component_downstream[component_id]
+            incoming_count[daughter_component] -= 1
+            incoming_count[daughter_component] == 0 &&
+                push!(ready_components, daughter_component)
+        end
+    end
+    return order
+end
+
+"""
+    feeddown_order(decay_list; dependencies = nothing, cycles = :error)
+
+Return a deterministic feeder-before-fed parent order. By default dependencies
+are all nonzero decay edges whose daughter also decays. Callers with a narrower
+active topology may supply `(parent_id, daughter_id)` pairs explicitly.
+
+Strongly connected components are detected before ordering. `cycles = :error`
+rejects them because one sweep cannot be exact; `cycles = :warn` preserves the
+cascade's historical mass-ordered approximation within each component.
+"""
+function feeddown_order(
+        decay_list::DecayList;
+        dependencies = nothing,
+        cycles::Symbol = :error,
+    )
+    cycles === :error || cycles === :warn || throw(ArgumentError(
+        "cycles must be :error or :warn, got $(repr(cycles))",
+    ))
+    particles = decay_list.catalog.byid
+    decaying_parents, downstream = _feeddown_adjacency(decay_list, dependencies)
+
+    components = _feeddown_components(
+        particles,
+        decaying_parents,
+        downstream,
+    )
+    component_downstream, incoming_count =
+        _feeddown_condensation(components, downstream)
 
     # Multi-species SCCs are cyclic; a singleton is cyclic only when it has an
     # explicit self-edge. One feed-down sweep cannot solve either exactly.
@@ -657,40 +737,14 @@ function feeddown_order(
             "cyclic feed-down approximate"
     end
 
-    # Topologically sort the acyclic component graph. Zero-incoming components
-    # are complete feeders and therefore safe to process next.
     order = Int[]
-    ready_components = findall(iszero, incoming_count)
-    while !isempty(ready_components)
-        # Several components can be ready simultaneously. Select the one with
-        # the heaviest leading member, then the lowest particle ID, to keep the
-        # historical mass preference without overriding graph dependencies.
-        # `argmax(f, itr)` returns the winning component ID, not its list index.
-        component_id = argmax(
-            candidate -> begin
-                parent_id = first(components[candidate])
-                (decay_list.catalog.byid[parent_id].mass, -parent_id)
-            end,
-            ready_components,
-        )
-        deleteat!(
-            ready_components,
-            findfirst(==(component_id), ready_components),
-        )
-
-        # In `cycles = :warn` mode, members of a cyclic SCC are appended in the
-        # deterministic mass order established when the component was formed.
-        append!(order, components[component_id])
-
-        # Removing this feeder edge may make downstream components ready.
-        for daughter_component in component_downstream[component_id]
-            incoming_count[daughter_component] -= 1
-            incoming_count[daughter_component] == 0 &&
-                push!(ready_components, daughter_component)
-        end
-    end
-
-    return order
+    return _append_feeddown_order!(
+        order,
+        particles,
+        components,
+        component_downstream,
+        incoming_count,
+    )
 end
 
 # ---------------------------------------------------------------------------
