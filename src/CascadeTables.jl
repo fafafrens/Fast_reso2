@@ -424,7 +424,7 @@ function CascadePlan(
         if group_index == 0
             push!(
                 builders,
-                _CascadeGroupBuilder(
+                _CascadeGroupBuilder{N, M}(
                     table.W[key],
                     Int[],
                     Dict{Int, Float64}(),
@@ -475,7 +475,7 @@ function CascadePlan(
             end
             push!(
                 groups,
-                CascadeGroup(
+                CascadeGroup{N, M}(
                     builder.matrices,
                     target_start:length(targets),
                 ),
