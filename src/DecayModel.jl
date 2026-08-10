@@ -784,7 +784,7 @@ function validate(decay_list::DecayList; brtol = 0.02, verbose = true)
         channels = channel_count,
         selfstable = length(decay_list.stable_ids),
         selfchannels = one_body_count,
-        multiplicity = sort(collect(multiplicity_counts)),
+        multiplicity = sort!(collect(multiplicity_counts)),
         unresolved = unresolved_count,
         br_out_of_range = invalid_branching_ratio_count,
         charge_violations = length(charge_violations),
@@ -869,7 +869,7 @@ function _print_validation_report(
         end
     end
 
-    worst_branching_sums = sort(
+    worst_branching_sums = sort!(
         collect(branching_ratio_sums);
         by = branching_entry -> abs(last(branching_entry) - 1),
         rev = true,

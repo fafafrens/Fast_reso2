@@ -339,7 +339,12 @@ function _spectralrule(spectral::SpectralShape, order)
         end
     end
     total = sum(weights)
-    return nodes, (total > 0 ? weights ./ total : fill(1 / order, order))
+    if total > 0
+        weights ./= total
+    else
+        fill!(weights, 1 / order)
+    end
+    return nodes, weights
 end
 
 """

@@ -424,7 +424,7 @@ function CascadePlan(
         if group_index == 0
             push!(
                 builders,
-                _CascadeGroupBuilder{N, M}(
+                _CascadeGroupBuilder(
                     table.W[key],
                     Int[],
                     Dict{Int, Float64}(),
@@ -475,7 +475,7 @@ function CascadePlan(
             end
             push!(
                 groups,
-                CascadeGroup{N, M}(
+                CascadeGroup(
                     builder.matrices,
                     target_start:length(targets),
                 ),
@@ -490,7 +490,7 @@ function CascadePlan(
         )
     end
 
-    return CascadePlan{typeof(table), N, M}(
+    return CascadePlan(
         table,
         ids,
         particles,
@@ -832,7 +832,7 @@ function _restoretable(
                 )
             end
         end
-        return CascadeTable{G, N, matrix_type}(
+        return CascadeTable(
             grid,
             orders,
             modes,

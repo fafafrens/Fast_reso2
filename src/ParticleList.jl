@@ -72,9 +72,6 @@ end
 # Catalog and unresolved topology
 # ---------------------------------------------------------------------------
 
-struct _ValidatedInputToken end
-const _VALIDATED_INPUT = _ValidatedInputToken()
-
 """
     ParticleCatalog(particles; aliases = Dict(), path = "", sha = "")
 
@@ -90,13 +87,17 @@ struct ParticleCatalog
     sha::String
 
     function ParticleCatalog(
-            byid::Dict{Int, ParticleInfo},
-            byname::Dict{String, Vector{Int}},
-            path::String,
-            sha::String,
-            ::_ValidatedInputToken,
+            particles::Dict{Int, ParticleInfo};
+            aliases = Dict{Int, Vector{String}}(),
+            path::AbstractString = "",
+            sha::AbstractString = "",
         )
-        return new(byid, byname, path, sha)
+        return new(
+            particles,
+            _nameindex(particles, aliases),
+            String(path),
+            String(sha),
+        )
     end
 end
 
@@ -129,21 +130,6 @@ function _nameindex(
         sort!(unique!(ids))
     end
     return byname
-end
-
-function ParticleCatalog(
-        particles::Dict{Int, ParticleInfo};
-        aliases = Dict{Int, Vector{String}}(),
-        path::AbstractString = "",
-        sha::AbstractString = "",
-    )
-    return ParticleCatalog(
-        particles,
-        _nameindex(particles, aliases),
-        String(path),
-        String(sha),
-        _VALIDATED_INPUT,
-    )
 end
 
 "Return the particle with integer `id`."
@@ -285,60 +271,48 @@ struct DecayNetwork
     sha::String
 
     function DecayNetwork(
-            byparent::Dict{Int, Vector{DecayChannel}},
-            decaying_ids::Vector{Int},
-            terminal_ids::Vector{Int},
-            path::String,
-            sha::String,
-            ::_ValidatedInputToken,
+            channels_by_parent::Dict{Int, Vector{DecayChannel}};
+            decaying_ids = nothing,
+            terminal_ids = nothing,
+            path::AbstractString = "",
+            sha::AbstractString = "",
         )
-        return new(byparent, decaying_ids, terminal_ids, path, sha)
-    end
-end
-
-function DecayNetwork(
-        channels_by_parent::Dict{Int, Vector{DecayChannel}};
-        decaying_ids = nothing,
-        terminal_ids = nothing,
-        path::AbstractString = "",
-        sha::AbstractString = "",
-    )
-    inferred_decaying = Int[]
-    inferred_terminal = Int[]
-    for (parent_id, channels) in channels_by_parent
-        all(channel -> channel.parent == parent_id, channels) ||
-            throw(ArgumentError(
-                "channel parent disagrees with dictionary key $parent_id",
-            ))
-        if _isterminalblock(channels, parent_id)
-            push!(inferred_terminal, parent_id)
-        elseif !isempty(channels)
-            push!(inferred_decaying, parent_id)
+        inferred_decaying = Int[]
+        inferred_terminal = Int[]
+        for (parent_id, channels) in channels_by_parent
+            all(channel -> channel.parent == parent_id, channels) ||
+                throw(ArgumentError(
+                    "channel parent disagrees with dictionary key $parent_id",
+                ))
+            if _isterminalblock(channels, parent_id)
+                push!(inferred_terminal, parent_id)
+            elseif !isempty(channels)
+                push!(inferred_decaying, parent_id)
+            end
         end
+
+        selected_decaying = collect(Int, something(decaying_ids, ()))
+        append!(selected_decaying, inferred_decaying)
+        sort!(unique!(selected_decaying))
+
+        selected_terminal = collect(Int, something(terminal_ids, ()))
+        append!(selected_terminal, inferred_terminal)
+        sort!(unique!(selected_terminal))
+
+        conflicting_ids = intersect(selected_decaying, selected_terminal)
+        isempty(conflicting_ids) || throw(ArgumentError(
+            "particle IDs cannot be both decaying and terminal: " *
+                join(conflicting_ids, ", "),
+        ))
+
+        return new(
+            channels_by_parent,
+            selected_decaying,
+            selected_terminal,
+            String(path),
+            String(sha),
+        )
     end
-
-    selected_decaying = collect(Int, something(decaying_ids, ()))
-    append!(selected_decaying, inferred_decaying)
-    sort!(unique!(selected_decaying))
-
-    selected_terminal = collect(Int, something(terminal_ids, ()))
-    append!(selected_terminal, inferred_terminal)
-    sort!(unique!(selected_terminal))
-
-    conflicting_ids = intersect(selected_decaying, selected_terminal)
-    isempty(conflicting_ids) || throw(ArgumentError(
-        "particle IDs cannot be both decaying and terminal: " *
-            join(conflicting_ids, ", "),
-    ))
-
-    return DecayNetwork(
-        channels_by_parent,
-        selected_decaying,
-        selected_terminal,
-        String(path),
-        String(sha),
-        _VALIDATED_INPUT,
-    )
 end
 
 "Merge unresolved networks without requiring their particle catalogs."
