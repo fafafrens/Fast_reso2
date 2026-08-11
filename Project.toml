@@ -2,12 +2,10 @@ name = "FastReso2"
 uuid = "9842cc48-4005-4707-b4a8-7b68f7a627ce"
 version = "0.1.0"
 
-# FastGaussQuadrature and QuadGK are hard runtime dependencies; QuadGK drives
-# ThermalModel's reference mass integral. Plots remains figure-only.
-
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
+LaTeXStrings = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
@@ -17,11 +15,9 @@ Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 
 [compat]
 FastGaussQuadrature = "1"
+LaTeXStrings = "1.4.0"
 Plots = "1"
 QuadGK = "2"
-# CascadeTables.buildkeys! needs `Threads.@threads :greedy` (Julia 1.11+) and
-# `OncePerTask` (1.12+), which gives each of that loop's tasks its own row
-# buffers — the loop exposes no task index, so there is no earlier equivalent.
 julia = "1.12"
 
 [extras]

@@ -1,7 +1,8 @@
 # Serialized cache tables (regenerable by cascade.jl, multi-GB)
 *.jls
 
-# Historical quick-start artifact; the current quickstart writes no files.
+# Historical quick-start artifact; the current quickstart writes
+# figures/quickstart.png, which is tracked.
 /pions.pdf
 
 # LaTeX build artifacts
