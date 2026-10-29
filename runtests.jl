@@ -2239,6 +2239,51 @@ concurrent7a, concurrent7b = fetch(task7a), fetch(task7b)
 @assert concurrent7b.F == alternate7.F
 @assert concurrent7b.Fprim == alternate7.Fprim
 
+# Complex primaries propagate both components through the real decay kernels,
+# so a complex run equals the real and imaginary runs combined on both the
+# serial and the mode-parallel paths, and the output element type follows
+# `spectrum_type`.
+prim7complex(p, n, grid) = complex.(prim7(p, n, grid), prim7alt(p, n, grid))
+complex7 = runcascade(
+    plan7;
+    primary = prim7complex,
+    spectrum_type = ComplexF64,
+)
+@assert keys(complex7.F) == keys(planned7.F)
+for particle_id in keys(complex7.F), mode_index in 1:length(plan7.table.modes)
+    @assert complex7.F[particle_id][mode_index] isa Vector{ComplexF64}
+    @assert complex7.F[particle_id][mode_index] ≈ complex.(
+        planned7.F[particle_id][mode_index],
+        alternate7.F[particle_id][mode_index],
+    )
+    @assert complex7.Fprim[particle_id][mode_index] == complex.(
+        planned7.Fprim[particle_id][mode_index],
+        alternate7.Fprim[particle_id][mode_index],
+    )
+end
+@assert runcascade(
+    plan7;
+    primary = prim7complex,
+    spectrum_type = ComplexF64,
+    parallel = :modes,
+).F == complex7.F
+# A real primary is promoted when a complex run is requested, and a complex
+# primary is rejected by the default real run instead of being truncated.
+promoted7 = runcascade(plan7; primary = prim7, spectrum_type = ComplexF64)
+for particle_id in keys(planned7.F), mode_index in 1:length(plan7.table.modes)
+    @assert promoted7.F[particle_id][mode_index] isa Vector{ComplexF64}
+    @assert promoted7.F[particle_id][mode_index] ≈
+        planned7.F[particle_id][mode_index]
+end
+let threw = false
+    try
+        runcascade(plan7; primary = prim7complex)
+    catch error
+        threw = error isa InexactError
+    end
+    @assert threw
+end
+
 # A filtered topology compiles against the already-built full table.
 two_body7 = filter(nbody(2), dl7)
 @assert two_body7.stable_ids == dl7.stable_ids

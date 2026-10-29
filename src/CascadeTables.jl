@@ -906,14 +906,15 @@ function _initialize_plan_spectra(
         plan::CascadePlan{T, N, M},
         primary,
         output_indices,
-    ) where {T, N, M}
+        ::Type{S},
+    ) where {T, N, M, S <: Number}
     species_count = length(plan.ids)
     grid_length = length(plan.table.grid)
 
     # Each mode task receives one dense particle-indexed vector, avoiding a
     # particle→mode container lookup in the numerical loop.
     spectra_by_mode = ntuple(
-        _ -> Vector{Vector{Float64}}(undef, species_count),
+        _ -> Vector{Vector{S}}(undef, species_count),
         Val(N),
     )
 
@@ -924,7 +925,7 @@ function _initialize_plan_spectra(
         for mode_index in 1:N
             mode = plan.table.modes[mode_index]
             spectrum =
-                Vector{Float64}(primary(particle, mode, plan.table.grid))
+                Vector{S}(primary(particle, mode, plan.table.grid))
             length(spectrum) == grid_length ||
                 throw(
                 DimensionMismatch(
@@ -937,8 +938,8 @@ function _initialize_plan_spectra(
     end
 
     output_count = length(output_indices)
-    spectra = Dict{Int, Vector{Vector{Float64}}}()
-    primary_spectra = Dict{Int, Vector{Vector{Float64}}}()
+    spectra = Dict{Int, Vector{Vector{S}}}()
+    primary_spectra = Dict{Int, Vector{Vector{S}}}()
     sizehint!(spectra, output_count)
     sizehint!(primary_spectra, output_count)
     for dense_index in output_indices
@@ -953,11 +954,11 @@ function _initialize_plan_spectra(
 end
 
 function _apply_plan_mode!(
-        mode_spectra::Vector{Vector{Float64}},
+        mode_spectra::Vector{Vector{S}},
         plan::CascadePlan{T, N, M},
         mode_index::Int,
-        scratch::Vector{Float64},
-    ) where {T, N, M}
+        scratch::Vector{S},
+    ) where {T, N, M, S <: Number}
     @inbounds for step in plan.steps
         parent_spectrum = mode_spectra[step.parent]
 
@@ -992,11 +993,14 @@ function _apply_plan_mode!(
     return mode_spectra
 end
 
+# The spectrum type is passed explicitly because an empty tuple (a plan with
+# no modes) cannot bind `S`.
 function _apply_plan!(
-        spectra_by_mode::NTuple{N, Vector{Vector{Float64}}},
+        spectra_by_mode::NTuple{N, Vector{Vector{S}}},
         plan::CascadePlan{T, N, M},
         parallel::Symbol,
-    ) where {T, N, M}
+        ::Type{S},
+    ) where {T, N, M, S <: Number}
     grid_length = length(plan.table.grid)
     if parallel === :modes && Threads.nthreads() > 1 && N > 1
         @sync for mode_index in 1:N
@@ -1006,7 +1010,7 @@ function _apply_plan!(
                 # below is treated as one shared variable: Julia boxes it, and
                 # `_apply_plan!` infers it as `Core.Box`. Distinct names keep
                 # each buffer local to its branch and the function inferred.
-                mode_scratch = Vector{Float64}(undef, grid_length)
+                mode_scratch = Vector{S}(undef, grid_length)
                 _apply_plan_mode!(
                     spectra_by_mode[mode_index],
                     plan,
@@ -1016,7 +1020,7 @@ function _apply_plan!(
             end
         end
     else
-        scratch = Vector{Float64}(undef, grid_length)
+        scratch = Vector{S}(undef, grid_length)
         for mode_index in 1:N
             _apply_plan_mode!(
                 spectra_by_mode[mode_index],
@@ -1047,13 +1051,16 @@ end
 
 """
     runcascade(plan::CascadePlan; primary, parallel = :serial,
-               output = :stable) -> (F, Fprim)
+               output = :stable, spectrum_type = Float64) -> (F, Fprim)
 
 Run a compiled plan without topology traversal, key construction, or dictionary
 lookup in the numerical loop. `parallel = :modes` assigns each Fourier mode to
 an independent task when multiple Julia threads and modes are available.
 Primary callbacks are always initialized serially. A plan is read-only and may
 be shared by concurrent calls whose callbacks and outputs are independent.
+Use `spectrum_type = ComplexF64` for complex primary spectra; real decay
+kernels then propagate both components in one traversal. The default remains
+`Float64`. The selected type is used for spectra and scratch buffers.
 Only stable particles are returned by default; use `output = :all` to retain
 intermediate resonances for diagnostics.
 """
@@ -1062,20 +1069,22 @@ function runcascade(
         primary,
         parallel = :serial,
         output = :stable,
+        spectrum_type::Type{<:Number} = Float64,
     )
     _check_run_options(parallel, output)
     output_indices = output === :stable ?
         plan.stable_indices :
         eachindex(plan.ids)
     spectra, primary_spectra, spectra_by_mode =
-        _initialize_plan_spectra(plan, primary, output_indices)
-    _apply_plan!(spectra_by_mode, plan, parallel::Symbol)
+        _initialize_plan_spectra(plan, primary, output_indices, spectrum_type)
+    _apply_plan!(spectra_by_mode, plan, parallel::Symbol, spectrum_type)
     return (F = spectra, Fprim = primary_spectra)
 end
 
 """
     runcascade(table::CascadeTable, decay_list::DecayList;
-               primary, parallel = :serial, output = :stable) -> (F, Fprim)
+               primary, parallel = :serial, output = :stable,
+               spectrum_type = Float64) -> (F, Fprim)
 
 Compile `decay_list` against an existing table, then run the resulting
 [`CascadePlan`](@ref). Construct the plan explicitly when reusing the same
@@ -1087,10 +1096,11 @@ function runcascade(
         primary,
         parallel = :serial,
         output = :stable,
+        spectrum_type::Type{<:Number} = Float64,
     )
     _check_run_options(parallel, output)
     plan = CascadePlan(table, decay_list)
-    return runcascade(plan; primary, parallel, output)
+    return runcascade(plan; primary, parallel, output, spectrum_type)
 end
 
 """
@@ -1099,12 +1109,13 @@ end
                orders = (;), modes = [0, 2],
                width_cut = 1.0e-3, width_window = 4.0,
                cache = nothing, rebuild = false,
-               parallel = :serial, output = :stable) -> (F, Fprim)
+               parallel = :serial, output = :stable,
+               spectrum_type = Float64) -> (F, Fprim)
 
 Build or load a table, compile a plan, and run the cascade in one call.
 `grid`, `orders`, `modes`, `width_cut`, `width_window`, `cache`, and `rebuild`
 configure the table;
-`primary`, `parallel`, and `output` configure execution.
+`primary`, `parallel`, `output`, and `spectrum_type` configure execution.
 
 This is the convenient one-shot interface. Construct a [`CascadePlan`](@ref)
 explicitly when it will be reused with multiple primary callbacks.
@@ -1114,11 +1125,12 @@ function runcascade(
         primary,
         parallel = :serial,
         output = :stable,
+        spectrum_type::Type{<:Number} = Float64,
         table_options...,
     )
     _check_run_options(parallel, output)
     plan = CascadePlan(decay_list; table_options...)
-    return runcascade(plan; primary, parallel, output)
+    return runcascade(plan; primary, parallel, output, spectrum_type)
 end
 
 end # module
