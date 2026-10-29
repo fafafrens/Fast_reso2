@@ -185,7 +185,7 @@ worth.
 ## Verification
 
 ```bash
-julia --project -t auto runtests.jl
+julia --project -t auto test/runtests.jl
 julia --project -t auto figures/thermal_yields.jl
 CASCADE_BENCH_GRID=16 CASCADE_BENCH_SAMPLES=50 \
   julia --project -t 2 benchmarks/cascade_plan.jl   # judge by allocations, not time

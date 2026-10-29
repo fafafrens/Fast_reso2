@@ -147,7 +147,7 @@ qT-node threading requires `threaded = true`; table and matrix construction
 retain their separate parallel controls.
 
 The conventional `test/runtests.jl` entry point makes `Pkg.test()` work, while
-delegating to the established root suite for now. The remaining foundation
+the numerical suite itself now lives there. The remaining foundation
 work is test organization, not another core type refactor: split the assertions
 into component `Test.@testset`s and fast/numerical/external tiers, then isolate
 core, figure, and benchmark dependency environments.

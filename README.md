@@ -6,7 +6,7 @@ thermal source of primary resonances, propagate every decay (2-, 3-, and
 spectra, including azimuthal (elliptic-flow) modulation. The decay map is a
 **matrix** in transverse momentum and azimuthal Fourier mode, built once per
 channel and reused across the cascade. The method is derived in
-[`matrix_notes.tex`](matrix_notes.tex).
+[`docs/matrix_notes.tex`](docs/matrix_notes.tex).
 
 ![Feed-down for π/K/p/Λ: spectra, elliptic flow, and v₂ suppression](figures/feeddown_physics.png)
 
@@ -113,7 +113,7 @@ julia --project=. -t auto figures/spectral_shape.jl    # Γ(m) vs constant Γ in
 CASCADE_BENCH_GRID=32 CASCADE_BENCH_SAMPLES=5 \
   julia --project=. -t 2 benchmarks/cascade_plan.jl   # plan-compilation benchmark
 benchmarks/fastreso_crosscheck/run_small.sh        # cross-check against upstream FastReso
-python3 -m unittest discover -s tests -p 'test_*.py' # offline generator/data invariants
+python3 -m unittest discover -s test -p 'test_*.py' # offline generator/data invariants
 ```
 
 `-t auto` matters for the table build, which parallelizes over channels and
@@ -280,7 +280,7 @@ a fixed 32-node rule where the direct path drives an adaptive integral at
 **What each modelling choice is worth** — quark-model states, finite widths,
 spectral shape, the σ, and the isospin fix, sized against each other with the
 caveats that matter before comparing to data — is in
-[`thermal_model_notes.md`](thermal_model_notes.md).
+[`docs/thermal_model_notes.md`](docs/thermal_model_notes.md).
 
 ## Files
 
@@ -298,10 +298,10 @@ curated PNGs in `figures/`.
 | `src/ParticleList.jl`, `src/readers/Canonical.jl` | Catalog/network types and the split-file reader |
 | `src/ThermalModel.jl` | Freeze-out densities, feed-down yields, `ThermalPlan` |
 | `quickstart.jl` | The Quick start above, as a runnable script → `figures/quickstart.png` |
-| `test/runtests.jl`, `runtests.jl` | `Pkg.test()` entry point, delegating to the legacy numerical suite |
+| `test/` | `Pkg.test()` entry point (`runtests.jl`, the numerical suite) and the Python generator tests |
 | `benchmarks/`, `figures/`, `tools/` | Benchmarks and cross-checks, figure drivers, offline converters/generators |
-| `matrix_notes.tex` | Method notes (compiled: `matrix_notes.pdf`) |
-| `*_plan.md`, `pdg_audit.md`, `thermal_model_notes.md` | Design notes, data audit, thermal modelling results |
+| `docs/matrix_notes.tex` | Method notes (compiled: `docs/matrix_notes.pdf`) |
+| `docs/` | Design notes (`*_plan.md`), data audit, thermal modelling results, the original derivation |
 
 ## License
 
