@@ -911,6 +911,20 @@ function _initialize_plan_spectra(
     species_count = length(plan.ids)
     grid_length = length(plan.table.grid)
 
+    # A species that is neither an output nor feeds one, directly or through
+    # its decay chain, cannot reach a result, so its primary is never asked for.
+    # Steps are in feeder-before-fed order; walking them backwards propagates
+    # reachability from the outputs up to the parents.
+    active = falses(species_count)
+    active[output_indices] .= true
+    for step in Iterators.reverse(plan.steps)
+        active[step.parent] |= any(
+            active[plan.targets[target_index].daughter]
+                for group_index in step.groups
+                for target_index in plan.groups[group_index].targets
+        )
+    end
+
     # Each mode task receives one dense particle-indexed vector, avoiding a
     # particle→mode container lookup in the numerical loop.
     spectra_by_mode = ntuple(
@@ -924,8 +938,9 @@ function _initialize_plan_spectra(
 
         for mode_index in 1:N
             mode = plan.table.modes[mode_index]
-            spectrum =
-                Vector{S}(primary(particle, mode, plan.table.grid))
+            spectrum = active[dense_index] ?
+                Vector{S}(primary(particle, mode, plan.table.grid)) :
+                zeros(S, grid_length)
             length(spectrum) == grid_length ||
                 throw(
                 DimensionMismatch(
@@ -1056,8 +1071,10 @@ end
 Run a compiled plan without topology traversal, key construction, or dictionary
 lookup in the numerical loop. `parallel = :modes` assigns each Fourier mode to
 an independent task when multiple Julia threads and modes are available.
-Primary callbacks are always initialized serially. A plan is read-only and may
-be shared by concurrent calls whose callbacks and outputs are independent.
+Primary callbacks are always initialized serially, and only for species that
+can reach an output: a species whose channels were all filtered away, or that
+feeds only such species, is not asked for. A plan is read-only and may be
+shared by concurrent calls whose callbacks and outputs are independent.
 Use `spectrum_type = ComplexF64` for complex primary spectra; real decay
 kernels then propagate both components in one traversal. The default remains
 `Float64`. The selected type is used for spectra and scratch buffers.
