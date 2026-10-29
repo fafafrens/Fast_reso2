@@ -1396,6 +1396,28 @@ res7 = runcascade(tab7, dl7; primary = counted_prim7)
 @assert Set(keys(res7.F)) ==
     Set(particle.id for particle in stableparticles(dl7))
 
+# Species that cannot reach an output are not asked for a primary: a parent whose
+# channels were all filtered away, and a parent feeding only such dead ends.
+parts7x = merge(parts7, Dict(5 => ParticleInfo(5, "X", 2mω + 0.1, 0.0, 1.0, 0, 0)))
+byp7x = merge(byp7, Dict(5 => [DecayChannel(5, 1.0, [3, 3])]))
+dl7x = DecayList(parts7x, byp7x, "synthetic", "deadbeef")
+tab7x = CascadeTable(dl7x; grid = g7, orders = ord7, modes = [0, 2], cache = tempname())
+asked7x = Set{Int}()
+asking_prim7(p, n, grid) = (push!(asked7x, p.id); prim7(p, n, grid))
+runcascade(CascadePlan(tab7x, dl7x); primary = asking_prim7)
+@assert asked7x == Set([1, 2, 3, 4, 5])
+empty!(asked7x)
+pruned7x = CascadePlan(tab7x, filter(!fromparent("om"), dl7x))   # ω no longer decays: ω and X → ωω are dead ends
+pruned_result7x = runcascade(pruned7x; primary = asking_prim7)
+@assert asked7x == Set([1, 2, 4])
+@assert pruned_result7x.F == runcascade(
+    pruned7x;
+    primary = (p, n, grid) -> p.id in (3, 5) ? zeros(length(grid)) : prim7(p, n, grid),
+).F
+empty!(asked7x)
+runcascade(pruned7x; primary = asking_prim7, output = :all)      # every species is an output
+@assert asked7x == Set([1, 2, 3, 4, 5])
+
 res7allparticles =
     runcascade(tab7, dl7; primary = prim7, output = :all)
 @assert Set(keys(res7allparticles.F)) == Set(keys(parts7))
