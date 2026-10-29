@@ -35,7 +35,7 @@ pole mass:
 | `:massdep` | 1.044 | **0.551** | 0.902 | 1.004 |
 | `:constant` | 1.043 | **0.457** | 0.952 | 1.017 |
 
-![Γ(m) against constant Γ in pT spectra, and their ratio](figures/spectral_shape.png)
+![Γ(m) against constant Γ in pT spectra, and their ratio](../figures/spectral_shape.png)
 
 *From `figures/spectral_shape.jl`. The choice is worth a few percent in the
 spectra, and it is not a flat normalization — the pion ratio peaks near
