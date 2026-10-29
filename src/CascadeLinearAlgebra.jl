@@ -91,12 +91,13 @@ end
 @inline _cascade_axpy!(α, source, destination) =
     axpy!(α, source, destination)
 
-# Avoid fixed BLAS call overhead for the plan's short Float64 scatters.
+# Avoid fixed BLAS call overhead for the plan's short scatters. Real weights
+# scale complex spectra component-wise, so both spectrum types share the loop.
 function _cascade_axpy!(
         α::Float64,
-        source::Vector{Float64},
-        destination::Vector{Float64},
-    )
+        source::Vector{S},
+        destination::Vector{S},
+    ) where {S <: Union{Float64, ComplexF64}}
     iszero(α) && return destination
 
     @inbounds @simd for index in eachindex(source, destination)

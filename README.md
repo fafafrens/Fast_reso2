@@ -88,7 +88,10 @@ on `qs`. Results contain only stable particles by default; `stableparticles(dl)`
 and `allparticles(dl)` list `ParticleInfo` records in ID order (both also accept
 a `CascadePlan`). Pass `output = :all` only for diagnostics. The `primary`
 callback is where the physics goes: return `zeros(length(qs))` to exclude a
-species.
+species. Spectra are `Float64` by default; pass `spectrum_type = ComplexF64`
+when the primary returns complex Fourier modes (e.g. ``F_n = |F_n| e^{-inΨ_n}``
+with an event-plane phase) and the real decay kernels propagate both
+components in one run.
 
 For production, pass `cache = "Wtables.jls"` so the packed matrices are built
 once and reloaded. The cache is regenerable and git-ignored (format 12);
