@@ -1,7 +1,7 @@
 """Audit the decay list against the PDG database. Reports only -- writes no .dat.
 
     pip install pdg
-    python3 tools/audit_pdg.py [--importance importance.csv] [-o pdg_audit.md]
+    python3 tools/audit_pdg.py [--importance importance.csv] [-o docs/pdg_audit.md]
 
 For every table entry carrying a standard PDG MC id, compares mass, width, spin
 degeneracy (2J+1), isospin and the channel list against `pdg`, and writes a
@@ -155,7 +155,7 @@ def fmt_ids(ids, parts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--importance", default=None)
-    ap.add_argument("-o", "--out", default=os.path.join(REPO, "pdg_audit.md"))
+    ap.add_argument("-o", "--out", default=os.path.join(REPO, "docs", "pdg_audit.md"))
     ap.add_argument("--top", type=int, default=25)
     args = ap.parse_args()
 

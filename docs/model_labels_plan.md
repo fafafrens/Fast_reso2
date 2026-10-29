@@ -131,7 +131,7 @@ hole.
 ## Verification, if built
 
 ```bash
-julia --project -t auto runtests.jl
+julia --project -t auto test/runtests.jl
 julia --project -t auto figures/thermal_yields.jl    # must not move
 ```
 
